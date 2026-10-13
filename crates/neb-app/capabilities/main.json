@@ -1,0 +1,1 @@
+{"identifier":"main","description":"Main window and explicit file selection","windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-save"]}

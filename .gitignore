@@ -1,0 +1,16 @@
+/target/
+node_modules/
+dist/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+/artifacts/
+test-results/
+playwright-report/
+*.db
+*.db-shm
+*.db-wal
+/.local/
+/crates/neb-app/gen/

@@ -1,0 +1,22 @@
+[package]
+name = "neb-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+quick-xml = { version = "0.37", features = ["serialize"] }
+hmac = "0.12"
+url = "2"
+cap-std = "3"
+cap-fs-ext = "3"
+percent-encoding = "2"

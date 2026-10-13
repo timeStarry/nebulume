@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nebulume",
+  "version": "0.1.0-alpha.1",
+  "identifier": "app.nebulume.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../../packages/ui/dist"
+  },
+  "app": {
+    "windows": [{"label":"main","title":"Nebulume","width":1440,"height":960,"minWidth":900,"minHeight":640,"dragDropEnabled":false}],
+    "security": {"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'"}
+  },
+  "bundle": {"active":true,"targets":"all","icon":["icons/icon.png","icons/icon.ico"],"shortDescription":"Local-first photo library and verified media ingest","category":"Photography"}
+}

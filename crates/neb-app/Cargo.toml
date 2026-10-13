@@ -1,0 +1,18 @@
+[package]
+name = "neb-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nebulume"
+path = "src/main.rs"
+
+[dependencies]
+neb-service = { path = "../neb-service" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "=2.8.1"
+serde_json.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

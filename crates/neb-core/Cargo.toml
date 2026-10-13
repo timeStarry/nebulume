@@ -1,0 +1,25 @@
+[package]
+name = "neb-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+rusqlite = { version = "0.34", features = ["bundled"] }
+image = { version = "=0.25.6", default-features = false, features = ["jpeg", "png", "gif", "webp", "tiff", "bmp", "ico", "pnm"] }
+kamadak-exif = "0.6"
+rawloader = "=0.37.2"
+base64 = "0.22"
+walkdir = "2"
+dunce = "1"
+tempfile.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+hex.workspace = true

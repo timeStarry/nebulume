@@ -1,0 +1,19 @@
+{
+  "name": "nebulume",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "packageManager": "pnpm@9.0.4",
+  "scripts": {
+    "dev": "pnpm --filter @nebulume/ui dev",
+    "build": "pnpm --filter @nebulume/ui build",
+    "test": "pnpm --filter @nebulume/ui test",
+    "typecheck": "pnpm --filter @nebulume/ui typecheck",
+    "desktop": "cd crates/neb-app && tauri dev",
+    "desktop:build": "cd crates/neb-app && tauri build"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@tauri-apps/cli": "^2.8.4",
+    "prettier": "3.6.2"
+  }
+}

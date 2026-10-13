@@ -1,0 +1,16 @@
+[package]
+name = "neb-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neb"
+path = "src/main.rs"
+
+[dependencies]
+neb-service = { path = "../neb-service" }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+serde_json.workspace = true
+anyhow.workspace = true
