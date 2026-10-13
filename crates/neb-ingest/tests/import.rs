@@ -131,6 +131,16 @@ fn capture_date_layout_uses_exif_camera_date() {
     let source = tempfile::tempdir().unwrap();
     let destination = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("capture.tif"), exif_tiff("2020:02:29")).unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "date", true)
+        .unwrap();
+    assert_eq!(plan.items[0].date_source, "exif");
+    assert_eq!(plan.items[0].relative_path, "2020-02-29/capture.tif");
+}
+
+fn exif_tiff(date: &str) -> Vec<u8> {
     // Little-endian TIFF with IFD0 -> Exif IFD -> DateTimeOriginal.
     let mut tiff = b"II\x2a\x00\x08\x00\x00\x00".to_vec();
     tiff.extend_from_slice(&1u16.to_le_bytes());
@@ -145,14 +155,337 @@ fn capture_date_layout_uses_exif_camera_date() {
     tiff.extend_from_slice(&20u32.to_le_bytes());
     tiff.extend_from_slice(&44u32.to_le_bytes());
     tiff.extend_from_slice(&0u32.to_le_bytes());
-    tiff.extend_from_slice(b"2020:02:29 23:59:59\0");
-    fs::write(source.path().join("capture.tif"), tiff).unwrap();
+    tiff.extend_from_slice(format!("{date} 23:59:59\0").as_bytes());
+    tiff
+}
+
+fn exif_jpeg(date: &str) -> Vec<u8> {
+    let mut exif = b"Exif\0\0".to_vec();
+    exif.extend_from_slice(&exif_tiff(date));
+    let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+    jpeg.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+    jpeg.extend_from_slice(&exif);
+    jpeg.extend_from_slice(&[0xff, 0xd9]);
+    jpeg
+}
+
+#[test]
+fn raw_and_xmp_inherit_only_the_same_directory_and_stem_anchor() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::create_dir_all(source.path().join("DCIM/100CAM")).unwrap();
+    fs::create_dir_all(source.path().join("DCIM/200CAM")).unwrap();
+    let jpeg = exif_jpeg("2024:05:06");
+    fs::write(source.path().join("DCIM/100CAM/SHOT.JPG"), &jpeg).unwrap();
+    fs::write(
+        source.path().join("DCIM/100CAM/SHOT.NEF"),
+        b"raw without exif",
+    )
+    .unwrap();
+    fs::write(source.path().join("DCIM/100CAM/SHOT.xmp"), b"sidecar").unwrap();
+    fs::write(source.path().join("DCIM/200CAM/SHOT.xmp"), b"sidecar").unwrap();
+    fs::write(source.path().join("DCIM/100CAM/OTHER.xmp"), b"sidecar").unwrap();
     let mut service = IngestService::open(state.path()).unwrap();
     let plan = service
         .plan(source.path(), destination.path(), "date", true)
         .unwrap();
-    assert_eq!(plan.items[0].date_source, "exif");
-    assert_eq!(plan.items[0].relative_path, "2020-02-29/capture.tif");
+    for (source_key, target, provenance) in [
+        ("DCIM/100CAM/SHOT.JPG", "2024-05-06/SHOT.JPG", "exif"),
+        ("DCIM/100CAM/SHOT.NEF", "2024-05-06/SHOT.NEF", "paired_exif"),
+        ("DCIM/100CAM/SHOT.xmp", "2024-05-06/SHOT.xmp", "paired_exif"),
+        ("DCIM/200CAM/SHOT.xmp", "unknown-date/SHOT.xmp", "unknown"),
+        ("DCIM/100CAM/OTHER.xmp", "unknown-date/OTHER.xmp", "unknown"),
+    ] {
+        let item = plan
+            .items
+            .iter()
+            .find(|item| item.source_relative_path == source_key)
+            .unwrap();
+        assert_eq!(item.relative_path, target);
+        assert_eq!(item.date_source, provenance);
+    }
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.copied, 5);
+    assert_eq!(result.failed, 0);
+    assert_eq!(
+        fs::read(destination.path().join("2024-05-06/SHOT.JPG")).unwrap(),
+        jpeg
+    );
+    assert_eq!(
+        fs::read(destination.path().join("2024-05-06/SHOT.NEF")).unwrap(),
+        b"raw without exif"
+    );
+    assert_eq!(
+        fs::read(destination.path().join("2024-05-06/SHOT.xmp")).unwrap(),
+        b"sidecar"
+    );
+    assert_eq!(
+        fs::read(source.path().join("DCIM/100CAM/SHOT.NEF")).unwrap(),
+        b"raw without exif"
+    );
+}
+
+#[test]
+fn conflicting_capture_dates_do_not_assign_an_arbitrary_sidecar_date() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("SHOT.NEF"), exif_tiff("2024:05:06")).unwrap();
+    fs::write(source.path().join("SHOT.JPG"), exif_jpeg("2024:05:07")).unwrap();
+    fs::write(source.path().join("SHOT.xmp"), b"sidecar").unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "date", true)
+        .unwrap();
+    assert!(plan
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("Conflicting EXIF capture dates")
+            && warning.contains("2024-05-06")
+            && warning.contains("2024-05-07")));
+    let xmp = plan
+        .items
+        .iter()
+        .find(|item| item.source_relative_path == "SHOT.xmp")
+        .unwrap();
+    assert_eq!(xmp.relative_path, "unknown-date/SHOT.xmp");
+    assert_eq!(xmp.date_source, "unknown");
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.copied, 3);
+    assert!(destination.path().join("2024-05-06/SHOT.NEF").is_file());
+    assert!(destination.path().join("2024-05-07/SHOT.JPG").is_file());
+    assert!(destination.path().join("unknown-date/SHOT.xmp").is_file());
+}
+
+#[test]
+fn identical_bytes_do_not_merge_different_photo_formats_or_sidecar_groups() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let image = exif_tiff("2024:05:06");
+    for name in ["A.NEF", "A.JPG", "B.JPG", "C.NEF", "C.JPG"] {
+        fs::write(source.path().join(name), &image).unwrap();
+    }
+    for name in ["A.xmp", "B.xmp"] {
+        fs::write(source.path().join(name), b"identical edits").unwrap();
+    }
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "date", true)
+        .unwrap();
+    assert_eq!(plan.duplicate_count, 0);
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.copied, 7);
+    for name in [
+        "A.NEF", "A.JPG", "B.JPG", "C.NEF", "C.JPG", "A.xmp", "B.xmp",
+    ] {
+        assert!(destination.path().join("2024-05-06").join(name).is_file());
+        assert!(source.path().join(name).is_file());
+    }
+    let repeated = service
+        .plan(source.path(), destination.path(), "date", true)
+        .unwrap();
+    assert_eq!(repeated.duplicate_count, 7);
+    assert_eq!(service.execute(&repeated.id).unwrap().duplicates, 7);
+}
+
+#[test]
+fn sidecar_group_conflicts_fail_without_independent_filename_suffixes() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("SHOT.NEF"), b"new raw").unwrap();
+    fs::write(source.path().join("SHOT.xmp"), b"new edits").unwrap();
+    fs::write(destination.path().join("SHOT.NEF"), b"existing raw").unwrap();
+    fs::write(destination.path().join("SHOT.xmp"), b"existing edits").unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "preserve", true)
+        .unwrap();
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.failed, 2);
+    assert_eq!(result.copied, 0);
+    assert!(result.items.iter().all(|item| item
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Choose a new destination directory")));
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 2);
+    assert_eq!(
+        fs::read(destination.path().join("SHOT.NEF")).unwrap(),
+        b"existing raw"
+    );
+    assert_eq!(
+        fs::read(destination.path().join("SHOT.xmp")).unwrap(),
+        b"existing edits"
+    );
+    assert_eq!(
+        fs::read(source.path().join("SHOT.NEF")).unwrap(),
+        b"new raw"
+    );
+    assert_eq!(
+        fs::read(source.path().join("SHOT.xmp")).unwrap(),
+        b"new edits"
+    );
+
+    // Identical occupied names are reusable only when deduplication is enabled.
+    fs::write(destination.path().join("SHOT.NEF"), b"new raw").unwrap();
+    fs::write(destination.path().join("SHOT.xmp"), b"new edits").unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "preserve", false)
+        .unwrap();
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.failed, 2);
+    assert_eq!(result.copied, 0);
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 2);
+    let plan = service
+        .plan(source.path(), destination.path(), "preserve", true)
+        .unwrap();
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.duplicates, 2);
+    assert_eq!(result.failed, 0);
+}
+
+#[test]
+fn an_existing_raw_conflict_blocks_its_new_sidecar_before_publication() {
+    assert_one_sided_companion_conflict("SHOT.NEF", b"old raw", "SHOT.xmp");
+}
+
+#[test]
+fn an_existing_sidecar_conflict_blocks_its_new_raw_before_publication() {
+    assert_one_sided_companion_conflict("SHOT.xmp", b"old edits", "SHOT.NEF");
+}
+
+fn assert_one_sided_companion_conflict(occupied: &str, old_content: &[u8], absent: &str) {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("SHOT.NEF"), b"new raw").unwrap();
+    fs::write(source.path().join("SHOT.xmp"), b"new edits").unwrap();
+    fs::write(destination.path().join(occupied), old_content).unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "preserve", true)
+        .unwrap();
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.failed, 2);
+    assert_eq!(result.copied, 0);
+    assert!(!destination.path().join(absent).exists());
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 1);
+    assert_eq!(
+        fs::read(destination.path().join(occupied)).unwrap(),
+        old_content
+    );
+    assert_eq!(
+        fs::read(source.path().join("SHOT.NEF")).unwrap(),
+        b"new raw"
+    );
+    assert_eq!(
+        fs::read(source.path().join("SHOT.xmp")).unwrap(),
+        b"new edits"
+    );
+}
+
+#[test]
+fn a_member_failure_retains_completed_files_but_stops_later_companions() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("SHOT.JPG"), b"jpeg").unwrap();
+    fs::write(source.path().join("SHOT.NEF"), b"raw").unwrap();
+    fs::write(source.path().join("SHOT.xmp"), b"edits").unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "preserve", true)
+        .unwrap();
+    // The JPG is published first; the changed RAW must stop the following XMP.
+    fs::write(source.path().join("SHOT.NEF"), b"changed raw").unwrap();
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.status, "partial");
+    assert_eq!(result.copied, 1);
+    assert_eq!(result.failed, 2);
+    assert_eq!(
+        fs::read(destination.path().join("SHOT.JPG")).unwrap(),
+        b"jpeg"
+    );
+    assert!(!destination.path().join("SHOT.NEF").exists());
+    assert!(!destination.path().join("SHOT.xmp").exists());
+    let xmp = result
+        .items
+        .iter()
+        .find(|item| item.source.ends_with("SHOT.xmp"))
+        .unwrap();
+    assert!(xmp
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("companion group stopped"));
+    assert_eq!(fs::read(source.path().join("SHOT.xmp")).unwrap(), b"edits");
+}
+
+#[test]
+fn date_layout_does_not_mix_same_stem_groups_from_different_source_folders() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::create_dir(source.path().join("camera-a")).unwrap();
+    fs::create_dir(source.path().join("camera-b")).unwrap();
+    fs::write(
+        source.path().join("camera-a/SHOT.NEF"),
+        exif_tiff("2024:05:06"),
+    )
+    .unwrap();
+    fs::write(source.path().join("camera-a/SHOT.xmp"), b"edits a").unwrap();
+    fs::write(
+        source.path().join("camera-b/SHOT.JPG"),
+        exif_jpeg("2024:05:06"),
+    )
+    .unwrap();
+    fs::write(source.path().join("camera-b/SHOT.xmp"), b"edits b").unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "date", true)
+        .unwrap();
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!(result.failed, 4);
+    assert_eq!(result.copied, 0);
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 0);
+    assert!(result.items.iter().all(|item| item
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("Multiple source groups")));
+}
+
+#[cfg(windows)]
+#[test]
+fn unreadable_member_excludes_its_entire_companion_group_during_planning() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("SHOT.NEF"), b"raw").unwrap();
+    fs::write(source.path().join("SHOT.xmp"), b"edits").unwrap();
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(source.path().join("SHOT.NEF"))
+        .unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let plan = service
+        .plan(source.path(), destination.path(), "preserve", true)
+        .unwrap();
+    assert!(plan.items.is_empty());
+    assert_eq!(plan.total_bytes, 0);
+    assert!(plan
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("Incomplete XMP companion group SHOT")));
+    drop(locked);
+    assert_eq!(service.execute(&plan.id).unwrap().total, 0);
+    assert_eq!(fs::read_dir(destination.path()).unwrap().count(), 0);
+    assert_eq!(fs::read(source.path().join("SHOT.NEF")).unwrap(), b"raw");
 }
 
 #[test]

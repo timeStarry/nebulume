@@ -7,7 +7,7 @@ use neb_storage::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     io::{Cursor, Read},
     path::{Component, Path, PathBuf},
@@ -73,6 +73,7 @@ pub struct ImportResult {
 struct ReviewedImport {
     plan: ImportPlan,
     destination: PreparedDestination,
+    preserve_names: HashSet<String>,
 }
 pub struct IngestService {
     history_dir: PathBuf,
@@ -111,9 +112,27 @@ impl IngestService {
         }
         let destination_capability = PreparedDestination::new(&destination)?;
         let mut warnings = Vec::new();
-        let source_files = discover(&source, &mut warnings)?;
+        let source_discovery = discover(&source, &mut warnings)?;
+        let source_files = source_discovery.files;
+        let sidecar_groups: HashSet<_> = source_files
+            .iter()
+            .chain(&source_discovery.unavailable)
+            .filter(|key| extension_role(key) == "xmp")
+            .map(|key| capture_group(key))
+            .collect();
+        let preserve_names: HashSet<_> = source_files
+            .iter()
+            .chain(&source_discovery.unavailable)
+            .filter(|key| is_pairable(key) && sidecar_groups.contains(&capture_group(key)))
+            .cloned()
+            .collect();
+        let capture_dates = if layout == "date" {
+            resolve_capture_dates(&source, &source_files, &mut warnings)
+        } else {
+            HashMap::new()
+        };
         let destination_files = if deduplicate && destination.is_dir() {
-            discover(&destination, &mut warnings)?
+            discover(&destination, &mut warnings)?.files
         } else {
             Vec::new()
         };
@@ -143,8 +162,10 @@ impl IngestService {
                     bail!("Source changed during planning");
                 }
                 let (relative_path, date_source) = if layout == "date" {
-                    let date = capture_day(&source, &key);
-                    let source = if date.is_some() { "exif" } else { "unknown" };
+                    let (date, provenance) = capture_dates
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_else(|| (None, "unknown".to_string()));
                     (
                         format!(
                             "{}/{}",
@@ -154,14 +175,19 @@ impl IngestService {
                                 .context("Missing filename")?
                                 .to_string_lossy()
                         ),
-                        source.to_string(),
+                        provenance,
                     )
                 } else {
                     (key.clone(), "preserved".to_string())
                 };
+                let preserve_name = preserve_names.contains(&key);
+                let duplicate_identity = dedup_identity(&relative_path, &sha256, preserve_name);
                 let mut duplicate_path = None;
                 if let Some(candidates) = destination_by_size.get(&size) {
                     for candidate in candidates {
+                        if !same_dedup_role(&relative_path, candidate, preserve_name) {
+                            continue;
+                        }
                         let candidate_hash = if let Some(hash) = destination_hashes.get(candidate) {
                             Some(hash.clone())
                         } else {
@@ -187,10 +213,10 @@ impl IngestService {
                     }
                 }
                 if deduplicate && duplicate_path.is_none() {
-                    duplicate_path = batch_hashes.get(&sha256).cloned();
+                    duplicate_path = batch_hashes.get(&duplicate_identity).cloned();
                 }
                 if deduplicate {
-                    batch_hashes.entry(sha256.clone()).or_insert_with(|| {
+                    batch_hashes.entry(duplicate_identity).or_insert_with(|| {
                         duplicate_path
                             .clone()
                             .unwrap_or_else(|| relative_path.clone())
@@ -225,6 +251,36 @@ impl IngestService {
                 Err(error) => warnings.push(format!("Skipped {key}: {error}")),
             }
         }
+        let incomplete_groups: BTreeSet<_> = {
+            let planned_keys: HashSet<_> = items
+                .iter()
+                .map(|item| item.source_relative_path.as_str())
+                .collect();
+            preserve_names
+                .iter()
+                .filter(|key| !planned_keys.contains(key.as_str()))
+                .map(|key| capture_group(key))
+                .collect()
+        };
+        if !incomplete_groups.is_empty() {
+            for group in &incomplete_groups {
+                warnings.push(format!(
+                    "Incomplete XMP companion group {group} was excluded from the plan because a source member could not be read. No member of this group will be imported; restore source access and create a new plan"
+                ));
+            }
+            items.retain(|item| {
+                !incomplete_groups.contains(&capture_group(&item.source_relative_path))
+            });
+            duplicate_count = items
+                .iter()
+                .filter(|item| item.status == "duplicate")
+                .count();
+            total_bytes = items
+                .iter()
+                .filter(|item| item.status != "duplicate")
+                .map(|item| item.size)
+                .sum();
+        }
         let plan = ImportPlan {
             id: Uuid::new_v4().to_string(),
             source: source.to_string_lossy().into_owned(),
@@ -246,6 +302,7 @@ impl IngestService {
             ReviewedImport {
                 plan: plan.clone(),
                 destination: destination_capability,
+                preserve_names,
             },
         );
         Ok(plan)
@@ -280,22 +337,51 @@ impl IngestService {
         let journal_path = self.history_dir.join(format!("{}.json", result.id));
         atomic_json(&journal_path, &result)?;
         let scoped_destination = reviewed.destination.materialize()?;
+        let mut group_members: HashMap<String, Vec<&ImportItem>> = HashMap::new();
+        for item in &plan.items {
+            if reviewed.preserve_names.contains(&item.source_relative_path) {
+                group_members
+                    .entry(capture_group(&item.source_relative_path))
+                    .or_default()
+                    .push(item);
+            }
+        }
+        let mut group_errors = conflicting_companion_groups(&plan.items, &group_members);
+        let mut checked_groups = HashSet::new();
         let mut verified_batch: HashMap<String, String> = HashMap::new();
         for item in &plan.items {
-            let item_result = match execute_item(
-                source,
-                destination,
-                &scoped_destination,
-                item,
-                plan.deduplicate,
-                verified_batch.get(&item.sha256).map(String::as_str),
-            ) {
+            let preserve_name = reviewed.preserve_names.contains(&item.source_relative_path);
+            let group = preserve_name.then(|| capture_group(&item.source_relative_path));
+            let duplicate_identity =
+                dedup_identity(&item.relative_path, &item.sha256, preserve_name);
+            let outcome = (|| -> Result<ItemResult> {
+                if let Some(group) = &group {
+                    if let Some(error) = group_errors.get(group) {
+                        bail!("{error}");
+                    }
+                    if checked_groups.insert(group.clone()) {
+                        preflight_companion_targets(
+                            &scoped_destination,
+                            &group_members[group],
+                            plan.deduplicate,
+                        )?;
+                    }
+                }
+                execute_item(
+                    source,
+                    destination,
+                    &scoped_destination,
+                    item,
+                    plan.deduplicate,
+                    preserve_name,
+                    verified_batch.get(&duplicate_identity).map(String::as_str),
+                )
+            })();
+            let item_result = match outcome {
                 Ok(item_result) => {
                     if let Ok(key) = Path::new(&item_result.destination).strip_prefix(destination) {
-                        verified_batch.insert(
-                            item.sha256.clone(),
-                            key.to_string_lossy().replace('\\', "/"),
-                        );
+                        verified_batch
+                            .insert(duplicate_identity, key.to_string_lossy().replace('\\', "/"));
                     }
                     if item_result.status == "duplicate" {
                         result.duplicates += 1;
@@ -305,6 +391,14 @@ impl IngestService {
                     item_result
                 }
                 Err(error) => {
+                    if let Some(group) = group {
+                        group_errors.entry(group).or_insert_with(|| {
+                            format!(
+                                "XMP companion group stopped after {} failed: {error:#}. Already verified files are retained; no remaining member will be published. Choose a new destination directory and retry the complete group",
+                                item.source_relative_path
+                            )
+                        });
+                    }
                     result.failed += 1;
                     ItemResult {
                         source: item.source.clone(),
@@ -315,7 +409,7 @@ impl IngestService {
                         status: "failed".to_string(),
                         size: item.size,
                         sha256: None,
-                        error: Some(error.to_string()),
+                        error: Some(format!("{error:#}")),
                     }
                 }
             };
@@ -355,12 +449,67 @@ impl IngestService {
     }
 }
 
+fn preflight_companion_targets(
+    destination: &ScopedDestination,
+    items: &[&ImportItem],
+    deduplicate: bool,
+) -> Result<()> {
+    for item in items {
+        if destination.exists(&item.relative_path)?
+            && !(deduplicate && existing_matches(destination, &item.relative_path, item))
+        {
+            bail!(
+                "Filename conflict at {} blocks the entire XMP companion group before publication. Choose a new destination directory; all source files are retained",
+                item.relative_path
+            );
+        }
+    }
+    Ok(())
+}
+
+fn conflicting_companion_groups(
+    items: &[ImportItem],
+    groups: &HashMap<String, Vec<&ImportItem>>,
+) -> HashMap<String, String> {
+    let mut claims: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for item in items
+        .iter()
+        .filter(|item| is_pairable(&item.source_relative_path))
+    {
+        // Reserve the complete target stem, not just each extension. This keeps
+        // a RAW from one source folder from being paired with another folder's
+        // JPEG/XMP, including on a case-insensitive destination filesystem.
+        claims
+            .entry(capture_group(&item.relative_path).to_lowercase())
+            .or_default()
+            .insert(capture_group(&item.source_relative_path));
+    }
+    let mut errors = HashMap::new();
+    for (target_stem, source_groups) in claims {
+        if source_groups.len() < 2 {
+            continue;
+        }
+        for group in &source_groups {
+            if groups.contains_key(group) {
+                errors.entry(group.clone()).or_insert_with(|| {
+                    format!(
+                        "Multiple source groups map to target stem {target_stem}: {}. The entire XMP companion group is blocked to prevent mixed pairing. Choose a new destination directory or preserve source folders",
+                        source_groups.iter().cloned().collect::<Vec<_>>().join(", ")
+                    )
+                });
+            }
+        }
+    }
+    errors
+}
+
 fn execute_item(
     source: &Path,
     destination: &Path,
     scoped: &ScopedDestination,
     item: &ImportItem,
     deduplicate: bool,
+    preserve_name: bool,
     batch_duplicate: Option<&str>,
 ) -> Result<ItemResult> {
     validate_key(&item.source_relative_path, false)?;
@@ -390,6 +539,9 @@ fn execute_item(
         if scoped.exists(&key)? {
             if deduplicate && existing_matches(scoped, &key, item) {
                 return Ok(success(item, target, "duplicate"));
+            }
+            if preserve_name {
+                bail!("Filename conflict in an XMP companion group: individual files cannot be renamed without breaking pairing. Choose a new destination directory; all source files are retained");
             }
             continue;
         }
@@ -503,9 +655,15 @@ fn supported(path: &Path) -> bool {
     .contains(&extension.as_str())
 }
 
-fn discover(root: &Path, warnings: &mut Vec<String>) -> Result<Vec<String>> {
+struct DiscoveredFiles {
+    files: Vec<String>,
+    unavailable: Vec<String>,
+}
+
+fn discover(root: &Path, warnings: &mut Vec<String>) -> Result<DiscoveredFiles> {
     let mut pending = vec![(PathBuf::new(), 0usize)];
     let mut files = Vec::new();
+    let mut unavailable = Vec::new();
     while let Some((relative, depth)) = pending.pop() {
         if depth > 64 {
             warnings.push(format!(
@@ -536,9 +694,21 @@ fn discover(root: &Path, warnings: &mut Vec<String>) -> Result<Vec<String>> {
             }
             if let Err(error) = safe_join(root, &key, false) {
                 warnings.push(format!("Skipped {key}: {error}"));
+                if supported(&path) {
+                    unavailable.push(key);
+                }
                 continue;
             }
-            let metadata = entry.metadata()?;
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    warnings.push(format!("Skipped {key}: {error}"));
+                    if supported(&path) {
+                        unavailable.push(key);
+                    }
+                    continue;
+                }
+            };
             if metadata.is_dir() {
                 pending.push((path, depth + 1));
             } else if metadata.is_file() && supported(&path) {
@@ -550,7 +720,96 @@ fn discover(root: &Path, warnings: &mut Vec<String>) -> Result<Vec<String>> {
         }
     }
     files.sort();
-    Ok(files)
+    Ok(DiscoveredFiles { files, unavailable })
+}
+
+fn extension_role(key: &str) -> String {
+    let extension = Path::new(key)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "jpg" => "jpeg".to_string(),
+        "tif" => "tiff".to_string(),
+        _ => extension,
+    }
+}
+
+fn is_pairable(key: &str) -> bool {
+    !matches!(
+        extension_role(key).as_str(),
+        "mov" | "mp4" | "avi" | "mkv" | "mts" | "m2ts"
+    )
+}
+
+fn capture_group(key: &str) -> String {
+    // Exact directory and stem identity avoids guessing across different cards,
+    // camera folders, or case-distinct filenames on a case-sensitive source.
+    Path::new(key)
+        .with_extension("")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn resolve_capture_dates(
+    root: &Path,
+    keys: &[String],
+    warnings: &mut Vec<String>,
+) -> HashMap<String, (Option<String>, String)> {
+    let mut direct = HashMap::new();
+    let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for key in keys {
+        if !is_pairable(key) || extension_role(key) == "xmp" {
+            continue;
+        }
+        if let Some(date) = capture_day(root, key) {
+            groups
+                .entry(capture_group(key))
+                .or_default()
+                .insert(date.clone());
+            direct.insert(key.clone(), date);
+        }
+    }
+    for (group, dates) in &groups {
+        if dates.len() > 1 {
+            warnings.push(format!(
+                "Conflicting EXIF capture dates for {group}: {}. Images retain their own dates; companions without an unambiguous date remain in unknown-date.",
+                dates.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+    keys.iter()
+        .map(|key| {
+            let resolved = if let Some(date) = direct.get(key) {
+                (Some(date.clone()), "exif".to_string())
+            } else if is_pairable(key) {
+                match groups.get(&capture_group(key)) {
+                    Some(dates) if dates.len() == 1 => {
+                        (dates.first().cloned(), "paired_exif".to_string())
+                    }
+                    _ => (None, "unknown".to_string()),
+                }
+            } else {
+                (None, "unknown".to_string())
+            };
+            (key.clone(), resolved)
+        })
+        .collect()
+}
+
+fn same_dedup_role(target: &str, candidate: &str, preserve_name: bool) -> bool {
+    let role = extension_role(target);
+    role == extension_role(candidate) && (!(preserve_name || role == "xmp") || target == candidate)
+}
+
+fn dedup_identity(target: &str, hash: &str, preserve_name: bool) -> String {
+    let role = extension_role(target);
+    if preserve_name || role == "xmp" {
+        format!("{role}\0{target}\0{hash}")
+    } else {
+        format!("{role}\0{hash}")
+    }
 }
 
 fn capture_day(root: &Path, key: &str) -> Option<String> {

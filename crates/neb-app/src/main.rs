@@ -23,7 +23,9 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app.path().app_local_data_dir()?;
+            let data_dir = std::env::var_os("NEBULUME_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or(app.path().app_local_data_dir()?);
             app.manage(Arc::new(Service::open(data_dir)?));
             Ok(())
         })
