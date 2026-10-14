@@ -178,6 +178,7 @@ try {
               return JSON.parse(sessionStorage.getItem('smoke-viewer-context'));
             if (cmd === 'plugin:dialog|save') return exportPath;
             if (cmd === 'plugin:dialog|open') return null;
+            if (cmd === 'plugin:window|set_title') return null;
             if (cmd !== 'execute') throw new Error('Unexpected test IPC ' + cmd);
             const response = await fetch('/__neb_rpc', {
               method: 'POST',

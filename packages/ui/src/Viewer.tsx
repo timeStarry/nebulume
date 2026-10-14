@@ -46,10 +46,11 @@ export default function Viewer(props: {
     setCropMode(false);
     try {
       const next = await execute<Asset>('asset.get', { id: nextId });
-      if (token === request) {
+      if (token === request && id() === nextId) {
         setAsset({ ...next, preview_revision: revisions.get(next.id) });
         setCrop({ ...(next.crop || fullCrop) });
         document.title = `${next.filename} — Nebulume`;
+        if (desktop) await getCurrentWindow().setTitle(document.title);
       }
     } catch (e) {
       if (token === request) setError(errorMessage(e));

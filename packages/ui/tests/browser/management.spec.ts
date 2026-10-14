@@ -106,6 +106,9 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
               },
             ];
             break;
+          case '$native/plugin:window|set_title':
+            result = null;
+            break;
           case 'import.history':
             result = [];
             break;
@@ -363,4 +366,12 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
     .toBeGreaterThan(histogramsBefore);
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('.viewer-filename strong')).toHaveText('Second.png');
+  await expect
+    .poll(() =>
+      calls
+        .filter((call) => call.command === '$native/plugin:window|set_title')
+        .map((call) => call.params.value),
+    )
+    .toEqual(['Mountain.png — Nebulume', 'Second.png — Nebulume']);
+  await expect(page).toHaveTitle('Second.png — Nebulume');
 });
