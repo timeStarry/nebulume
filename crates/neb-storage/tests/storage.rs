@@ -70,9 +70,10 @@ fn symlinks_cannot_escape_local_root() {
 }
 
 fn server(
-    body: &'static str,
+    body: impl Into<String>,
     inspect: impl FnOnce(String) + Send + 'static,
 ) -> (String, std::thread::JoinHandle<()>) {
+    let body = body.into();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let handle = std::thread::spawn(move || {
@@ -118,6 +119,159 @@ fn webdav_lists_and_rejects_an_out_of_root_href() {
     let config = registry.add(input).unwrap();
     assert!(registry.browse(&config.id, "", 50, None).is_err());
     thread.join().unwrap();
+}
+
+fn browse_webdav_xml(body: String) -> anyhow::Result<Vec<neb_storage::StorageEntry>> {
+    let (endpoint, thread) = server(body, |request| {
+        assert!(request.starts_with("PROPFIND /album/ HTTP/1.1"));
+        assert!(request.to_ascii_lowercase().contains("depth: 1"));
+    });
+    let data = tempfile::tempdir().unwrap();
+    let mut registry = StorageRegistry::open(data.path()).unwrap();
+    let mut input = request("webdav", &endpoint);
+    input.root = Some("album".to_string());
+    let config = registry.add(input).unwrap();
+    let result = registry.browse(&config.id, "", 50, None);
+    thread.join().unwrap();
+    result.map(|page| page.entries)
+}
+
+#[test]
+fn webdav_content_lengths_accept_empty_missing_whitespace_and_unsigned_numbers() {
+    let cases = [
+        ("folder/", "<d:getcontentlength/>", true, 0),
+        (
+            "empty.jpg",
+            "<d:getcontentlength></d:getcontentlength>",
+            false,
+            0,
+        ),
+        ("self-closing.jpg", "<d:getcontentlength/>", false, 0),
+        ("missing.jpg", "", false, 0),
+        (
+            "whitespace.jpg",
+            "<d:getcontentlength> \t\r\n </d:getcontentlength>",
+            false,
+            0,
+        ),
+        (
+            "zero.jpg",
+            "<d:getcontentlength>0</d:getcontentlength>",
+            false,
+            0,
+        ),
+        (
+            "number.jpg",
+            "<d:getcontentlength>42</d:getcontentlength>",
+            false,
+            42,
+        ),
+        (
+            "padded.jpg",
+            "<d:getcontentlength> \n 123 \t </d:getcontentlength>",
+            false,
+            123,
+        ),
+        (
+            "maximum.jpg",
+            "<d:getcontentlength>18446744073709551615</d:getcontentlength>",
+            false,
+            u64::MAX,
+        ),
+    ];
+    // The collection's own response often contains an empty size too. It is not an entry.
+    let mut xml = String::from("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/album/</d:href><d:propstat><d:prop><d:getcontentlength></d:getcontentlength><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>");
+    for (name, length, directory, _) in cases {
+        let resource_type = if directory {
+            "<d:resourcetype><d:collection/></d:resourcetype>"
+        } else {
+            "<d:resourcetype/>"
+        };
+        xml.push_str(&format!("<d:response><d:href>/album/{name}</d:href><d:propstat><d:prop>{length}{resource_type}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"));
+    }
+    xml.push_str("</d:multistatus>");
+    let entries = browse_webdav_xml(xml).unwrap();
+    assert_eq!(entries.len(), cases.len());
+    for (name, _, is_dir, size) in cases {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.key == name.trim_end_matches('/'))
+            .unwrap();
+        assert_eq!((entry.is_dir, entry.size), (is_dir, size), "{name}");
+    }
+}
+
+#[test]
+fn webdav_failed_propstats_do_not_parse_or_override_successful_properties() {
+    for invalid_length in ["", "garbage"] {
+        for failed_first in [false, true] {
+            let failed = format!("<d:propstat><d:prop><d:getcontentlength>{invalid_length}</d:getcontentlength><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>");
+            let success = "<d:propstat><d:prop><d:resourcetype/><d:getcontentlength>27</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>";
+            let properties = if failed_first {
+                format!("{failed}{success}")
+            } else {
+                format!("{success}{failed}")
+            };
+            let entries = browse_webdav_xml(format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/album/photo.jpg</d:href>{properties}</d:response></d:multistatus>"))
+                .unwrap_or_else(|error| panic!("failed_first={failed_first}, value={invalid_length:?}: {error:#}"));
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].key, "photo.jpg");
+            assert_eq!(entries[0].size, 27);
+            assert!(!entries[0].is_dir);
+        }
+    }
+}
+
+#[test]
+fn webdav_merges_resource_type_and_length_across_successful_propstats() {
+    for length_first in [false, true] {
+        let mut xml = String::from("<d:multistatus xmlns:d=\"DAV:\">");
+        for (name, resource_type) in [("folder/", "<d:collection/>"), ("photo.jpg", "")] {
+            let resource = format!("<d:propstat><d:prop><d:resourcetype>{resource_type}</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>");
+            let length = "<d:propstat><d:prop><d:getcontentlength> 43 </d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>";
+            let properties = if length_first {
+                format!("{length}{resource}")
+            } else {
+                format!("{resource}{length}")
+            };
+            xml.push_str(&format!(
+                "<d:response><d:href>/album/{name}</d:href>{properties}</d:response>"
+            ));
+        }
+        xml.push_str("</d:multistatus>");
+        let entries = browse_webdav_xml(xml).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "folder");
+        assert!(entries[0].is_dir, "length_first={length_first}");
+        assert_eq!(entries[1].key, "photo.jpg");
+        assert!(!entries[1].is_dir, "length_first={length_first}");
+        assert_eq!(entries[1].size, 43, "length_first={length_first}");
+    }
+    for second_length in [43, 44] {
+        let result = browse_webdav_xml(format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/album/photo.jpg</d:href><d:propstat><d:prop><d:getcontentlength>43</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat><d:propstat><d:prop><d:getcontentlength>{second_length}</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"));
+        if second_length == 43 {
+            assert_eq!(result.unwrap()[0].size, 43);
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("Conflicting WebDAV getcontentlength"));
+        }
+    }
+}
+
+#[test]
+fn webdav_successful_file_lengths_reject_nonempty_invalid_negative_and_overflow_values() {
+    for invalid_length in ["garbage", "-1", "18446744073709551616"] {
+        let result = browse_webdav_xml(format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/album/photo.jpg</d:href><d:propstat><d:prop><d:getcontentlength>{invalid_length}</d:getcontentlength><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"));
+        let error = result.expect_err("A malformed nonempty file size must not become zero");
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid WebDAV getcontentlength"),
+            "{invalid_length}: {error:#}"
+        );
+    }
 }
 
 #[test]

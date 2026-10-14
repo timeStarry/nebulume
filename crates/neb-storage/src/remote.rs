@@ -139,7 +139,9 @@ struct Propstat {
 #[derive(Deserialize, Default)]
 struct Prop {
     #[serde(default)]
-    getcontentlength: Option<u64>,
+    // DAV servers can return an empty property, including in a failed propstat.
+    // Keep the wire value until its status is known instead of rejecting the XML.
+    getcontentlength: Option<String>,
     #[serde(default)]
     resourcetype: ResourceType,
 }
@@ -197,15 +199,37 @@ fn browse_dav(
         if suffix.contains('/') {
             continue;
         }
-        if let Some(propstat) = response
+        let mut found = false;
+        let mut is_dir = false;
+        let mut size = None;
+        for propstat in response
             .properties
             .into_iter()
-            .find(|p| p.status.contains(" 200 "))
+            .filter(|p| p.status.split_whitespace().nth(1) == Some("200"))
         {
+            found = true;
+            is_dir |= propstat.prop.resourcetype.collection.is_some();
+            if let Some(value) = propstat.prop.getcontentlength {
+                let value = value.trim();
+                if !value.is_empty() {
+                    let parsed = if value.bytes().all(|byte| byte.is_ascii_digit()) {
+                        value.parse::<u64>().ok()
+                    } else {
+                        None
+                    }
+                    .context("Invalid WebDAV getcontentlength: expected a non-negative integer within u64 range")?;
+                    if size.is_some_and(|previous| previous != parsed) {
+                        bail!("Conflicting WebDAV getcontentlength properties");
+                    }
+                    size = Some(parsed);
+                }
+            }
+        }
+        if found {
             entries.push(StorageEntry {
                 key,
-                size: propstat.prop.getcontentlength.unwrap_or(0),
-                is_dir: propstat.prop.resourcetype.collection.is_some(),
+                size: size.unwrap_or(0),
+                is_dir,
             });
         }
     }
