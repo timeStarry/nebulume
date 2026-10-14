@@ -16,14 +16,23 @@ import {
   trustedFingerprint,
 } from './tls-trust';
 import Icon from './Icon';
+import StorageError from './StorageError';
 
 export default function TlsCertificatePanel(props: {
   endpoint: string;
   savedFingerprint?: string | null;
+  savedEndpoint?: string;
   disabled?: boolean;
   onTrustChange: (fingerprint: string | null | undefined) => void;
 }) {
-  const [trust, setTrust] = createSignal(initialTlsTrust(props.endpoint, !!props.savedFingerprint));
+  const [trust, setTrust] = createSignal(
+    initialTlsTrust(
+      props.endpoint,
+      props.savedFingerprint && props.endpoint === props.savedEndpoint
+        ? props.savedFingerprint
+        : !!props.savedFingerprint,
+    ),
+  );
   let disposed = false;
   onCleanup(() => {
     disposed = true;
@@ -32,6 +41,7 @@ export default function TlsCertificatePanel(props: {
     on(
       () => props.endpoint,
       (endpoint) => setTrust((state) => changeTrustEndpoint(state, endpoint)),
+      { defer: true },
     ),
   );
   createEffect(() => props.onTrustChange(trustedFingerprint(trust())));
@@ -40,7 +50,7 @@ export default function TlsCertificatePanel(props: {
     if (!desktop || endpointProtocol(props.endpoint) !== 'https:' || props.disabled) return;
     const issue = certificateEndpointIssue(props.endpoint);
     if (issue) {
-      setTrust((state) => ({ ...state, certificate: undefined, confirmed: false, error: issue }));
+      setTrust((state) => ({ ...startCertificateInspection(state), pending: false, error: issue }));
       return;
     }
     const next = startCertificateInspection(trust());
@@ -100,6 +110,11 @@ export default function TlsCertificatePanel(props: {
                 <div class="saved-fingerprint">
                   <span>已保存的 SHA-256</span>
                   <code>{displayFingerprint(props.savedFingerprint!)}</code>
+                  <Show when={trust().retainedFingerprint}>
+                    <span>
+                      继续使用此地址已信任的证书。重新读取或修改校验方式后，需要再次核对。
+                    </span>
+                  </Show>
                 </div>
               </Show>
               <button
@@ -118,9 +133,9 @@ export default function TlsCertificatePanel(props: {
                 读取证书不发送用户名、密码或密钥，也不会保存信任。
               </p>
               <Show when={trust().error}>
-                <p class="form-error" role="alert">
-                  {trust().error}
-                </p>
+                <div class="form-error" role="alert">
+                  <StorageError error={trust().error} />
+                </div>
               </Show>
               <Show when={trust().certificate}>
                 {(certificate) => (

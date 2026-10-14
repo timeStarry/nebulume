@@ -57,6 +57,13 @@ export function Thumbnail(props: {
       class={`thumbnail ${props.selected ? 'selected' : ''} ${props.compact ? 'compact' : ''}`}
       onClick={props.onSelect}
       onDblClick={props.onOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          event.stopPropagation();
+          props.onOpen();
+        }
+      }}
       aria-label={`${props.asset.filename}，${props.asset.rating} 星`}
       aria-pressed={!!props.selected}
       title={props.asset.filename}

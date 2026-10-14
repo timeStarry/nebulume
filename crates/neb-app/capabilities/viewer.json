@@ -1,0 +1,13 @@
+{
+  "identifier": "viewer",
+  "description": "Independent local image viewer and explicit export dialog",
+  "windows": ["viewer-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
+}

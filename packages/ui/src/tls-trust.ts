@@ -12,6 +12,7 @@ export interface TlsTrustState {
   pending: boolean;
   confirmed: boolean;
   certificate?: TlsCertificate;
+  retainedFingerprint?: string;
   error: string;
 }
 
@@ -34,13 +35,14 @@ export function certificateEndpointIssue(endpoint: string): string | undefined {
   }
 }
 
-export function initialTlsTrust(endpoint: string, pinned = false): TlsTrustState {
+export function initialTlsTrust(endpoint: string, pinned: boolean | string = false): TlsTrustState {
   return {
     endpoint,
     mode: pinned ? 'pinned' : 'standard',
     version: 0,
     pending: false,
     confirmed: false,
+    retainedFingerprint: typeof pinned === 'string' ? normalizeFingerprint(pinned) : undefined,
     error: '',
   };
 }
@@ -58,6 +60,7 @@ export function startCertificateInspection(state: TlsTrustState): TlsTrustState 
     ...state,
     version: state.version + 1,
     certificate: undefined,
+    retainedFingerprint: undefined,
     confirmed: false,
     pending: true,
     error: '',
@@ -123,6 +126,7 @@ export function failCertificateInspection(
 // undefined blocks saving; null explicitly selects normal certificate validation.
 export function trustedFingerprint(state: TlsTrustState): string | null | undefined {
   if (endpointProtocol(state.endpoint) !== 'https:' || state.mode === 'standard') return null;
+  if (!state.pending && state.retainedFingerprint) return state.retainedFingerprint;
   return !state.pending && state.confirmed && state.certificate
     ? normalizeFingerprint(state.certificate.sha256)
     : undefined;

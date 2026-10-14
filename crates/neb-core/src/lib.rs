@@ -10,6 +10,10 @@ mod model;
 pub use catalog::Core;
 pub use model::{Asset, Crop, Library};
 
+pub fn image_kind(extension: &str) -> Option<&'static str> {
+    imaging::kind(extension)
+}
+
 pub fn capabilities() -> serde_json::Value {
     serde_json::json!({
         "catalog": "sqlite_fts5",

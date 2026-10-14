@@ -9,6 +9,9 @@ pub struct Library {
     pub name: String,
     pub root: String,
     pub created_at: String,
+    pub storage_id: Option<String>,
+    pub source_prefix: String,
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -58,6 +61,7 @@ pub struct Asset {
     pub metadata: BTreeMap<String, String>,
     pub crop: Option<Crop>,
     pub availability: String,
+    pub source_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

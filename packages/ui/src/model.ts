@@ -3,6 +3,13 @@ export interface Library {
   name: string;
   root: string;
   created_at: string;
+  storage_id?: string | null;
+  source_prefix?: string;
+  source_kind?: 'local' | 'webdav' | 's3';
+  source_name?: string;
+  source_endpoint?: string;
+  connected?: boolean;
+  hidden?: boolean;
 }
 export interface Crop {
   x: number;
@@ -25,6 +32,9 @@ export interface Asset {
   metadata: Record<string, string>;
   crop?: Crop | null;
   availability: string;
+  source_key?: string | null;
+  /** Client-side refresh token; never persisted to the catalog. */
+  preview_revision?: number;
 }
 export interface Preview {
   data_url: string;
@@ -43,13 +53,35 @@ export interface Histogram {
 export interface StorageConfig {
   id: string;
   name: string;
-  kind: 'webdav' | 's3';
+  kind: 'local' | 'webdav' | 's3';
   endpoint: string;
   root?: string;
   bucket?: string;
   region?: string;
   connected?: boolean;
   tls_certificate_sha256?: string | null;
+  remember_credentials?: boolean;
+  credential_status?: 'system' | 'session' | 'missing' | 'unavailable' | 'not_required';
+}
+export interface Volume {
+  id: string;
+  name: string;
+  path: string;
+  kind: string;
+  removable: boolean;
+  available_bytes?: number | null;
+}
+export interface StorageCheck {
+  id: string;
+  connected: boolean;
+  credential_status: StorageConfig['credential_status'];
+  checked_at: string;
+  error: string | null;
+}
+export interface ScanResult {
+  indexed: number;
+  skipped: number;
+  errors: { path: string; message: string }[];
 }
 export interface TlsCertificate {
   endpoint: string;
@@ -101,6 +133,9 @@ export interface ImportResult {
     error?: string;
   }[];
   originals_retained: boolean;
+  library_id?: string;
+  indexing?: ScanResult;
+  indexing_error?: string;
   [key: string]: unknown;
 }
 
@@ -137,8 +172,16 @@ export function cropFromPoints(
     height: Math.max(0.005, clamp(Math.max(start.y, end.y)) - y),
   };
 }
-export function imageRequestKey(asset: Pick<Asset, 'id' | 'crop'>, uncropped = false): string {
-  return JSON.stringify({ id: asset.id, crop: uncropped ? null : asset.crop || null, uncropped });
+export function imageRequestKey(
+  asset: Pick<Asset, 'id' | 'crop' | 'preview_revision'>,
+  uncropped = false,
+): string {
+  return JSON.stringify({
+    id: asset.id,
+    crop: uncropped ? null : asset.crop || null,
+    uncropped,
+    revision: asset.preview_revision || 0,
+  });
 }
 export function histogramFromPixels(data: ArrayLike<number>): Omit<Histogram, 'source'> {
   const red = Array(256).fill(0),

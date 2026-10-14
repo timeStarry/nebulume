@@ -138,14 +138,14 @@ try {
       headless: true,
       ...(process.env.NEB_BROWSER_CHANNEL ? { channel: process.env.NEB_BROWSER_CHANNEL } : {}),
     });
-    const page = await browser.newPage({
+    const context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
       deviceScaleFactor: 1,
     });
     const errors = [];
-    page.on('pageerror', (e) => errors.push(e.message));
+    context.on('page', (page) => page.on('pageerror', (e) => errors.push(e.message)));
     const exportPath = join(root, 'ui-export.jpg');
-    await page.route('**/__neb_rpc', async (route) => {
+    await context.route('**/__neb_rpc', async (route) => {
       const { command, params } = route.request().postDataJSON();
       try {
         const result = await rpc(command, params);
@@ -154,11 +154,28 @@ try {
         await route.fulfill({ json: { error: { code: e.code, message: e.message } } });
       }
     });
-    await page.addInitScript(
+    await context.addInitScript(
       ({ exportPath }) => {
         window.isTauri = true;
         window.__TAURI_INTERNALS__ = {
+          transformCallback: () => 1,
+          unregisterCallback: () => {},
+          metadata: {
+            currentWindow: { label: 'smoke-viewer' },
+            currentWebview: { label: 'smoke-viewer' },
+          },
           invoke: async (cmd, args) => {
+            if (cmd.startsWith('plugin:event|')) return 1;
+            if (cmd === 'open_viewer') {
+              sessionStorage.setItem(
+                'smoke-viewer-context',
+                JSON.stringify({ asset_id: args.assetId, asset_ids: args.assetIds }),
+              );
+              window.open('/?viewer=1', '_blank');
+              return 'smoke-viewer';
+            }
+            if (cmd === 'viewer_context')
+              return JSON.parse(sessionStorage.getItem('smoke-viewer-context'));
             if (cmd === 'plugin:dialog|save') return exportPath;
             if (cmd === 'plugin:dialog|open') return null;
             if (cmd !== 'execute') throw new Error('Unexpected test IPC ' + cmd);
@@ -175,27 +192,36 @@ try {
       },
       { exportPath },
     );
+    const page = await context.newPage();
     await page.goto('http://127.0.0.1:5173');
+    await page.getByRole('button', { name: '打开图片库 光影试验 · Smoke' }).click();
     await page.locator('.thumbnail').first().waitFor();
     await page.locator('.thumbnail img').first().waitFor();
+    const opened = page.waitForEvent('popup');
     await page.locator('.thumbnail').first().dblclick();
-    await page.locator('.main-photo').waitFor();
-    await page.getByRole('button', { name: '评为 5 星', exact: true }).click();
-    await page.waitForFunction(
+    const viewer = await opened;
+    await viewer.locator('.main-photo').waitFor();
+    assert.equal(await viewer.locator('.manager-navigation').count(), 0);
+    await viewer.getByRole('button', { name: '影像信息（I）' }).click();
+    await viewer.getByRole('button', { name: '评为 5 星', exact: true }).click();
+    await viewer.waitForFunction(
       () =>
         document.querySelector('[aria-label="评为 5 星"]')?.getAttribute('aria-pressed') === 'true',
     );
-    await page.getByRole('button', { name: '裁剪', exact: true }).first().click();
-    await page.getByLabel(/宽度/).fill('40');
-    await page.getByRole('button', { name: '保存裁剪', exact: true }).click();
-    await page.waitForFunction(() => !document.querySelector('.crop-panel'));
-    await page.getByRole('button', { name: '导出 JPEG', exact: true }).click();
-    await page.waitForFunction(() => document.body.textContent.includes('已导出：'));
+    await viewer.getByRole('button', { name: '裁剪（C）', exact: true }).click();
+    await viewer.getByLabel(/宽度/).fill('40');
+    await viewer.getByRole('button', { name: '保存裁剪', exact: true }).click();
+    await viewer.waitForFunction(() => !document.querySelector('.crop-panel'));
+    await viewer.getByRole('button', { name: '导出 JPEG', exact: true }).first().click();
+    await viewer.waitForFunction(() => document.body.textContent.includes('已导出：'));
     await mkdir('artifacts', { recursive: true });
-    await page.screenshot({ path: 'artifacts/workspace-viewer.png', fullPage: true });
-    await page.keyboard.press('g');
+    await viewer.screenshot({ path: 'artifacts/workspace-viewer.png', fullPage: true });
+    await viewer.close();
+    await page.bringToFront();
     await page.locator('.photo-grid').waitFor();
     await page.screenshot({ path: 'artifacts/workspace-grid.png', fullPage: true });
+    await page.locator('.breadcrumb-button').click();
+    await page.screenshot({ path: 'artifacts/workspace-libraries.png', fullPage: true });
     await page.setViewportSize({ width: 960, height: 720 });
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),

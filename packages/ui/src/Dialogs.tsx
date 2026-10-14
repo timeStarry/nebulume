@@ -1,17 +1,9 @@
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
-import { chooseDirectory, chooseSave, desktop, execute } from './api';
-import {
-  bytes,
-  errorMessage,
-  type ImportPlan,
-  type ImportResult,
-  type Library,
-  type StorageConfig,
-  type StorageEntry,
-} from './model';
+import { chooseDirectory, desktop, execute } from './api';
+import { errorMessage, type Library, type StorageConfig } from './model';
 import Icon from './Icon';
 import TlsCertificatePanel from './TlsCertificatePanel';
-import { displayFingerprint, endpointProtocol } from './tls-trust';
+import StorageError from './StorageError';
 
 export function Modal(props: {
   title: string;
@@ -87,32 +79,56 @@ export function Modal(props: {
   );
 }
 
-export function LibraryDialog(props: { onClose: () => void; onAdded: (library: Library) => void }) {
-  const [name, setName] = createSignal('');
-  const [root, setRoot] = createSignal('');
+export function LibraryDialog(props: {
+  sources: StorageConfig[];
+  initialSource?: StorageConfig;
+  initialPrefix?: string;
+  onSourceAdded: (source: StorageConfig) => void;
+  onClose: () => void;
+  onAdded: (library: Library) => void;
+}) {
+  const [name, setName] = createSignal(
+    props.initialPrefix?.replace(/\/$/, '').split('/').pop() || props.initialSource?.name || '',
+  );
+  const [sourceId, setSourceId] = createSignal(
+    props.initialSource?.id || props.sources[0]?.id || '',
+  );
+  const [prefix, setPrefix] = createSignal(props.initialPrefix || '');
   const [error, setError] = createSignal('');
   const [busy, setBusy] = createSignal(false);
-  async function browse() {
+  async function browseLocal() {
     try {
-      const directory = await chooseDirectory('选择图片库文件夹');
-      if (directory) {
-        setRoot(directory);
-        if (!name()) setName(directory.split(/[\\/]/).filter(Boolean).pop() || '图片库');
-      }
+      const path = await chooseDirectory('选择图片库文件夹');
+      if (!path) return;
+      setBusy(true);
+      const source = await execute<StorageConfig>('storage.add', {
+        kind: 'local',
+        endpoint: path,
+        name: path.split(/[\\/]/).filter(Boolean).pop() || '本地文件夹',
+      });
+      props.onSourceAdded(source);
+      setSourceId(source.id);
+      setPrefix('');
+      if (!name()) setName(source.name);
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      setBusy(false);
     }
   }
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    setError('');
+    if (!sourceId()) return;
     setBusy(true);
+    setError('');
     try {
-      const library = await execute<Library>('library.add', {
-        name: name().trim(),
-        root: root().trim(),
-      });
-      props.onAdded(library);
+      props.onAdded(
+        await execute<Library>('library.add', {
+          name: name().trim(),
+          storage_id: sourceId(),
+          prefix: prefix().trim(),
+        }),
+      );
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -121,53 +137,67 @@ export function LibraryDialog(props: { onClose: () => void; onAdded: (library: L
   }
   return (
     <Modal
-      title="添加本地图片库"
-      subtitle="建立索引，保留文件原有位置与目录结构。"
+      title="建立图片库"
+      subtitle="选择一个存储位置并建立索引，保留文件原有目录结构。"
       onClose={props.onClose}
       busy={busy()}
     >
-      <form onSubmit={submit} class="dialog-form">
+      <form class="dialog-form" onSubmit={submit}>
         <label>
           图片库名称
           <input
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
-            placeholder="例如：我的摄影作品"
+            placeholder="例如：旅行摄影"
             required
             maxLength={100}
           />
         </label>
         <label>
-          所在文件夹
-          <div class="path-field">
-            <input
-              value={root()}
-              onInput={(e) => setRoot(e.currentTarget.value)}
-              placeholder="选择包含照片的文件夹"
-              required
-            />
-            <button type="button" class="button" onClick={browse}>
-              浏览…
-            </button>
-          </div>
+          存储源
+          <select
+            value={sourceId()}
+            onChange={(e) => {
+              setSourceId(e.currentTarget.value);
+              setPrefix('');
+            }}
+            required
+          >
+            <option value="" disabled>
+              选择已连接的存储位置
+            </option>
+            <For each={props.sources}>
+              {(source) => <option value={source.id}>{source.name}</option>}
+            </For>
+          </select>
+        </label>
+        <button class="button" type="button" onClick={browseLocal} disabled={busy() || !desktop}>
+          <Icon name="folder" size={16} />
+          选择本地文件夹…
+        </button>
+        <label class="library-prefix-field">
+          源内目录（可选）
+          <input
+            value={prefix()}
+            onInput={(e) => setPrefix(e.currentTarget.value)}
+            placeholder="留空使用此存储源的根目录"
+          />
         </label>
         <div class="note">
           <Icon name="info" />
-          <p>
-            添加后将递归扫描支持的影像。原始文件不会移动、改名或修改；评级与裁剪保存在独立索引中。
-          </p>
+          <p>扫描建立影像索引。远程图片在查看时按需缓存，不会先下载整个图片库。</p>
         </div>
         <Show when={error()}>
-          <p class="form-error" role="alert">
-            {error()}
-          </p>
+          <div class="form-error" role="alert">
+            <StorageError error={error()} />
+          </div>
         </Show>
         <footer class="modal-footer">
-          <button type="button" class="button" onClick={props.onClose} disabled={busy()}>
+          <button class="button" type="button" onClick={props.onClose} disabled={busy()}>
             取消
           </button>
-          <button class="button primary" disabled={busy() || !desktop}>
-            {busy() ? '正在建立图片库…' : '添加并扫描'}
+          <button class="button primary" disabled={busy() || !desktop || !sourceId()}>
+            {busy() ? '正在建立…' : '建立并扫描'}
           </button>
         </footer>
       </form>
@@ -180,7 +210,7 @@ export function StorageDialog(props: {
   onAdded: (storage: StorageConfig) => void;
   existing?: StorageConfig;
 }) {
-  const [kind, setKind] = createSignal<'webdav' | 's3'>(props.existing?.kind || 'webdav');
+  const [kind, setKind] = createSignal<'local' | 'webdav' | 's3'>(props.existing?.kind || 'webdav');
   const [name, setName] = createSignal(props.existing?.name || '');
   const [endpoint, setEndpoint] = createSignal(props.existing?.endpoint || '');
   const [root, setRoot] = createSignal(props.existing?.root || '');
@@ -190,6 +220,7 @@ export function StorageDialog(props: {
   const [password, setPassword] = createSignal('');
   const [accessKey, setAccessKey] = createSignal('');
   const [secretKey, setSecretKey] = createSignal('');
+  const [remember, setRemember] = createSignal(props.existing?.remember_credentials ?? true);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal('');
   const [trustPin, setTrustPin] = createSignal<string | null | undefined>(
@@ -207,7 +238,7 @@ export function StorageDialog(props: {
       setError('连接远程存储与读取设备证书需要 Nebulume 桌面版。');
       return;
     }
-    if (trustPin() === undefined) {
+    if (kind() !== 'local' && trustPin() === undefined) {
       setError('请先读取当前地址的设备证书，核对指纹并确认信任。');
       return;
     }
@@ -221,11 +252,12 @@ export function StorageDialog(props: {
         root: root().trim(),
         bucket: bucket().trim(),
         region: region().trim(),
-        username: username(),
-        password: password(),
-        access_key: accessKey(),
-        secret_key: secretKey(),
-        tls_certificate_sha256: trustPin(),
+        username: username() || undefined,
+        password: password() || undefined,
+        access_key: accessKey() || undefined,
+        secret_key: secretKey() || undefined,
+        remember_credentials: remember(),
+        tls_certificate_sha256: kind() === 'local' ? null : trustPin(),
       });
       setPassword('');
       setSecretKey('');
@@ -238,10 +270,10 @@ export function StorageDialog(props: {
   }
   return (
     <Modal
-      title={props.existing ? '连接设置 / 重连' : '连接远程存储'}
+      title={props.existing ? '连接设置 / 重连' : '添加存储源'}
       subtitle={
         props.existing
-          ? '调整连接与证书策略，重新输入当前会话所需凭据。'
+          ? '调整连接与证书策略。密码或密钥留空可保留现有凭据。'
           : '按需浏览和下载，在本地图库中管理影像。'
       }
       onClose={props.onClose}
@@ -254,6 +286,14 @@ export function StorageDialog(props: {
           </p>
         </Show>
         <div class="segmented storage-type">
+          <button
+            classList={{ active: kind() === 'local' }}
+            onClick={() => setKind('local')}
+            type="button"
+            disabled={busy()}
+          >
+            本地文件夹
+          </button>
           <button
             classList={{ active: kind() === 'webdav' }}
             onClick={() => setKind('webdav')}
@@ -282,81 +322,120 @@ export function StorageDialog(props: {
           />
         </label>
         <label>
-          服务端地址
+          {kind() === 'local' ? '文件夹路径' : '服务端地址'}
           <input
-            type="url"
+            type={kind() === 'local' ? 'text' : 'url'}
             value={endpoint()}
             onInput={(e) => setEndpoint(e.currentTarget.value)}
             placeholder={
-              kind() === 'webdav' ? 'https://nas.example.com/dav/' : 'https://s3.example.com'
+              kind() === 'local'
+                ? '选择本机文件夹'
+                : kind() === 'webdav'
+                  ? 'https://nas.example.com/dav/'
+                  : 'https://s3.example.com'
             }
             required
             disabled={busy()}
           />
         </label>
-        <TlsCertificatePanel
-          endpoint={endpoint()}
-          savedFingerprint={props.existing?.tls_certificate_sha256}
-          disabled={busy()}
-          onTrustChange={setTrustPin}
-        />
-        <Show
-          when={kind() === 'webdav'}
-          fallback={
-            <>
-              <div class="form-row">
+        <Show when={kind() === 'local'}>
+          <button
+            class="button local-source-picker"
+            type="button"
+            disabled={busy() || !desktop}
+            onClick={async () => {
+              try {
+                const path = await chooseDirectory('选择存储源文件夹');
+                if (path) setEndpoint(path);
+              } catch (e) {
+                setError(errorMessage(e));
+              }
+            }}
+          >
+            选择文件夹…
+          </button>
+        </Show>
+        <Show when={kind() !== 'local'}>
+          <TlsCertificatePanel
+            endpoint={endpoint()}
+            savedFingerprint={props.existing?.tls_certificate_sha256}
+            savedEndpoint={props.existing?.endpoint}
+            disabled={busy()}
+            onTrustChange={setTrustPin}
+          />
+          <Show
+            when={kind() === 'webdav'}
+            fallback={
+              <>
+                <div class="form-row">
+                  <label>
+                    存储桶
+                    <input
+                      value={bucket()}
+                      onInput={(e) => setBucket(e.currentTarget.value)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    区域
+                    <input
+                      value={region()}
+                      onInput={(e) => setRegion(e.currentTarget.value)}
+                      required
+                    />
+                  </label>
+                </div>
                 <label>
-                  存储桶
-                  <input
-                    value={bucket()}
-                    onInput={(e) => setBucket(e.currentTarget.value)}
-                    required
-                  />
+                  Access key
+                  <input value={accessKey()} onInput={(e) => setAccessKey(e.currentTarget.value)} />
                 </label>
                 <label>
-                  区域
+                  Secret key
                   <input
-                    value={region()}
-                    onInput={(e) => setRegion(e.currentTarget.value)}
-                    required
+                    type="password"
+                    value={secretKey()}
+                    onInput={(e) => setSecretKey(e.currentTarget.value)}
+                    autocomplete="new-password"
                   />
                 </label>
-              </div>
+              </>
+            }
+          >
+            <div class="form-row">
               <label>
-                Access key
-                <input value={accessKey()} onInput={(e) => setAccessKey(e.currentTarget.value)} />
+                用户名
+                <input
+                  value={username()}
+                  onInput={(e) => setUsername(e.currentTarget.value)}
+                  autocomplete="off"
+                />
               </label>
               <label>
-                Secret key
+                密码
                 <input
                   type="password"
-                  value={secretKey()}
-                  onInput={(e) => setSecretKey(e.currentTarget.value)}
+                  value={password()}
+                  onInput={(e) => setPassword(e.currentTarget.value)}
                   autocomplete="new-password"
                 />
               </label>
-            </>
-          }
-        >
-          <div class="form-row">
-            <label>
-              用户名
-              <input
-                value={username()}
-                onInput={(e) => setUsername(e.currentTarget.value)}
-                autocomplete="off"
-              />
-            </label>
-            <label>
-              密码
-              <input
-                type="password"
-                value={password()}
-                onInput={(e) => setPassword(e.currentTarget.value)}
-                autocomplete="new-password"
-              />
-            </label>
-          </div>
+            </div>
+          </Show>
+          <label class="checkbox-label">
+            <input
+              type="checkbox"
+              checked={remember()}
+              onChange={(e) => setRemember(e.currentTarget.checked)}
+            />
+            将凭据保存到系统安全存储
+          </label>
+          <p class="credential-explanation">
+            {remember()
+              ? '密码与密钥保存在操作系统安全存储中，连接配置不包含秘密。'
+              : '仅在当前会话保留凭据；关闭应用后需重新输入。'}
+            {props.existing && !remember() ? ' 此连接此前保存的系统凭据将被移除。' : ''}
+            {props.existing ? ' 密码或密钥留空将保留已有凭据。' : ''}
+          </p>
         </Show>
         <label>
           {kind() === 'webdav' ? '根目录' : '对象前缀'}（可选）
@@ -368,9 +447,7 @@ export function StorageDialog(props: {
         </label>
         <div class="note">
           <Icon name="info" />
-          <p>
-            Alpha 版凭据仅在当前应用会话内保留。重启后需重新连接；浏览或下载失败会显示实际错误。
-          </p>
+          <p>保存连接后可测试访问并浏览目录。仅在实际连接成功后显示已验证状态。</p>
         </div>
         <Show when={locationChanged()}>
           <p class="connection-location-note">
@@ -378,15 +455,18 @@ export function StorageDialog(props: {
           </p>
         </Show>
         <Show when={error()}>
-          <p class="form-error" role="alert">
-            {error()}
-          </p>
+          <div class="form-error" role="alert">
+            <StorageError error={error()} />
+          </div>
         </Show>
         <footer class="modal-footer">
           <button class="button" type="button" onClick={props.onClose} disabled={busy()}>
             取消
           </button>
-          <button class="button primary" disabled={busy() || !desktop || trustPin() === undefined}>
+          <button
+            class="button primary"
+            disabled={busy() || !desktop || (kind() !== 'local' && trustPin() === undefined)}
+          >
             {busy()
               ? '正在保存…'
               : locationChanged()
@@ -397,481 +477,6 @@ export function StorageDialog(props: {
           </button>
         </footer>
       </form>
-    </Modal>
-  );
-}
-
-export function StorageBrowser(props: {
-  storage: StorageConfig;
-  onClose: () => void;
-  onEdit?: () => void;
-}) {
-  const [prefix, setPrefix] = createSignal('');
-  const [entries, setEntries] = createSignal<StorageEntry[]>([]);
-  const [busy, setBusy] = createSignal(false);
-  const [error, setError] = createSignal('');
-  const [message, setMessage] = createSignal('');
-  async function browse(next: string) {
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      const response = await execute<{ entries: StorageEntry[] }>('storage.browse', {
-        id: props.storage.id,
-        prefix: next,
-      });
-      setEntries(response.entries);
-      setPrefix(next);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  onMount(() => void browse(''));
-  async function download(entry: StorageEntry) {
-    setError('');
-    setMessage('');
-    try {
-      const destination = await chooseSave(entry.key.split('/').pop() || 'image');
-      if (!destination) return;
-      setBusy(true);
-      const result = await execute<{ path: string }>('storage.fetch', {
-        id: props.storage.id,
-        key: entry.key,
-        destination,
-      });
-      setMessage(`已下载至 ${result.path}。将该目录添加为图库或重新扫描，即可建立索引。`);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <Modal
-      title={props.storage.name}
-      subtitle={`${props.storage.kind.toUpperCase()} · ${props.storage.endpoint}`}
-      wide
-      onClose={props.onClose}
-      busy={busy()}
-    >
-      <div class="remote-connection-status">
-        <span classList={{ 'warning-text': endpointProtocol(props.storage.endpoint) === 'http:' }}>
-          {endpointProtocol(props.storage.endpoint) === 'http:'
-            ? 'HTTP · 未加密'
-            : props.storage.tls_certificate_sha256
-              ? 'HTTPS · 已信任设备证书'
-              : 'HTTPS · 标准校验'}
-        </span>
-        <Show when={props.onEdit}>
-          <button type="button" class="button small" onClick={props.onEdit} disabled={busy()}>
-            连接设置 / 重连
-          </button>
-        </Show>
-      </div>
-      <Show when={props.storage.tls_certificate_sha256}>
-        <p class="remote-certificate-pin" title="当前连接保存的证书 SHA-256">
-          SHA-256 · {displayFingerprint(props.storage.tls_certificate_sha256!)}
-        </p>
-      </Show>
-      <div class="remote-toolbar">
-        <button
-          class="button small"
-          disabled={busy() || !prefix()}
-          onClick={() => {
-            const parts = prefix().replace(/\/$/, '').split('/');
-            parts.pop();
-            void browse(parts.length ? `${parts.join('/')}/` : '');
-          }}
-        >
-          上一级
-        </button>
-        <code>/{prefix()}</code>
-        <button
-          class="icon-button"
-          onClick={() => browse(prefix())}
-          disabled={busy()}
-          aria-label="刷新远程目录"
-        >
-          <Icon name="refresh" />
-        </button>
-      </div>
-      <Show when={error()}>
-        <p class="form-error" role="alert">
-          {error()}
-        </p>
-      </Show>
-      <Show when={message()}>
-        <p class="success-message" role="status">
-          {message()}
-        </p>
-      </Show>
-      <div class="file-table">
-        <div class="file-table-header">
-          <span>名称</span>
-          <span>大小</span>
-          <span>操作</span>
-        </div>
-        <Show
-          when={!busy()}
-          fallback={
-            <div class="table-empty">
-              <span class="spinner" /> 正在访问远程存储…
-            </div>
-          }
-        >
-          <For each={entries()} fallback={<div class="table-empty">此目录没有可显示的对象。</div>}>
-            {(entry) => (
-              <div class="file-row">
-                <span>
-                  <Icon name={entry.is_dir ? 'folder' : 'photo'} />
-                  <span title={entry.key}>{entry.key.replace(prefix(), '') || entry.key}</span>
-                </span>
-                <small>{entry.is_dir ? '文件夹' : bytes(entry.size)}</small>
-                <button
-                  class="button small"
-                  onClick={() => (entry.is_dir ? browse(entry.key) : download(entry))}
-                >
-                  {entry.is_dir ? '打开' : '下载'}
-                </button>
-              </div>
-            )}
-          </For>
-        </Show>
-      </div>
-      <footer class="modal-footer">
-        <small>下载为新文件，不覆盖已有文件。</small>
-        <button class="button" onClick={props.onClose} disabled={busy()}>
-          完成
-        </button>
-      </footer>
-    </Modal>
-  );
-}
-
-export function ImportDialog(props: { onClose: () => void; onImported: () => void }) {
-  const [source, setSource] = createSignal('');
-  const [destination, setDestination] = createSignal('');
-  const [layout, setLayout] = createSignal('date');
-  const [deduplicate, setDeduplicate] = createSignal(true);
-  const [plan, setPlan] = createSignal<ImportPlan>();
-  const [reviewed, setReviewed] = createSignal(false);
-  const [result, setResult] = createSignal<ImportResult>();
-  const [busy, setBusy] = createSignal(false);
-  const [error, setError] = createSignal('');
-  async function browse(which: 'source' | 'destination') {
-    try {
-      const directory = await chooseDirectory(
-        which === 'source' ? '选择 SD 卡、DCIM 或任意来源文件夹' : '选择照片导入目标文件夹',
-      );
-      if (directory) (which === 'source' ? setSource : setDestination)(directory);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }
-  async function makePlan(event: SubmitEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    setReviewed(false);
-    try {
-      setPlan(
-        await execute<ImportPlan>('import.plan', {
-          source: source(),
-          destination: destination(),
-          layout: layout(),
-          deduplicate: deduplicate(),
-        }),
-      );
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function run() {
-    if (!plan() || !reviewed()) return;
-    setBusy(true);
-    setError('');
-    try {
-      setResult(await execute<ImportResult>('import.execute', { plan_id: plan()!.id }));
-      props.onImported();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  const statusName = (status: string) =>
-    ({
-      pending: '待复制',
-      copy: '待复制',
-      ready: '待复制',
-      duplicate: '重复跳过',
-      skip: '跳过',
-      skipped: '跳过',
-      conflict: '文件冲突',
-      error: '异常',
-    })[status] || status;
-  return (
-    <Modal
-      title="从 SD 卡或文件夹导入"
-      subtitle="先核对计划，再安全复制。源文件始终保留。"
-      onClose={props.onClose}
-      wide
-      busy={busy()}
-    >
-      <div class="import-steps">
-        <span classList={{ current: !plan() }}>
-          1 <b>选择位置</b>
-        </span>
-        <i />
-        <span classList={{ current: !!plan() && !result() }}>
-          2 <b>审核计划</b>
-        </span>
-        <i />
-        <span classList={{ current: !!result() }}>
-          3 <b>导入结果</b>
-        </span>
-      </div>
-      <Show when={error()}>
-        <p class="form-error" role="alert">
-          {error()}
-        </p>
-      </Show>
-      <Show when={!plan()}>
-        <form class="dialog-form" onSubmit={makePlan}>
-          <label>
-            来源
-            <div class="path-field">
-              <input
-                value={source()}
-                onInput={(e) => setSource(e.currentTarget.value)}
-                placeholder="SD 卡 / DCIM / 文件夹"
-                required
-              />
-              <button type="button" class="button" onClick={() => browse('source')}>
-                浏览…
-              </button>
-            </div>
-          </label>
-          <label>
-            目标文件夹
-            <div class="path-field">
-              <input
-                value={destination()}
-                onInput={(e) => setDestination(e.currentTarget.value)}
-                placeholder="选择保存照片的位置"
-                required
-              />
-              <button type="button" class="button" onClick={() => browse('destination')}>
-                浏览…
-              </button>
-            </div>
-          </label>
-          <label>
-            文件组织
-            <select value={layout()} onChange={(e) => setLayout(e.currentTarget.value)}>
-              <option value="date">按日期归档</option>
-              <option value="preserve">保留来源目录结构</option>
-            </select>
-          </label>
-          <label class="checkbox-label">
-            <input
-              type="checkbox"
-              checked={deduplicate()}
-              onChange={(e) => setDeduplicate(e.currentTarget.checked)}
-            />
-            根据文件内容检测重复
-          </label>
-          <div class="note">
-            <Icon name="card" />
-            <p>
-              任何已挂载的存储卡或文件夹均可作为来源。日期归档采用 EXIF
-              拍摄日期；无可用日期的文件进入 unknown-date。重名处理以逐文件计划为准。
-            </p>
-          </div>
-          <footer class="modal-footer">
-            <button class="button" type="button" onClick={props.onClose} disabled={busy()}>
-              取消
-            </button>
-            <button class="button primary" disabled={busy() || !desktop}>
-              {busy() ? '正在扫描并核对内容…' : '生成导入计划'}
-            </button>
-          </footer>
-        </form>
-      </Show>
-      <Show when={plan() && !result()}>
-        <For each={plan()!.warnings || []}>
-          {(warning) => <p class="form-error plan-warning">{warning}</p>}
-        </For>
-        <div class="plan-summary">
-          <div>
-            <strong>{plan()!.items.length}</strong>
-            <span>个文件</span>
-          </div>
-          <div>
-            <strong>{bytes(plan()!.total_bytes)}</strong>
-            <span>计划总大小</span>
-          </div>
-          <div class="plan-destination">
-            <small>导入至</small>
-            <span>{plan()!.destination}</span>
-          </div>
-        </div>
-        <div class="file-table import-table">
-          <div class="file-table-header">
-            <span>目标相对路径</span>
-            <span>大小</span>
-            <span>状态</span>
-          </div>
-          <For
-            each={plan()!.items.slice(0, 200)}
-            fallback={<div class="table-empty">未找到可导入的影像文件。</div>}
-          >
-            {(item) => (
-              <div class="file-row">
-                <span title={item.source}>{item.relative_path}</span>
-                <small>{bytes(item.size)}</small>
-                <small
-                  classList={{
-                    'warning-text':
-                      item.status !== 'copy' &&
-                      item.status !== 'ready' &&
-                      item.status !== 'pending',
-                  }}
-                >
-                  {statusName(item.status)}
-                </small>
-              </div>
-            )}
-          </For>
-        </div>
-        <Show when={plan()!.items.length > 200}>
-          <p class="muted">显示前 200 项，共 {plan()!.items.length} 项。</p>
-        </Show>
-        <label class="checkbox-label review-checkbox">
-          <input
-            type="checkbox"
-            checked={reviewed()}
-            onChange={(e) => setReviewed(e.currentTarget.checked)}
-            disabled={busy()}
-          />
-          我已核对来源、目标和导入计划
-        </label>
-        <footer class="modal-footer">
-          <button
-            class="button"
-            onClick={() => {
-              setPlan(undefined);
-              setReviewed(false);
-            }}
-            disabled={busy()}
-          >
-            返回修改
-          </button>
-          <button
-            class="button primary"
-            disabled={busy() || !reviewed() || !plan()!.items.length}
-            onClick={run}
-          >
-            {busy() ? '正在复制并验证…' : '开始安全导入'}
-          </button>
-        </footer>
-      </Show>
-      <Show when={result()}>
-        <div class="import-result">
-          <span class="result-icon">
-            <Icon name={result()!.failed ? 'info' : 'check'} size={26} />
-          </span>
-          <h3>
-            {
-              {
-                completed: '导入完成',
-                partial: '导入部分完成',
-                failed: '导入失败',
-                interrupted: '导入已中断',
-              }[result()!.status]
-            }
-          </h3>
-          <p>请核对下列结果。可重新扫描目标图片库查看导入影像。</p>
-          <dl>
-            <For
-              each={Object.entries(result()!).filter(
-                ([key, value]) =>
-                  !['items', 'errors', 'plan_id', 'id'].includes(key) &&
-                  (typeof value === 'string' || typeof value === 'number'),
-              )}
-            >
-              {([key, value]) => (
-                <>
-                  <dt>
-                    {{
-                      copied: '已复制',
-                      imported: '已导入',
-                      skipped: '已跳过',
-                      duplicates: '重复跳过',
-                      total: '文件总数',
-                      source: '来源',
-                      failed: '失败',
-                      verified: '已验证',
-                      id: '任务 ID',
-                      destination: '目标位置',
-                      status: '任务状态',
-                      total_bytes: '字节数',
-                      started_at: '开始时间',
-                      finished_at: '完成时间',
-                    }[key] || key}
-                  </dt>
-                  <dd>{String(value)}</dd>
-                </>
-              )}
-            </For>
-          </dl>
-          <div class="file-table import-table result-table">
-            <div class="file-table-header">
-              <span>目标路径 / 失败原因</span>
-              <span>大小</span>
-              <span>结果</span>
-            </div>
-            <For each={result()!.items}>
-              {(item) => (
-                <div class="file-row">
-                  <span title={item.source}>
-                    <span>
-                      {item.destination}
-                      <Show when={item.error}>
-                        <small class="result-file-error">{item.error}</small>
-                      </Show>
-                    </span>
-                  </span>
-                  <small>{bytes(item.size)}</small>
-                  <small classList={{ 'warning-text': item.status === 'failed' }}>
-                    {{ copied: '已复制', duplicate: '重复跳过', failed: '失败' }[item.status]}
-                  </small>
-                </div>
-              )}
-            </For>
-          </div>
-          <Show when={result()!.items?.some((item) => item.status === 'failed')}>
-            <div class="form-error">
-              <For each={result()!.items.filter((item) => item.status === 'failed')}>
-                {(item) => (
-                  <p>
-                    {item.source}：{item.error || '复制失败'}
-                  </p>
-                )}
-              </For>
-            </div>
-          </Show>
-        </div>
-        <footer class="modal-footer">
-          <button class="button primary" onClick={props.onClose}>
-            完成
-          </button>
-        </footer>
-      </Show>
     </Modal>
   );
 }

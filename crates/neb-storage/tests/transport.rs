@@ -140,7 +140,7 @@ impl Drop for TlsServer {
 fn request(endpoint: &str, root: &str, pin: Option<&str>) -> AddStorageRequest {
     serde_json::from_value(serde_json::json!({
         "name":"TLS fixture", "kind":"webdav", "endpoint":endpoint, "root":root,
-        "username":"synthetic-user", "password":"synthetic-secret", "tls_certificate_sha256":pin
+        "username":"synthetic-user", "password":"synthetic-secret", "tls_certificate_sha256":pin, "remember_credentials":false
     }))
     .unwrap()
 }
@@ -366,7 +366,8 @@ fn offline_saved_lan_sources_do_not_block_startup_even_with_environment_credenti
         registry.list()[0].endpoint,
         "http://offline-nebulume.invalid"
     );
-    assert!(registry.list()[0].connected);
+    assert!(!registry.list()[0].connected);
+    assert_eq!(registry.list()[0].credential_status, "session");
     // Actual operations retain the resolution failure instead of hiding or weakening the policy.
     assert!(read_photo(&registry, &id).is_err());
 }

@@ -10,8 +10,30 @@
     "frontendDist": "../../packages/ui/dist"
   },
   "app": {
-    "windows": [{"label":"main","title":"Nebulume","width":1440,"height":960,"minWidth":900,"minHeight":640,"dragDropEnabled":false}],
+    "windows": [{"label":"main","title":"Nebulume","width":1440,"height":960,"minWidth":900,"minHeight":640,"visible":false,"dragDropEnabled":false}],
     "security": {"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'"}
   },
-  "bundle": {"active":true,"targets":"all","icon":["icons/icon.png","icons/icon.ico"],"shortDescription":"Local-first photo library and verified media ingest","category":"Photography"}
+  "bundle": {
+    "active":true,"targets":"all","icon":["icons/icon.png","icons/icon.ico"],
+    "shortDescription":"Local-first photo library and verified media ingest","category":"Photography",
+    "fileAssociations": [
+      {"ext":["jpg","jpeg"],"name":"JPEG image","mimeType":"image/jpeg","role":"Viewer","rank":"Alternate"},
+      {"ext":["png"],"name":"PNG image","mimeType":"image/png","role":"Viewer","rank":"Alternate"},
+      {"ext":["webp"],"name":"WebP image","mimeType":"image/webp","role":"Viewer","rank":"Alternate"},
+      {"ext":["gif"],"name":"GIF image","mimeType":"image/gif","role":"Viewer","rank":"Alternate"},
+      {"ext":["tif","tiff"],"name":"TIFF image","mimeType":"image/tiff","role":"Viewer","rank":"Alternate"},
+      {"ext":["bmp"],"name":"Bitmap image","mimeType":"image/bmp","role":"Viewer","rank":"Alternate"},
+      {"ext":["ico"],"name":"Icon image","mimeType":"image/vnd.microsoft.icon","role":"Viewer","rank":"Alternate"},
+      {"ext":["pgm","ppm","pnm"],"name":"Portable anymap","mimeType":"image/x-portable-anymap","role":"Viewer","rank":"Alternate"},
+      {"ext":["dng"],"name":"Digital Negative","mimeType":"image/x-adobe-dng","role":"Viewer","rank":"Alternate"},
+      {"ext":["cr2"],"name":"Canon RAW","mimeType":"image/x-canon-cr2","role":"Viewer","rank":"Alternate"},
+      {"ext":["nef"],"name":"Nikon RAW","mimeType":"image/x-nikon-nef","role":"Viewer","rank":"Alternate"},
+      {"ext":["arw"],"name":"Sony RAW","mimeType":"image/x-sony-arw","role":"Viewer","rank":"Alternate"},
+      {"ext":["raf"],"name":"Fujifilm RAW","mimeType":"image/x-fuji-raf","role":"Viewer","rank":"Alternate"},
+      {"ext":["orf"],"name":"Olympus RAW","mimeType":"image/x-olympus-orf","role":"Viewer","rank":"Alternate"},
+      {"ext":["rw2"],"name":"Panasonic RAW","mimeType":"image/x-panasonic-rw2","role":"Viewer","rank":"Alternate"},
+      {"ext":["pef"],"name":"Pentax RAW","mimeType":"image/x-pentax-pef","role":"Viewer","rank":"Alternate"},
+      {"ext":["srw"],"name":"Samsung RAW","mimeType":"image/x-samsung-srw","role":"Viewer","rank":"Alternate"}
+    ]
+  }
 }

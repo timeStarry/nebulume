@@ -38,6 +38,12 @@ describe('non-destructive crop coordinates', () => {
     expect(imageRequestKey(original)).not.toBe(imageRequestKey(edited));
     expect(imageRequestKey(original, true)).toBe(imageRequestKey(edited, true));
     expect(imageRequestKey(edited)).toBe(imageRequestKey({ ...edited }));
+    expect(imageRequestKey({ ...original, preview_revision: 1 })).not.toBe(
+      imageRequestKey(original),
+    );
+    expect(imageRequestKey({ ...original, preview_revision: 1 }, true)).not.toBe(
+      imageRequestKey(original, true),
+    );
   });
 });
 

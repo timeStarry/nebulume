@@ -1,5 +1,9 @@
 import { render } from 'solid-js/web';
 import App from './App';
+import Viewer from './Viewer';
 import './styles.css';
 
-render(() => <App />, document.getElementById('root')!);
+render(
+  () => (new URLSearchParams(location.search).get('viewer') === '1' ? <Viewer /> : <App />),
+  document.getElementById('root')!,
+);

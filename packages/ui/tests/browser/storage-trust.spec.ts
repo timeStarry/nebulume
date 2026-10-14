@@ -56,7 +56,9 @@ async function nativeFixture(
             kind: request.params.kind as 'webdav' | 's3',
             endpoint: String(request.params.endpoint),
             root: String(request.params.root || ''),
-            connected: true,
+            connected: false,
+            credential_status: 'session',
+            remember_credentials: Boolean(request.params.remember_credentials),
             tls_certificate_sha256: request.params.tls_certificate_sha256 as string | null,
           };
           if (previous) sources.splice(sources.indexOf(previous), 1, source);
@@ -102,9 +104,14 @@ async function nativeFixture(
 }
 
 async function openConnection(page: Page, endpoint: string) {
-  await page.getByRole('button', { name: '连接远程存储', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: '主导航' })
+    .getByRole('button', { name: '存储源', exact: true })
+    .click();
+  await page.getByRole('button', { name: '添加存储源', exact: true }).click();
   await page.getByLabel('显示名称').fill('Home NAS');
   await page.getByLabel('服务端地址').fill(endpoint);
+  await page.getByRole('checkbox', { name: '将凭据保存到系统安全存储' }).uncheck();
 }
 
 test('HTTPS defaults to standard validation and LAN HTTP is explicitly marked without extra confirmation', async ({
@@ -113,8 +120,9 @@ test('HTTPS defaults to standard validation and LAN HTTP is explicitly marked wi
   const fixture = await nativeFixture(page);
   await openConnection(page, endpointA);
   await expect(page.getByRole('radio', { name: '标准校验 默认' })).toBeChecked();
-  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: confirmLabel })).toHaveCount(0);
   await page.getByRole('button', { name: '添加连接', exact: true }).click();
+  await page.getByRole('button', { name: '浏览目录', exact: true }).click();
   await expect(page.getByText('HTTPS · 标准校验')).toBeVisible();
   expect(
     fixture.requests.filter((request) => request.command === 'storage.inspect_tls'),
@@ -123,11 +131,12 @@ test('HTTPS defaults to standard validation and LAN HTTP is explicitly marked wi
     fixture.requests.find((request) => request.command === 'storage.add')!.params
       .tls_certificate_sha256,
   ).toBeNull();
-  await page.getByRole('button', { name: '完成', exact: true }).click();
+  await page.getByRole('button', { name: '关闭目录浏览' }).click();
   await openConnection(page, 'http://192.168.1.10:5005/dav/');
   await expect(page.getByText('HTTP · 未加密', { exact: true })).toBeVisible();
   await expect(page.getByRole('radio')).toHaveCount(0);
   await page.getByRole('button', { name: '添加连接', exact: true }).click();
+  await page.getByRole('button', { name: '浏览目录', exact: true }).last().click();
   await expect(page.getByText('HTTP · 未加密', { exact: true })).toBeVisible();
   expect(
     fixture.requests.filter((request) => request.command === 'storage.add').at(-1)!.params
@@ -160,6 +169,7 @@ test('device trust requires fingerprint review, sends no credentials during insp
   await expect(page.getByRole('checkbox', { name: confirmLabel })).not.toBeChecked();
   await page.getByRole('checkbox', { name: confirmLabel }).check();
   await page.getByRole('button', { name: '添加连接', exact: true }).click();
+  await page.getByRole('button', { name: '浏览目录', exact: true }).click();
   await expect(page.getByText('HTTPS · 已信任设备证书')).toBeVisible();
   expect(
     fixture.requests.find((request) => request.command === 'storage.add')!.params
@@ -168,7 +178,16 @@ test('device trust requires fingerprint review, sends no credentials during insp
   await page.getByRole('button', { name: '连接设置 / 重连', exact: true }).click();
   await expect(page.getByLabel('服务端地址')).toHaveValue(endpointA);
   await expect(page.getByRole('radio', { name: '信任此设备证书' })).toBeChecked();
-  await expect(page.getByRole('button', { name: '保存并重连' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '保存并重连' })).toBeEnabled();
+  await expect(page.getByLabel('密码', { exact: true })).toHaveValue('');
+  await page.getByRole('button', { name: '保存并重连' }).click();
+  const retained = fixture.requests
+    .filter((request) => request.command === 'storage.add')
+    .at(-1)!.params;
+  expect(retained.tls_certificate_sha256).toBe(fingerprintA);
+  expect(retained).not.toHaveProperty('password');
+  expect(retained).not.toHaveProperty('username');
+  await page.getByRole('button', { name: '连接设置 / 重连', exact: true }).click();
   await page.getByRole('radio', { name: '标准校验 默认' }).check();
   await page.getByRole('button', { name: '保存并重连' }).click();
   await expect(page.getByText('HTTPS · 标准校验')).toBeVisible();
@@ -215,9 +234,14 @@ test('inspection failures remain visible and never enable device trust', async (
   await openConnection(page, endpointA);
   await page.getByRole('radio', { name: '信任此设备证书' }).check();
   await page.getByRole('button', { name: '读取设备证书', exact: true }).click();
-  await expect(page.getByRole('alert')).toHaveText('TLS handshake failed: connection refused');
+  await expect(page.getByRole('alert')).toContainText('无法连接到设备');
+  await expect(page.getByRole('alert').locator('pre')).not.toBeVisible();
+  await page.getByText('查看错误详情', { exact: true }).click();
+  await expect(page.getByRole('alert').locator('pre')).toHaveText(
+    'TLS handshake failed: connection refused',
+  );
   await expect(page.getByRole('button', { name: '添加连接', exact: true })).toBeDisabled();
-  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: confirmLabel })).toHaveCount(0);
 });
 
 test('browser demonstration shows native-required state instead of simulating certificate access', async ({

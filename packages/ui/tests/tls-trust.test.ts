@@ -33,12 +33,22 @@ describe('certificate-bound, explicit device trust', () => {
     expect(trustedFingerprint(initialTlsTrust(endpoint))).toBeNull();
     expect(trustedFingerprint(initialTlsTrust('http://192.168.1.2:5005/dav/', true))).toBeNull();
   });
-  it('never trusts discovery or a saved-pin mode without a fresh explicit confirmation', () => {
+  it('never trusts discovery or choosing pin mode without an explicit confirmation', () => {
     expect(trustedFingerprint(initialTlsTrust(endpoint, true))).toBeUndefined();
     const result = inspected();
     expect(result.confirmed).toBe(false);
     expect(trustedFingerprint(result)).toBeUndefined();
     expect(trustedFingerprint({ ...result, confirmed: true })).toBe(certificate.sha256);
+  });
+  it('retains previously approved trust at its unchanged endpoint and revokes it on edits', () => {
+    const saved = initialTlsTrust(endpoint, certificate.sha256);
+    expect(saved.confirmed).toBe(false);
+    expect(trustedFingerprint(saved)).toBe(certificate.sha256);
+    expect(trustedFingerprint(startCertificateInspection(saved))).toBeUndefined();
+    expect(trustedFingerprint(changeTrustEndpoint(saved, 'https://other.local/'))).toBeUndefined();
+    expect(
+      trustedFingerprint(changeTrustMode(changeTrustMode(saved, 'standard'), 'pinned')),
+    ).toBeUndefined();
   });
   it('revokes confirmation when the address, mode or inspection changes', () => {
     const trusted = { ...inspected(), confirmed: true };

@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -27,22 +27,37 @@ pub struct Core {
     previews: Mutex<VecDeque<(String, Value)>>,
 }
 
-const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability";
+const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key";
+const LIBRARY_COLUMNS: &str = "id,name,root,created_at,storage_id,source_prefix,hidden";
 
 impl Core {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
         fs::create_dir_all(data_dir.as_ref()).context("E_IO: Cannot create catalog directory")?;
-        let database = Connection::open(data_dir.as_ref().join("catalog.sqlite3"))?;
+        let mut database = Connection::open(data_dir.as_ref().join("catalog.sqlite3"))?;
         database.busy_timeout(Duration::from_secs(5))?;
         database.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )?;
-        let version: i64 = database.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 1,
+            version <= 2,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
-        database.execute_batch(include_str!("schema.sql"))?;
+        if version == 0 {
+            migration.execute_batch(include_str!("schema.sql"))?;
+        }
+        if version < 2 {
+            migration.execute_batch(
+                "ALTER TABLE libraries ADD COLUMN storage_id TEXT;
+                 ALTER TABLE libraries ADD COLUMN source_prefix TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE libraries ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE assets ADD COLUMN source_key TEXT;
+                 CREATE UNIQUE INDEX assets_remote_key ON assets(library_id,source_key) WHERE source_key IS NOT NULL;
+                 PRAGMA user_version=2;",
+            )?;
+        }
+        migration.commit()?;
         Ok(Self {
             database: Mutex::new(database),
             previews: Mutex::new(VecDeque::new()),
@@ -82,6 +97,16 @@ impl Core {
                 Ok(serde_json::to_value(self.scan(&args.library_id)?)?)
             }
             "asset.list" => self.list_assets(parse(params)?),
+            "file.open" => {
+                #[derive(Deserialize)]
+                struct Open {
+                    path: String,
+                }
+                let args: Open = parse(params)?;
+                Ok(serde_json::to_value(
+                    self.open_file(Path::new(&args.path))?,
+                )?)
+            }
             "asset.get" => Ok(serde_json::to_value(self.asset(&id(&params)?)?)?),
             "asset.rate" => {
                 #[derive(Deserialize)]
@@ -162,8 +187,9 @@ impl Core {
 
     pub fn libraries(&self) -> Result<Vec<Library>> {
         let db = self.db()?;
-        let mut statement =
-            db.prepare("SELECT id,name,root,created_at FROM libraries ORDER BY created_at,id")?;
+        let mut statement = db.prepare(&format!(
+            "SELECT {LIBRARY_COLUMNS} FROM libraries WHERE hidden=0 ORDER BY created_at,id"
+        ))?;
         let result = statement
             .query_map([], library_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -171,6 +197,10 @@ impl Core {
     }
 
     pub fn add_library(&self, name: &str, root: &Path) -> Result<Library> {
+        self.add_library_internal(name, root, false)
+    }
+
+    fn add_library_internal(&self, name: &str, root: &Path, hidden: bool) -> Result<Library> {
         let name = name.trim();
         ensure!(
             !name.is_empty() && name.chars().count() <= 120,
@@ -187,12 +217,23 @@ impl Core {
         let db = self.db()?;
         if let Some(existing) = db
             .query_row(
-                "SELECT id,name,root,created_at FROM libraries WHERE root_key=?1",
+                &format!("SELECT {LIBRARY_COLUMNS} FROM libraries WHERE root_key=?1"),
                 [&root_key],
                 library_row,
             )
             .optional()?
         {
+            if existing.hidden && !hidden {
+                db.execute(
+                    "UPDATE libraries SET hidden=0,name=?1 WHERE id=?2",
+                    params![name, existing.id],
+                )?;
+                return Ok(Library {
+                    name: name.into(),
+                    hidden: false,
+                    ..existing
+                });
+            }
             return Ok(existing);
         }
         let library = Library {
@@ -200,29 +241,224 @@ impl Core {
             name: name.into(),
             root: root_string,
             created_at: Utc::now().to_rfc3339(),
+            storage_id: None,
+            source_prefix: String::new(),
+            hidden,
         };
         db.execute(
-            "INSERT INTO libraries(id,name,root,root_key,created_at) VALUES(?1,?2,?3,?4,?5)",
+            "INSERT INTO libraries(id,name,root,root_key,created_at,hidden) VALUES(?1,?2,?3,?4,?5,?6)",
             params![
                 library.id,
                 library.name,
                 library.root,
                 root_key,
-                library.created_at
+                library.created_at,
+                library.hidden
             ],
         )?;
         Ok(library)
     }
 
-    fn library(&self, id: &str) -> Result<Library> {
+    pub fn library(&self, id: &str) -> Result<Library> {
         self.db()?
             .query_row(
-                "SELECT id,name,root,created_at FROM libraries WHERE id=?1",
+                &format!("SELECT {LIBRARY_COLUMNS} FROM libraries WHERE id=?1"),
                 [id],
                 library_row,
             )
             .optional()?
             .context("E_NOT_FOUND: Library does not exist")
+    }
+
+    pub fn bind_storage(
+        &self,
+        library_id: &str,
+        storage_id: &str,
+        prefix: &str,
+    ) -> Result<Library> {
+        let library = self.library(library_id)?;
+        ensure!(
+            library
+                .storage_id
+                .as_deref()
+                .is_none_or(|id| id == storage_id && library.source_prefix == prefix),
+            "E_CONFLICT: This library already belongs to a different storage directory"
+        );
+        self.db()?.execute(
+            "UPDATE libraries SET storage_id=?1,source_prefix=?2 WHERE id=?3",
+            params![storage_id, prefix, library_id],
+        )?;
+        self.library(library_id)
+    }
+
+    /// Opening a file never scans its siblings or adds a visible library implicitly.
+    pub fn open_file(&self, path: &Path) -> Result<Asset> {
+        let path = dunce::canonicalize(path).context("E_NOT_FOUND: Image file is unavailable")?;
+        ensure!(path.is_file(), "E_INVALID: Open a regular image file");
+        let extension = path
+            .extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let kind = imaging::kind(&extension)
+            .context("E_UNSUPPORTED_CODEC: Unsupported image extension")?;
+        let library = self
+            .libraries()?
+            .into_iter()
+            .filter(|library| path.starts_with(&library.root))
+            .max_by_key(|library| library.root.len());
+        let library = match library {
+            Some(library) => library,
+            None => self.add_library_internal(
+                "打开的文件",
+                path.parent()
+                    .context("E_INVALID: Image has no parent directory")?,
+                true,
+            )?,
+        };
+        self.index_file(&library, &path, kind, &extension)?;
+        let key = path_key(&path.to_string_lossy());
+        self.db()?
+            .query_row(
+                &format!("SELECT {ASSET_COLUMNS} FROM assets WHERE library_id=?1 AND path_key=?2"),
+                params![library.id, key],
+                asset_row,
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn refresh_asset(&self, id: &str) -> Result<Asset> {
+        let asset = self.asset(id)?;
+        let library = self.library(&asset.library_id)?;
+        let path = self.checked_asset_path(&asset)?;
+        self.index_file(&library, &path, &asset.kind, &asset.extension)?;
+        if let Some(key) = asset.source_key.as_deref() {
+            // A cache write time is not the remote original's modification time.
+            self.db()?.execute(
+                "UPDATE assets SET modified_at='',filename=?1 WHERE id=?2",
+                params![key.rsplit('/').next().unwrap_or(key), id],
+            )?;
+        }
+        self.asset(id)
+    }
+
+    pub fn invalidate_asset(&self, id: &str) -> Result<()> {
+        self.asset(id)?;
+        self.db()?
+            .execute("UPDATE assets SET modified_stamp='' WHERE id=?1", [id])?;
+        if let Ok(mut previews) = self.previews.lock() {
+            previews.retain(|(key, _)| !key.starts_with(&format!("{id}:")));
+        }
+        Ok(())
+    }
+
+    pub fn use_refreshed_cache(&self, id: &str, filename: &str) -> Result<()> {
+        ensure!(
+            Path::new(filename).components().count() == 1
+                && matches!(
+                    Path::new(filename).components().next(),
+                    Some(std::path::Component::Normal(_))
+                ),
+            "E_PATH: Cache filename must be one component"
+        );
+        let asset = self.asset(id)?;
+        ensure!(
+            asset.source_key.is_some(),
+            "E_INVALID: Only remote originals use a cache"
+        );
+        let library = self.library(&asset.library_id)?;
+        let path = Path::new(&library.root)
+            .join(filename)
+            .to_string_lossy()
+            .into_owned();
+        self.db()?.execute("UPDATE assets SET path=?1,path_key=?2,modified_stamp='',availability='remote' WHERE id=?3",params![path,path_key(&path),id])?;
+        self.invalidate_asset(id)
+    }
+
+    pub fn register_remote_asset(
+        &self,
+        library_id: &str,
+        source_key: &str,
+        cache_filename: &str,
+        size: u64,
+    ) -> Result<Asset> {
+        ensure!(
+            size <= i64::MAX as u64,
+            "E_LIMIT: Image size exceeds catalog range"
+        );
+        ensure!(!source_key.is_empty(), "E_INVALID: Remote key is empty");
+        ensure!(
+            Path::new(cache_filename).components().count() == 1
+                && matches!(
+                    Path::new(cache_filename).components().next(),
+                    Some(std::path::Component::Normal(_))
+                ),
+            "E_INVALID: Cache filename must be a single component"
+        );
+        let library = self.library(library_id)?;
+        ensure!(
+            library.storage_id.is_some(),
+            "E_INVALID: Remote library must have a storage source"
+        );
+        let filename = source_key.rsplit('/').next().unwrap_or(source_key);
+        let extension = Path::new(filename)
+            .extension()
+            .and_then(|v| v.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let kind = imaging::kind(&extension)
+            .context("E_UNSUPPORTED_CODEC: Unsupported image extension")?;
+        let path = Path::new(&library.root)
+            .join(cache_filename)
+            .to_string_lossy()
+            .into_owned();
+        let old = self
+            .db()?
+            .query_row(
+                &format!(
+                    "SELECT {ASSET_COLUMNS} FROM assets WHERE library_id=?1 AND source_key=?2"
+                ),
+                params![library_id, source_key],
+                asset_row,
+            )
+            .optional()?;
+        if let Some(old) = &old {
+            if (size == 0 || old.size == size) && old.availability != "missing" {
+                return Ok(old.clone());
+            }
+        }
+        let id = old
+            .map(|asset| asset.id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        self.db()?.execute(
+            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,availability,source_key)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'','remote','remote',?9)
+             ON CONFLICT(id) DO UPDATE SET path=excluded.path,path_key=excluded.path_key,filename=excluded.filename,size=excluded.size,width=NULL,height=NULL,metadata_json='{}',availability='remote'",
+             params![id,library_id,path,path_key(&path),filename,extension,kind,size,source_key])?;
+        self.asset(&id)
+    }
+
+    pub fn finish_remote_scan(&self, library_id: &str, keys: &[String]) -> Result<()> {
+        let known = {
+            let db = self.db()?;
+            let mut statement = db.prepare(
+                "SELECT id,source_key FROM assets WHERE library_id=?1 AND source_key IS NOT NULL",
+            )?;
+            let rows = statement
+                .query_map([library_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let keys: std::collections::HashSet<_> = keys.iter().collect();
+        for (id, key) in known {
+            if !keys.contains(&key) {
+                self.db()?
+                    .execute("UPDATE assets SET availability='missing' WHERE id=?1", [id])?;
+            }
+        }
+        Ok(())
     }
 
     pub fn asset(&self, id: &str) -> Result<Asset> {
@@ -437,7 +673,7 @@ impl Core {
             .map(|word| format!("\"{word}\"*"))
             .collect::<Vec<_>>()
             .join(" AND ");
-        let where_sql = "(?1 IS NULL OR library_id=?1) AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4))";
+        let where_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0)) AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4))";
         let db = self.db()?;
         let total: u64 = db.query_row(
             &format!("SELECT COUNT(*) FROM assets WHERE {where_sql}"),
@@ -554,6 +790,9 @@ fn library_row(row: &Row<'_>) -> rusqlite::Result<Library> {
         name: row.get(1)?,
         root: row.get(2)?,
         created_at: row.get(3)?,
+        storage_id: row.get(4)?,
+        source_prefix: row.get(5)?,
+        hidden: row.get(6)?,
     })
 }
 
@@ -596,5 +835,6 @@ fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
         metadata: json_column(row, 11)?,
         crop,
         availability: row.get(13)?,
+        source_key: row.get(14)?,
     })
 }

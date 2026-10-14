@@ -12,7 +12,7 @@ use std::{
 fn request(kind: &str, endpoint: &str) -> AddStorageRequest {
     serde_json::from_value(serde_json::json!({"name":"Fixture", "kind":kind, "endpoint":endpoint,
         "bucket":if kind == "s3" { Some("bucket") } else { None },
-        "access_key":"fixture-key", "secret_key":"fixture-secret", "username":"test", "password":"fixture-password"})).unwrap()
+        "access_key":"fixture-key", "secret_key":"fixture-secret", "username":"test", "password":"fixture-password", "remember_credentials":false})).unwrap()
 }
 
 #[test]
@@ -335,7 +335,8 @@ fn source_specific_environment_credentials_reconnect_without_persistence() {
     let reopened = StorageRegistry::open(data.path()).unwrap();
     std::env::remove_var(format!("{prefix}ACCESS_KEY"));
     std::env::remove_var(format!("{prefix}SECRET_KEY"));
-    assert!(reopened.list()[0].connected);
+    assert!(!reopened.list()[0].connected);
+    assert_eq!(reopened.list()[0].credential_status, "session");
     assert!(!fs::read_to_string(data.path().join("storage.json"))
         .unwrap()
         .contains("env-secret"));

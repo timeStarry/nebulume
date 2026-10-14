@@ -1,4 +1,3 @@
-BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS libraries (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
@@ -40,4 +39,3 @@ CREATE TRIGGER IF NOT EXISTS assets_au AFTER UPDATE ON assets BEGIN
     INSERT INTO assets_fts(rowid,filename,metadata_json) VALUES(new.rowid,new.filename,new.metadata_json);
 END;
 PRAGMA user_version=1;
-COMMIT;

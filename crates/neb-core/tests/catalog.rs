@@ -46,6 +46,147 @@ fn digest(path: &Path) -> Vec<u8> {
 }
 
 #[test]
+fn standalone_open_indexes_only_requested_file_and_does_not_create_a_visible_library() {
+    let temp = tempfile::tempdir().unwrap();
+    let photos = temp.path().join("opened");
+    fs::create_dir(&photos).unwrap();
+    png(&photos.join("first.png"), 12, 8);
+    png(&photos.join("sibling.png"), 20, 10);
+    let core = Core::open(temp.path().join("catalog")).unwrap();
+    let asset = core.open_file(&photos.join("first.png")).unwrap();
+    assert_eq!(asset.filename, "first.png");
+    assert!(core.libraries().unwrap().is_empty());
+    assert_eq!(core.dispatch("asset.list", json!({})).unwrap()["total"], 0);
+    assert_eq!(
+        core.dispatch("asset.list", json!({"library_id":asset.library_id}))
+            .unwrap()["total"],
+        1
+    );
+    let visible = core.add_library("正式图片库", &photos).unwrap();
+    assert!(!visible.hidden);
+    assert_eq!(core.libraries().unwrap().len(), 1);
+    assert_eq!(core.dispatch("asset.list", json!({})).unwrap()["total"], 1);
+    assert_eq!(
+        core.open_file(&photos.join("first.png")).unwrap().id,
+        asset.id
+    );
+}
+
+#[test]
+fn version_one_catalog_migrates_with_ratings_and_recipes_intact() {
+    let temp = tempfile::tempdir().unwrap();
+    let photos = temp.path().join("photos");
+    let data = temp.path().join("catalog");
+    fs::create_dir_all(&photos).unwrap();
+    fs::create_dir_all(&data).unwrap();
+    png(&photos.join("old.png"), 6, 4);
+    let connection = rusqlite::Connection::open(data.join("catalog.sqlite3")).unwrap();
+    connection
+        .execute_batch(include_str!("../src/schema.sql"))
+        .unwrap();
+    let old_root = dunce::canonicalize(&photos)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let root_key = if cfg!(windows) {
+        old_root.to_lowercase()
+    } else {
+        old_root.clone()
+    };
+    connection.execute("INSERT INTO libraries(id,name,root,root_key,created_at) VALUES('old','旧图库',?1,?2,'2026-10-14')",rusqlite::params![old_root,root_key]).unwrap();
+    let original = dunce::canonicalize(photos.join("old.png")).unwrap();
+    let original = original.to_string_lossy().into_owned();
+    let path_key = if cfg!(windows) {
+        original.to_lowercase()
+    } else {
+        original.clone()
+    };
+    connection.execute("INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,rating,metadata_json,crop_json,availability) VALUES('old-asset','old',?1,?2,'old.png','png','raster',1,'2026-10-14','legacy',4,'{}','{\"x\":0.25,\"y\":0.0,\"width\":0.5,\"height\":1.0}','available')",rusqlite::params![original,path_key]).unwrap();
+    drop(connection);
+    let core = Core::open(&data).unwrap();
+    assert_eq!(core.libraries().unwrap()[0].id, "old");
+    assert_eq!(only_asset(&core)["rating"], 4);
+    assert_eq!(only_asset(&core)["crop"]["width"], 0.5);
+    core.scan("old").unwrap();
+    let asset = only_asset(&core);
+    core.dispatch("asset.rate", json!({"id":asset["id"],"rating":5}))
+        .unwrap();
+    drop(core);
+    let reopened = Core::open(&data).unwrap();
+    assert_eq!(only_asset(&reopened)["rating"], 5);
+    assert_eq!(reopened.libraries().unwrap()[0].source_prefix, "");
+}
+
+#[test]
+fn remote_keys_keep_asset_identity_and_edits_when_cache_revision_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = temp.path().join("cache");
+    fs::create_dir(&cache).unwrap();
+    let core = Core::open(temp.path().join("catalog")).unwrap();
+    let library = core.add_library("远端图片库", &cache).unwrap();
+    core.bind_storage(&library.id, "source", "album").unwrap();
+    let first = core
+        .register_remote_asset(&library.id, "album/photo.png", "revision1.png", 42)
+        .unwrap();
+    assert_eq!(first.availability, "remote");
+    assert!(first.modified_at.is_empty());
+    core.dispatch("asset.rate", json!({"id":first.id,"rating":4}))
+        .unwrap();
+    core.dispatch(
+        "asset.crop",
+        json!({"id":first.id,"x":0.25,"y":0.0,"width":0.5,"height":1.0}),
+    )
+    .unwrap();
+    let changed = core
+        .register_remote_asset(&library.id, "album/photo.png", "revision2.png", 60)
+        .unwrap();
+    assert_eq!(changed.id, first.id);
+    assert_eq!(changed.rating, 4);
+    assert_eq!(changed.crop.unwrap().width, 0.5);
+    assert!(changed.path.ends_with("revision2.png"));
+    core.finish_remote_scan(&library.id, &[]).unwrap();
+    assert_eq!(core.asset(&first.id).unwrap().availability, "missing");
+    core.register_remote_asset(&library.id, "album/photo.png", "revision2.png", 60)
+        .unwrap();
+    assert_eq!(core.asset(&first.id).unwrap().availability, "remote");
+}
+
+#[test]
+fn simultaneous_catalog_initialization_keeps_one_complete_schema() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("catalog");
+    // Initialize WAL before the race to focus this regression on schema locking.
+    fs::create_dir_all(&data).unwrap();
+    let database = rusqlite::Connection::open(data.join("catalog.sqlite3")).unwrap();
+    database.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+    drop(database);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+    let threads = (0..4)
+        .map(|_| {
+            let data = data.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                Core::open(data).unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    for thread in threads {
+        let core = thread.join().unwrap();
+        assert!(core.libraries().unwrap().is_empty());
+    }
+    let reopened = Core::open(&data).unwrap();
+    assert!(reopened.libraries().unwrap().is_empty());
+    let database = rusqlite::Connection::open(data.join("catalog.sqlite3")).unwrap();
+    assert_eq!(
+        database
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
 fn catalog_persists_search_ratings_and_crops_across_incremental_scans() {
     let (temp, core, photos, library) = setup();
     let original = photos.join("Harbor sunrise.png");
