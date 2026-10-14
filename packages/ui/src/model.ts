@@ -49,6 +49,16 @@ export interface StorageConfig {
   bucket?: string;
   region?: string;
   connected?: boolean;
+  tls_certificate_sha256?: string | null;
+}
+export interface TlsCertificate {
+  endpoint: string;
+  sha256: string;
+  subject: string;
+  issuer: string;
+  not_before: string;
+  not_after: string;
+  subject_alt_names: string[];
 }
 export interface StorageEntry {
   key: string;

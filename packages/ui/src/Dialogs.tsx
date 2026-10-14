@@ -10,6 +10,8 @@ import {
   type StorageEntry,
 } from './model';
 import Icon from './Icon';
+import TlsCertificatePanel from './TlsCertificatePanel';
+import { displayFingerprint, endpointProtocol } from './tls-trust';
 
 export function Modal(props: {
   title: string;
@@ -176,21 +178,39 @@ export function LibraryDialog(props: { onClose: () => void; onAdded: (library: L
 export function StorageDialog(props: {
   onClose: () => void;
   onAdded: (storage: StorageConfig) => void;
+  existing?: StorageConfig;
 }) {
-  const [kind, setKind] = createSignal<'webdav' | 's3'>('webdav');
-  const [name, setName] = createSignal('');
-  const [endpoint, setEndpoint] = createSignal('');
-  const [root, setRoot] = createSignal('');
-  const [bucket, setBucket] = createSignal('');
-  const [region, setRegion] = createSignal('us-east-1');
+  const [kind, setKind] = createSignal<'webdav' | 's3'>(props.existing?.kind || 'webdav');
+  const [name, setName] = createSignal(props.existing?.name || '');
+  const [endpoint, setEndpoint] = createSignal(props.existing?.endpoint || '');
+  const [root, setRoot] = createSignal(props.existing?.root || '');
+  const [bucket, setBucket] = createSignal(props.existing?.bucket || '');
+  const [region, setRegion] = createSignal(props.existing?.region || 'us-east-1');
   const [username, setUsername] = createSignal('');
   const [password, setPassword] = createSignal('');
   const [accessKey, setAccessKey] = createSignal('');
   const [secretKey, setSecretKey] = createSignal('');
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal('');
+  const [trustPin, setTrustPin] = createSignal<string | null | undefined>(
+    props.existing?.tls_certificate_sha256 ? undefined : null,
+  );
+  const locationChanged = () =>
+    !!props.existing &&
+    (kind() !== props.existing.kind ||
+      endpoint().trim() !== props.existing.endpoint ||
+      root().trim() !== (props.existing.root || '') ||
+      bucket().trim() !== (props.existing.bucket || ''));
   async function submit(event: SubmitEvent) {
     event.preventDefault();
+    if (!desktop) {
+      setError('连接远程存储与读取设备证书需要 Nebulume 桌面版。');
+      return;
+    }
+    if (trustPin() === undefined) {
+      setError('请先读取当前地址的设备证书，核对指纹并确认信任。');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -205,6 +225,7 @@ export function StorageDialog(props: {
         password: password(),
         access_key: accessKey(),
         secret_key: secretKey(),
+        tls_certificate_sha256: trustPin(),
       });
       setPassword('');
       setSecretKey('');
@@ -217,17 +238,27 @@ export function StorageDialog(props: {
   }
   return (
     <Modal
-      title="连接远程存储"
-      subtitle="按需浏览和下载，在本地图库中管理影像。"
+      title={props.existing ? '连接设置 / 重连' : '连接远程存储'}
+      subtitle={
+        props.existing
+          ? '调整连接与证书策略，重新输入当前会话所需凭据。'
+          : '按需浏览和下载，在本地图库中管理影像。'
+      }
       onClose={props.onClose}
       busy={busy()}
     >
-      <form class="dialog-form" onSubmit={submit} autocomplete="off">
+      <form class="dialog-form storage-connection-form" onSubmit={submit} autocomplete="off">
+        <Show when={!desktop}>
+          <p class="native-required" role="status">
+            连接远程存储与读取设备证书需要 Nebulume 桌面版。浏览器演示不访问局域网设备。
+          </p>
+        </Show>
         <div class="segmented storage-type">
           <button
             classList={{ active: kind() === 'webdav' }}
             onClick={() => setKind('webdav')}
             type="button"
+            disabled={busy()}
           >
             WebDAV
           </button>
@@ -235,6 +266,7 @@ export function StorageDialog(props: {
             classList={{ active: kind() === 's3' }}
             onClick={() => setKind('s3')}
             type="button"
+            disabled={busy()}
           >
             S3 兼容存储
           </button>
@@ -246,6 +278,7 @@ export function StorageDialog(props: {
             onInput={(e) => setName(e.currentTarget.value)}
             placeholder="例如：家庭 NAS"
             required
+            disabled={busy()}
           />
         </label>
         <label>
@@ -258,8 +291,15 @@ export function StorageDialog(props: {
               kind() === 'webdav' ? 'https://nas.example.com/dav/' : 'https://s3.example.com'
             }
             required
+            disabled={busy()}
           />
         </label>
+        <TlsCertificatePanel
+          endpoint={endpoint()}
+          savedFingerprint={props.existing?.tls_certificate_sha256}
+          disabled={busy()}
+          onTrustChange={setTrustPin}
+        />
         <Show
           when={kind() === 'webdav'}
           fallback={
@@ -332,6 +372,11 @@ export function StorageDialog(props: {
             Alpha 版凭据仅在当前应用会话内保留。重启后需重新连接；浏览或下载失败会显示实际错误。
           </p>
         </div>
+        <Show when={locationChanged()}>
+          <p class="connection-location-note">
+            地址、类型、根目录或存储桶已改变，将保存为新连接；原连接仍保留。
+          </p>
+        </Show>
         <Show when={error()}>
           <p class="form-error" role="alert">
             {error()}
@@ -341,8 +386,14 @@ export function StorageDialog(props: {
           <button class="button" type="button" onClick={props.onClose} disabled={busy()}>
             取消
           </button>
-          <button class="button primary" disabled={busy() || !desktop}>
-            {busy() ? '正在添加…' : '添加连接'}
+          <button class="button primary" disabled={busy() || !desktop || trustPin() === undefined}>
+            {busy()
+              ? '正在保存…'
+              : locationChanged()
+                ? '保存为新连接'
+                : props.existing
+                  ? '保存并重连'
+                  : '添加连接'}
           </button>
         </footer>
       </form>
@@ -350,7 +401,11 @@ export function StorageDialog(props: {
   );
 }
 
-export function StorageBrowser(props: { storage: StorageConfig; onClose: () => void }) {
+export function StorageBrowser(props: {
+  storage: StorageConfig;
+  onClose: () => void;
+  onEdit?: () => void;
+}) {
   const [prefix, setPrefix] = createSignal('');
   const [entries, setEntries] = createSignal<StorageEntry[]>([]);
   const [busy, setBusy] = createSignal(false);
@@ -401,6 +456,25 @@ export function StorageBrowser(props: { storage: StorageConfig; onClose: () => v
       onClose={props.onClose}
       busy={busy()}
     >
+      <div class="remote-connection-status">
+        <span classList={{ 'warning-text': endpointProtocol(props.storage.endpoint) === 'http:' }}>
+          {endpointProtocol(props.storage.endpoint) === 'http:'
+            ? 'HTTP · 未加密'
+            : props.storage.tls_certificate_sha256
+              ? 'HTTPS · 已信任设备证书'
+              : 'HTTPS · 标准校验'}
+        </span>
+        <Show when={props.onEdit}>
+          <button type="button" class="button small" onClick={props.onEdit} disabled={busy()}>
+            连接设置 / 重连
+          </button>
+        </Show>
+      </div>
+      <Show when={props.storage.tls_certificate_sha256}>
+        <p class="remote-certificate-pin" title="当前连接保存的证书 SHA-256">
+          SHA-256 · {displayFingerprint(props.storage.tls_certificate_sha256!)}
+        </p>
+      </Show>
       <div class="remote-toolbar">
         <button
           class="button small"

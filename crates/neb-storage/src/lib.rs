@@ -1,6 +1,9 @@
 //! Read-only storage adapters and non-overwriting local publication.
 mod remote;
 mod safe;
+mod transport;
+
+pub use transport::{inspect_tls, TlsCertificateInfo};
 
 pub use safe::{
     atomic_json, hash_reader, open_scoped, publish_reader, safe_join, validate_key,
@@ -14,6 +17,7 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 use uuid::Uuid;
 
@@ -26,6 +30,9 @@ pub struct StorageConfig {
     pub root: String,
     pub bucket: Option<String>,
     pub region: Option<String>,
+    /// Explicit trust for this source's LAN HTTPS leaf certificate only.
+    #[serde(default)]
+    pub tls_certificate_sha256: Option<String>,
     /// False after restart until credentials are supplied again.
     #[serde(default)]
     pub connected: bool,
@@ -53,6 +60,8 @@ pub struct AddStorageRequest {
     pub secret_key: Option<String>,
     #[serde(default)]
     pub session_token: Option<String>,
+    #[serde(default)]
+    pub tls_certificate_sha256: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -86,7 +95,7 @@ pub struct StorageRegistry {
     config_path: PathBuf,
     configs: Vec<StorageConfig>,
     credentials: HashMap<String, Credentials>,
-    client: reqwest::blocking::Client,
+    clients: Mutex<HashMap<String, reqwest::blocking::Client>>,
 }
 
 impl StorageRegistry {
@@ -110,7 +119,7 @@ impl StorageRegistry {
             config_path,
             configs,
             credentials,
-            client: remote::client()?,
+            clients: Mutex::new(HashMap::new()),
         })
     }
 
@@ -177,7 +186,18 @@ impl StorageRegistry {
             root,
             bucket: request.bucket,
             region: request.region,
+            tls_certificate_sha256: transport::normalize_pin(
+                request.tls_certificate_sha256.as_deref(),
+            )?,
             connected: true,
+        };
+        let client = if config.kind == "local" {
+            if config.tls_certificate_sha256.is_some() {
+                bail!("Certificate trust is only available for LAN HTTPS storage");
+            }
+            None
+        } else {
+            Some(transport::client(&config)?)
         };
         let mut configs = self.configs.clone();
         configs.retain(|c| c.id != id);
@@ -192,6 +212,12 @@ impl StorageRegistry {
             .collect();
         atomic_json(&self.config_path, &saved)?;
         self.configs = configs;
+        if let Some(client) = client {
+            self.clients
+                .get_mut()
+                .map_err(|_| anyhow::anyhow!("Storage connection lock is unavailable"))?
+                .insert(id.clone(), client);
+        }
         self.credentials.insert(
             id,
             Credentials {
@@ -217,6 +243,21 @@ impl StorageRegistry {
         Ok(config)
     }
 
+    fn client(&self, config: &StorageConfig) -> Result<reqwest::blocking::Client> {
+        let mut clients = self
+            .clients
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage connection lock is unavailable"))?;
+        if let Some(client) = clients.get(&config.id) {
+            return Ok(client.clone());
+        }
+        // Opening the registry is offline, including when environment credentials exist.
+        // Resolve and freeze LAN addresses only upon the first actual remote operation.
+        let client = transport::client(config)?;
+        clients.insert(config.id.clone(), client.clone());
+        Ok(client)
+    }
+
     pub fn browse(
         &self,
         id: &str,
@@ -229,7 +270,7 @@ impl StorageRegistry {
         let limit = limit.clamp(1, 1000);
         if config.kind != "local" {
             return remote::browse(
-                &self.client,
+                &self.client(config)?,
                 config,
                 self.credentials.get(id).unwrap_or(&Credentials::default()),
                 prefix,
@@ -285,7 +326,7 @@ impl StorageRegistry {
             return Ok(Box::new(open_scoped(&root, key)?));
         }
         remote::reader(
-            &self.client,
+            &self.client(config)?,
             config,
             self.credentials.get(id).unwrap_or(&Credentials::default()),
             key,

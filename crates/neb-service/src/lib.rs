@@ -75,6 +75,7 @@ impl Service {
                 "name": "Nebulume", "version": env!("CARGO_PKG_VERSION"), "api_version": 1,
                 "platform": std::env::consts::OS,
                 "storage": ["local", "webdav", "s3"],
+                "storage_transport": {"lan_http": true, "tls": ["public_ca", "lan_certificate_sha256"]},
                 "originals_read_only": true,
                 "credentials": "session_only",
                 "imaging": neb_core::capabilities(),
@@ -96,6 +97,9 @@ impl Service {
                     .map_err(|_| anyhow!("Storage state unavailable"))?;
                 Ok(serde_json::to_value(storage.add(request)?)?)
             }
+            "storage.inspect_tls" => Ok(serde_json::to_value(neb_storage::inspect_tls(string(
+                &params, "endpoint",
+            )?)?)?),
             "storage.browse" => {
                 let storage = self
                     .storage
@@ -178,6 +182,15 @@ mod tests {
         );
         assert!(svc.execute("secret.delete_everything", json!({})).is_err());
         assert!(svc.execute("import.plan", json!({"source": ""})).is_err());
+        assert!(svc
+            .execute("storage.inspect_tls", json!({"endpoint": ""}))
+            .is_err());
+        assert!(svc
+            .execute(
+                "storage.inspect_tls",
+                json!({"endpoint": "http://127.0.0.1"})
+            )
+            .is_err());
         assert_eq!(
             svc.execute("system.info", json!({})).unwrap()["api_version"],
             1

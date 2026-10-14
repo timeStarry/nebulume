@@ -20,13 +20,14 @@ Browser tests use Playwright Chromium by default (`pnpm exec playwright install 
 - Crop gestures and numeric fields use normalized oriented-original coordinates. Saved previews/histograms use the recipe, while editing explicitly requests `uncropped: true`. Recipe changes invalidate all image resources. Original files remain unchanged.
 - The viewer requests a maximum 2400-pixel display preview; its 1:1 view refers to decoded preview pixels. Full-resolution/tiled viewing is not implemented in this alpha.
 - Import is a source/destination → immutable plan → explicit in-dialog review → execution/result flow. Pending/duplicate statuses, warnings and per-file results remain visible. Date layout uses EXIF dates and `unknown-date` for absent dates.
-- Remote connections support browsing and downloading new local files. Session-only credentials and service errors are visible; adding the same source can reconnect it after restart.
+- Remote connections support browsing and downloading new local files. Session-only credentials and service errors are visible; connection settings on the sidebar or remote browser can reconnect the same source after restart.
+- LAN HTTP is explicitly marked as unencrypted; network scope is enforced by the backend. HTTPS defaults to standard certificate validation. Device-certificate trust first inspects the current endpoint without credentials, displays the certificate and SHA-256 fingerprint, and requires explicit user confirmation before saving the pin. Address changes, policy changes and repeated inspection revoke confirmation; request versions reject delayed results. Restoring standard validation explicitly sends a null pin. The browser demonstration cannot inspect or connect to devices.
 - Grid sorting applies to the currently loaded page; the UI shows loaded/total counts and a load-more control. Histograms describe rendered RGB values, not RAW sensor data.
 - Browser mode decodes only formats supported by the browser; EXIF, native RAW, durable index, SD card and remote access require the desktop service. Browser metadata, ratings and recipes disappear when the page closes.
 
 ## Verification completed
 
 - TypeScript and production Vite build.
-- Nine focused unit tests: normalized crop edge cases, pixel-derived histograms, crop resource invalidation, keyboard typing safety, service error propagation and honest browser capability boundaries.
-- Two Playwright browser workflows: genuine PNG file selection, histogram, rating, input keyboard safety, saved crop/re-edit/reset, real JPEG download, narrow desktop layout and modal Escape handling.
+- Sixteen focused unit tests: normalized crop edge cases, pixel-derived histograms, crop resource invalidation, keyboard typing safety, service error propagation, browser capability boundaries, explicit device-certificate trust, malformed/incorrect certificate rejection and asynchronous inspection races.
+- Seven Playwright browser workflows: genuine PNG selection/crop/export and modal focus behavior, plus standard TLS/HTTP entry, explicit fingerprint confirmation, settings reconnection and clearing a pin, delayed inspection isolation, error display and desktop-only capability messaging. Storage UI tests use an IPC fixture contained entirely in the test directory; they verify the frontend contract, not real TLS transport. Rust integration tests cover transport enforcement.
 - UI screenshots are generated in `test-results/` and ignored by Git.

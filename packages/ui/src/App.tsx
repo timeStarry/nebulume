@@ -50,10 +50,16 @@ export default function App() {
   const [notice, setNotice] = createSignal('');
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const [remote, setRemote] = createSignal<StorageConfig>();
+  const [editingStorage, setEditingStorage] = createSignal<StorageConfig>();
   const [cropMode, setCropMode] = createSignal(false);
   const [crop, setCrop] = createSignal<Crop>({ ...fullCrop });
   const [system, setSystem] = createSignal<Record<string, unknown>>();
   const [history, setHistory] = createSignal<Record<string, unknown>[]>([]);
+  function openStorageSettings(storage?: StorageConfig) {
+    setEditingStorage(storage);
+    setRemote(undefined);
+    setDialog('storage');
+  }
   let fileInput!: HTMLInputElement;
   let searchInput!: HTMLInputElement;
   let request = 0;
@@ -409,8 +415,7 @@ export default function App() {
           <button
             class="icon-button"
             aria-label="连接远程存储"
-            onClick={() => setDialog('storage')}
-            disabled={!desktop}
+            onClick={() => openStorageSettings()}
           >
             <Icon name="plus" size={15} />
           </button>
@@ -419,11 +424,7 @@ export default function App() {
           <For
             each={storages()}
             fallback={
-              <button
-                class="storage-empty"
-                onClick={() => setDialog('storage')}
-                disabled={!desktop}
-              >
+              <button class="storage-empty" onClick={() => openStorageSettings()}>
                 <Icon name="cloud" size={23} />
                 <span>
                   连接你的存储<small>WebDAV / S3</small>
@@ -433,11 +434,21 @@ export default function App() {
             }
           >
             {(storage) => (
-              <button class="nav-item" onClick={() => setRemote(storage)}>
-                <Icon name="cloud" />
-                <span>{storage.name}</span>
-                <small>{storage.kind === 's3' ? 'S3' : 'DAV'}</small>
-              </button>
+              <div class="storage-nav-row">
+                <button class="nav-item" onClick={() => setRemote(storage)}>
+                  <Icon name="cloud" />
+                  <span>{storage.name}</span>
+                  <small>{storage.kind === 's3' ? 'S3' : 'DAV'}</small>
+                </button>
+                <button
+                  class="icon-button"
+                  aria-label={`${storage.name} 连接设置`}
+                  title="连接设置 / 重连"
+                  onClick={() => openStorageSettings(storage)}
+                >
+                  <Icon name="settings" size={14} />
+                </button>
+              </div>
             )}
           </For>
         </nav>
@@ -1012,6 +1023,7 @@ export default function App() {
       </Show>
       <Show when={dialog() === 'storage'}>
         <StorageDialog
+          existing={editingStorage()}
           onClose={() => setDialog(null)}
           onAdded={(storage) => {
             setStorages((items) => [...items.filter((s) => s.id !== storage.id), storage]);
@@ -1021,7 +1033,13 @@ export default function App() {
         />
       </Show>
       <Show when={remote()}>
-        {(storage) => <StorageBrowser storage={storage()} onClose={() => setRemote(undefined)} />}
+        {(storage) => (
+          <StorageBrowser
+            storage={storage()}
+            onClose={() => setRemote(undefined)}
+            onEdit={() => openStorageSettings(storage())}
+          />
+        )}
       </Show>
       <Show when={dialog() === 'import'}>
         <ImportDialog

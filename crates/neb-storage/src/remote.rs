@@ -8,16 +8,8 @@ use reqwest::{
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{io::Read, time::Duration};
+use std::io::Read;
 use url::Url;
-
-pub fn client() -> Result<Client> {
-    Ok(Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(300))
-        .build()?)
-}
 
 pub fn validate_endpoint(endpoint: &str) -> Result<Url> {
     let url = Url::parse(endpoint).context("Invalid storage endpoint")?;
@@ -28,9 +20,8 @@ pub fn validate_endpoint(endpoint: &str) -> Result<Url> {
     {
         bail!("Endpoint must not contain credentials, query parameters or fragments");
     }
-    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        bail!("Remote storage requires HTTPS (HTTP is allowed only on loopback)");
+    if !matches!(url.scheme(), "https" | "http") {
+        bail!("Remote storage requires HTTP or HTTPS");
     }
     if url.host_str().is_none() {
         bail!("Endpoint host is required");
@@ -460,7 +451,7 @@ mod tests {
     #[test]
     fn rejects_insecure_and_credential_urls() {
         assert!(validate_endpoint("https://user:password@example.org").is_err());
-        assert!(validate_endpoint("http://example.org").is_err());
+        assert!(validate_endpoint("ftp://example.org").is_err());
         assert!(validate_endpoint("https://example.org/photos").is_ok());
         assert!(validate_endpoint("http://127.0.0.1:3214").is_ok());
     }
