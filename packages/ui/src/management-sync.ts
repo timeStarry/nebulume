@@ -1,0 +1,71 @@
+import type { Asset, AssetListOptions } from './model';
+
+export type AssetChange = 'rating' | 'crop' | 'refresh';
+export interface AssetUpdated {
+  id: string;
+  revision?: number;
+  change?: AssetChange;
+  asset?: Asset;
+}
+
+/** Older viewers and browser callbacks can be classified without reloading the library. */
+export function changedAssetFields(
+  previous: Asset | undefined,
+  next: Asset,
+): AssetChange | undefined {
+  if (!previous) return undefined;
+  if (
+    previous.preview_revision !== next.preview_revision ||
+    previous.path !== next.path ||
+    previous.size !== next.size ||
+    previous.modified_at !== next.modified_at ||
+    previous.width !== next.width ||
+    previous.height !== next.height ||
+    previous.availability !== next.availability ||
+    JSON.stringify(previous.metadata) !== JSON.stringify(next.metadata)
+  )
+    return 'refresh';
+  if (JSON.stringify(previous.crop || null) !== JSON.stringify(next.crop || null)) return 'crop';
+  if (previous.rating !== next.rating) return 'rating';
+  return undefined;
+}
+
+/** Only changes that can affect membership, representation or ordering need an index query. */
+export function needsCatalogReconcile(
+  options: AssetListOptions,
+  change: AssetChange | undefined,
+  previous: Asset | undefined,
+  next: Asset,
+): boolean {
+  if (!change || (options.library_id && next.library_id !== options.library_id)) return false;
+  if (change === 'crop') return false;
+  if (change === 'rating') return !!options.rating || options.sort_by === 'rating';
+  if (!previous) return true;
+  if (options.query && JSON.stringify(previous.metadata) !== JSON.stringify(next.metadata))
+    return true;
+  if (
+    previous.filename !== next.filename ||
+    previous.kind !== next.kind ||
+    previous.extension !== next.extension
+  )
+    return true;
+  const field = options.sort_by || 'modified_at';
+  return previous[field] !== next[field] || (!!options.rating && previous.rating !== next.rating);
+}
+
+/** Coalesce bursts while retaining a pixel change followed by a rating change. */
+export function mergePendingUpdate(
+  previous: AssetUpdated | undefined,
+  next: AssetUpdated,
+): AssetUpdated {
+  if (!previous) return next;
+  const priority = (change?: AssetChange) =>
+    change === 'refresh' ? 3 : change === 'crop' ? 2 : change === 'rating' ? 1 : 0;
+  return {
+    ...next,
+    // A bare event requires a fresh read; an older attached object must not hide it.
+    asset: next.asset,
+    revision: next.revision ?? previous.revision,
+    change: priority(previous.change) > priority(next.change) ? previous.change : next.change,
+  };
+}

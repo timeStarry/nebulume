@@ -149,6 +149,17 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       if (!asset) throw new Error('图片不存在。');
       result = asset;
       break;
+    case 'asset.focus':
+      if (!asset) throw new Error('图片不存在。');
+      result = {
+        status: 'unsupported',
+        reason: '浏览器模式无法读取相机厂商的对焦记录，请使用桌面版。',
+        source: null,
+        coordinate_space: 'oriented_full_image',
+        orientation: 1,
+        regions: [],
+      };
+      break;
     case 'asset.rate':
       if (!asset) throw new Error('图片不存在。');
       if (

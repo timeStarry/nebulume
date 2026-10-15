@@ -8,6 +8,7 @@ import {
   onCleanup,
   onMount,
 } from 'solid-js';
+import { createStore, reconcile } from 'solid-js/store';
 import { listen } from '@tauri-apps/api/event';
 import { chooseImage, desktop, execute, openViewerWindow } from './api';
 import { addBrowserFiles } from './demo';
@@ -29,6 +30,13 @@ import {
   type StorageConfig,
 } from './model';
 import { libraryLocation, sourceKind, variantViewerIds, type WorkspaceSection } from './workspace';
+import {
+  changedAssetFields,
+  mergePendingUpdate,
+  needsCatalogReconcile,
+  type AssetUpdated,
+  type AssetChange,
+} from './management-sync';
 
 type Dialog = 'library' | 'storage' | null;
 export default function ManagementApp() {
@@ -37,7 +45,14 @@ export default function ManagementApp() {
   const [sources, setSources] = createSignal<StorageConfig[]>([]);
   const [system, setSystem] = createSignal<Record<string, unknown>>();
   const [libraryId, setLibraryId] = createSignal<string>();
-  const [assets, setAssets] = createSignal<Asset[]>([]);
+  const [assetStore, setAssetStore] = createStore<{ items: Asset[] }>({ items: [] });
+  const assets = () => assetStore.items;
+  function setAssets(next: Asset[] | ((previous: Asset[]) => Asset[])) {
+    setAssetStore(
+      'items',
+      reconcile(typeof next === 'function' ? next(assets()) : next, { key: 'id' }),
+    );
+  }
   const [total, setTotal] = createSignal(0);
   const [fileTotal, setFileTotal] = createSignal<number>();
   const [selectedId, setSelectedId] = createSignal<string>();
@@ -54,6 +69,7 @@ export default function ManagementApp() {
   const [busy, setBusy] = createSignal('');
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
+  const [syncError, setSyncError] = createSignal('');
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const [editingSource, setEditingSource] = createSignal<StorageConfig>();
   const [editingLibrary, setEditingLibrary] = createSignal<Library>();
@@ -70,8 +86,17 @@ export default function ManagementApp() {
   const [overlay, setOverlay] = createSignal<{ id: string; ids: string[] }>();
   let fileInput!: HTMLInputElement;
   let searchInput: HTMLInputElement | undefined;
+  let collectionScroll: HTMLDivElement | undefined;
   let request = 0;
   const revisions = new Map<string, number>();
+  const recentUpdates = new Map<string, { sequence: number; asset: Asset }>();
+  let updateSequence = 0;
+  const pendingUpdates = new Map<string, AssetUpdated>();
+  const dirtyLibraries = new Set<string>();
+  let drainingUpdates = false;
+  let disposed = false;
+  let unlisten: (() => void) | undefined;
+  let registeringListener = false;
   let openAfterImport = false;
   const visibleLibraries = createMemo(() => libraries().filter((library) => !library.hidden));
   const currentLibrary = createMemo(() =>
@@ -81,10 +106,13 @@ export default function ManagementApp() {
   const [detail, { mutate: mutateDetail, refetch: refetchDetail }] = createResource(
     () => info() && section() === 'libraries' && selected()?.id,
     async (id): Promise<{ asset: Asset | null; error: string }> => {
+      const started = updateSequence;
       try {
+        const fetched = await execute<Asset>('asset.get', { id });
+        const update = recentUpdates.get(id);
         return {
           asset: {
-            ...(await execute<Asset>('asset.get', { id })),
+            ...(update && update.sequence > started ? update.asset : fetched),
             preview_revision: revisions.get(id),
           },
           error: '',
@@ -122,34 +150,64 @@ export default function ManagementApp() {
     if (results[1].status === 'fulfilled') setSystem(results[1].value);
     setReady(true);
   }
-  async function loadAssets(append = false) {
+  function listOptions(): AssetListOptions {
+    return {
+      library_id: libraryId(),
+      query: query().trim() || undefined,
+      rating: rating() || undefined,
+      format: format(),
+      sort_by: sort(),
+      sort_direction: direction(),
+    };
+  }
+  async function loadAssets(append = false, preserveLoaded = false) {
     const id = libraryId();
     if (!id) return;
     const token = ++request;
-    setLoading(true);
+    const started = updateSequence;
+    const options = listOptions();
+    const wanted = preserveLoaded ? Math.max(200, assets().length) : 200;
+    if (!preserveLoaded) setLoading(true);
     try {
-      const result = await execute<AssetListResult>('asset.list', {
-        library_id: id,
-        query: query().trim() || undefined,
-        rating: rating() || undefined,
-        format: format(),
-        sort_by: sort(),
-        sort_direction: direction(),
-        limit: 200,
-        offset: append ? assets().length : 0,
-      });
+      let result: AssetListResult = { items: [], total: 0 };
+      const items: Asset[] = [];
+      do {
+        result = await execute<AssetListResult>('asset.list', {
+          ...options,
+          limit: Math.min(1000, wanted - items.length),
+          offset: append ? assets().length : items.length,
+        });
+        if (token !== request || id !== libraryId() || disposed) return;
+        items.push(...result.items);
+      } while (
+        preserveLoaded &&
+        items.length < Math.min(wanted, result.total) &&
+        result.items.length
+      );
       if (token !== request || id !== libraryId()) return;
-      const revised = result.items.map((item) => ({
+      const revised = items.map((item) => ({
         ...item,
+        ...(recentUpdates.get(item.id)?.sequence! > started
+          ? recentUpdates.get(item.id)?.asset
+          : {}),
+        variants: item.variants,
         preview_revision: revisions.get(item.id),
       }));
       const next = append ? [...assets(), ...revised] : revised;
+      const scrollElement = collectionScroll;
+      const scrollTop = scrollElement?.scrollTop;
       setAssets(next);
       setTotal(result.total);
       setFileTotal(result.file_total);
+      dirtyLibraries.delete(id);
       if (!next.some((item) => item.id === selectedId())) setSelectedId(next[0]?.id);
+      if (preserveLoaded && scrollElement && scrollTop !== undefined)
+        queueMicrotask(() => {
+          if (token === request && scrollElement.isConnected) scrollElement.scrollTop = scrollTop;
+        });
     } catch (e) {
-      if (token === request) setError(errorMessage(e));
+      if (token === request && !preserveLoaded) setError(errorMessage(e));
+      if (preserveLoaded && token === request) throw e;
     } finally {
       if (token === request) setLoading(false);
     }
@@ -267,37 +325,53 @@ export default function ManagementApp() {
       if (token === request && libraryId() === library.id) setLoading(false);
     }
   }
-  function replaceAsset(asset: Asset) {
-    if (asset.preview_revision) revisions.set(asset.id, asset.preview_revision);
+  function replaceAsset(asset: Asset, change?: AssetChange) {
+    const previous =
+      assets().find((item) => item.id === asset.id) ||
+      (detail()?.asset?.id === asset.id ? detail()?.asset || undefined : undefined);
+    change ||= changedAssetFields(previous, asset) || (!previous ? 'refresh' : undefined);
+    if (change === 'crop' || change === 'refresh')
+      revisions.set(asset.id, asset.preview_revision || Date.now());
     asset = { ...asset, preview_revision: revisions.get(asset.id) };
+    const reconcileList = needsCatalogReconcile(listOptions(), change, previous, asset);
+    recentUpdates.set(asset.id, { sequence: ++updateSequence, asset });
     setAssets((items) =>
       items.map((item) => (item.id === asset.id ? { ...asset, variants: item.variants } : item)),
     );
     if (asset.id === selectedId()) mutateDetail({ asset, error: '' });
+    return reconcileList;
+  }
+  async function acceptAsset(asset: Asset, change?: AssetChange) {
+    if (replaceAsset(asset, change) && libraryId()) dirtyLibraries.add(libraryId()!);
+    // Keep a failed membership/order reconciliation pending even after the
+    // asset fields themselves have already been patched successfully.
+    if (libraryId() && dirtyLibraries.has(libraryId()!)) await loadAssets(false, true);
   }
   async function rate(value: number) {
     if (!selected() || busy()) return;
     const id = selected()!.id;
     await action('保存评级…', async () => {
-      replaceAsset(await execute<Asset>('asset.rate', { id, rating: value }));
-      await loadAssets();
+      await acceptAsset(await execute<Asset>('asset.rate', { id, rating: value }), 'rating');
     });
   }
   async function resetCrop() {
     if (!selected()) return;
     const id = selected()!.id;
     await action('重置裁剪…', async () =>
-      replaceAsset(await execute<Asset>('asset.reset_crop', { id })),
+      acceptAsset(await execute<Asset>('asset.reset_crop', { id }), 'crop'),
     );
   }
   async function refreshOriginal() {
     const id = selected()?.id;
     if (!id || !desktop || busy()) return;
     await action('正在重新读取原图…', async () => {
-      replaceAsset({
-        ...(await execute<Asset>('asset.refresh', { id })),
-        preview_revision: Date.now(),
-      });
+      await acceptAsset(
+        {
+          ...(await execute<Asset>('asset.refresh', { id })),
+          preview_revision: Date.now(),
+        },
+        'refresh',
+      );
       setNotice('已重新读取原图，评级与裁剪配方已保留。');
     });
   }
@@ -375,28 +449,71 @@ export default function ManagementApp() {
     else if (/^[0-5]$/.test(event.key)) void rate(Number(event.key));
     else if (event.key === 'Escape') setInfo(false);
   }
-  function focusRefresh() {
-    if (ready() && section() === 'libraries' && libraryId() && !overlay()) {
-      void loadAssets();
-      if (info()) void refetchDetail();
+  function queueAssetUpdate(update: AssetUpdated) {
+    if (!update.id) return;
+    pendingUpdates.set(update.id, mergePendingUpdate(pendingUpdates.get(update.id), update));
+    void drainAssetUpdates();
+  }
+  async function drainAssetUpdates() {
+    if (drainingUpdates || disposed) return;
+    drainingUpdates = true;
+    try {
+      while (pendingUpdates.size && !disposed) {
+        const [id, update] = pendingUpdates.entries().next().value!;
+        pendingUpdates.delete(id);
+        try {
+          const asset =
+            update.asset?.id === id ? update.asset : await execute<Asset>('asset.get', { id });
+          if (disposed) return;
+          await acceptAsset(
+            {
+              ...asset,
+              preview_revision: update.revision ?? asset.preview_revision ?? revisions.get(id),
+            },
+            update.change,
+          );
+          setSyncError('');
+        } catch (e) {
+          if (!pendingUpdates.has(id)) pendingUpdates.set(id, update);
+          setSyncError(`影像变更尚未同步：${errorMessage(e)}`);
+          break;
+        }
+      }
+    } finally {
+      drainingUpdates = false;
     }
+  }
+  async function registerAssetListener() {
+    if (!desktop || disposed || unlisten || registeringListener) return;
+    registeringListener = true;
+    try {
+      const stop = await listen<AssetUpdated>('asset-updated', (event) =>
+        queueAssetUpdate(event.payload),
+      );
+      if (disposed) stop();
+      else {
+        unlisten = stop;
+        setSyncError('');
+      }
+    } catch (e) {
+      setSyncError(
+        `无法监听查看器变更：${errorMessage(e)}。可重试连接；此时请手动扫描确认外部变更。`,
+      );
+    } finally {
+      registeringListener = false;
+    }
+  }
+  function focusRefresh() {
+    // Focus itself is not a catalog mutation. Only retry a known failed event
+    // or listener; never re-read unchanged assets, detail or image resources.
+    void registerAssetListener();
+    void drainAssetUpdates();
   }
   onMount(() => {
     void boot();
     window.addEventListener('keydown', keyboard);
     window.addEventListener('focus', focusRefresh);
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    if (desktop)
-      void listen<{ id: string; revision?: number }>('asset-updated', (event) => {
-        if (event.payload.revision) revisions.set(event.payload.id, event.payload.revision);
-        focusRefresh();
-      })
-        .then((stop) => {
-          if (disposed) stop();
-          else unlisten = stop;
-        })
-        .catch(() => {});
+    void registerAssetListener();
     onCleanup(() => {
       disposed = true;
       unlisten?.();
@@ -468,6 +585,14 @@ export default function ManagementApp() {
         </div>
       </nav>
       <main class="manager-workspace">
+        <Show when={syncError()}>
+          <div class="workspace-message error app-message" role="alert">
+            <span>{syncError()}</span>
+            <button class="button small" onClick={focusRefresh}>
+              重试影像同步
+            </button>
+          </div>
+        </Show>
         <Show when={error()}>
           <div class="workspace-message error app-message" role="alert">
             <span>{error()}</span>
@@ -731,7 +856,7 @@ export default function ManagementApp() {
                   />
                 </div>
                 <div class="collection-body">
-                  <div class="collection-scroll">
+                  <div class="collection-scroll" ref={collectionScroll}>
                     <Show
                       when={assets().length}
                       fallback={
@@ -996,10 +1121,9 @@ export default function ManagementApp() {
             initialAssetIds={context().ids}
             onClose={() => {
               setOverlay(undefined);
-              void loadAssets();
               document.title = 'Nebulume — 影像管理';
             }}
-            onAssetChanged={replaceAsset}
+            onAssetChanged={(asset) => void acceptAsset(asset)}
           />
         )}
       </Show>
@@ -1073,6 +1197,8 @@ function Settings(props: {
           <kbd>1–5 / 0</kbd>
           <span>查看器中裁剪</span>
           <kbd>C</kbd>
+          <span>显示或隐藏相机对焦点</span>
+          <kbd>P</kbd>
           <span>查看器全屏</span>
           <kbd>F</kbd>
           <span>退出裁剪 / 全屏 / 查看器</span>

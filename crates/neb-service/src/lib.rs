@@ -474,6 +474,7 @@ impl Service {
             "asset.get",
             "asset.preview",
             "asset.histogram",
+            "asset.focus",
             "asset.export",
         ]
         .contains(&command)

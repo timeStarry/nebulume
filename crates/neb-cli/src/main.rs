@@ -33,7 +33,19 @@ enum Action {
     Stdio,
 }
 fn main() {
-    if let Err(error) = run() {
+    // Image decoders can exceed the Windows executable's default stack in debug
+    // builds. Give the command session an explicit, platform-independent budget.
+    let result = std::thread::Builder::new()
+        .name("neb-command-session".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run)
+        .map_err(anyhow::Error::from)
+        .and_then(|thread| {
+            thread
+                .join()
+                .map_err(|_| anyhow::anyhow!("Command session terminated unexpectedly"))?
+        });
+    if let Err(error) = result {
         eprintln!(
             "{}",
             json!({"code":"E_CLI", "message":format!("{error:#}")})

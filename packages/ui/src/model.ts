@@ -58,6 +58,25 @@ export interface Preview {
   width: number;
   height: number;
   source: string;
+  coordinate_mapping?: {
+    orientation: number;
+    full_width: number;
+    full_height: number;
+    crop: Crop;
+  };
+}
+export interface FocusRegion extends Crop {
+  kind: 'selected' | 'active';
+}
+export interface FocusInfo {
+  status: 'available' | 'missing' | 'unsupported';
+  reason?: string;
+  source: 'nikon_afinfo2' | null;
+  coordinate_space: 'oriented_full_image';
+  orientation: number;
+  image_width?: number;
+  image_height?: number;
+  regions: FocusRegion[];
 }
 export interface Histogram {
   red: number[];

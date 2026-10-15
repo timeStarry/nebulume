@@ -80,13 +80,53 @@ async function nativeFixture(
     }
   });
   await page.addInitScript(() => {
+    let nextCallback = 0;
+    let nextListener = 0;
+    const callbacks = new Map<number, (event: unknown) => void>();
+    const listeners = new Map<number, { event: string; handler: number }>();
     const runtime = window as unknown as {
       isTauri: boolean;
-      __TAURI_INTERNALS__: { invoke: (command: string, params: unknown) => Promise<unknown> };
+      __TAURI_INTERNALS__: {
+        transformCallback: (callback: (event: unknown) => void) => number;
+        unregisterCallback: (id: number) => void;
+        invoke: (command: string, params: Record<string, unknown>) => Promise<unknown>;
+      };
+      __TAURI_EVENT_PLUGIN_INTERNALS__: {
+        unregisterListener: (event: string, id: number) => void;
+      };
     };
     runtime.isTauri = true;
+    runtime.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: (event, id) => {
+        const listener = listeners.get(id);
+        if (listener?.event === event) {
+          callbacks.delete(listener.handler);
+          listeners.delete(id);
+        }
+      },
+    };
     runtime.__TAURI_INTERNALS__ = {
+      transformCallback: (callback) => {
+        callbacks.set(++nextCallback, callback);
+        return nextCallback;
+      },
+      unregisterCallback: (id) => {
+        callbacks.delete(id);
+      },
       invoke: async (command, params) => {
+        if (command === 'plugin:event|listen') {
+          const handler = Number(params.handler);
+          if (!callbacks.has(handler)) throw new Error('Unregistered fixture event callback');
+          listeners.set(++nextListener, { event: String(params.event), handler });
+          return nextListener;
+        }
+        if (command === 'plugin:event|unlisten') {
+          runtime.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(
+            String(params.event),
+            Number(params.eventId),
+          );
+          return null;
+        }
         if (command !== 'execute') throw new Error(`Unexpected native command: ${command}`);
         const response = await fetch('/__storage_test_rpc', {
           method: 'POST',

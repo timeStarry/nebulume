@@ -203,6 +203,11 @@ impl Core {
                 let path = self.checked_asset_path(&asset)?;
                 imaging::histogram(&path, asset.crop)
             }
+            "asset.focus" => {
+                let asset = self.asset(&id(&params)?)?;
+                let path = self.checked_asset_path(&asset)?;
+                Ok(serde_json::to_value(crate::focus_points::read(&path)?)?)
+            }
             "asset.export" => {
                 #[derive(Deserialize)]
                 struct Export {

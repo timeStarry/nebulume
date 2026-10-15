@@ -160,6 +160,13 @@ fn webdav_library_roundtrip(
     drop(svc);
     let svc = Service::open(data).unwrap();
     svc.execute("storage.add",json!({"name":"测试DAV","kind":"webdav","endpoint":endpoint,"username":"test-user","password":"synthetic-fixture","remember_credentials":false})).unwrap();
+    // Focus inspection is itself an explicit original read. It must materialize
+    // a remote file even when no image/EXIF panel has been opened yet.
+    let focus = svc
+        .execute("asset.focus", json!({"id":asset["id"]}))
+        .unwrap();
+    assert_eq!(focus["status"], "unsupported"); // PPM has no MakerNote.
+    assert_eq!(focus["regions"], json!([]));
     let opened = svc.execute("asset.get", json!({"id":asset["id"]})).unwrap();
     assert_eq!(opened["id"], asset["id"]);
     assert_eq!(opened["path"], asset["path"]);

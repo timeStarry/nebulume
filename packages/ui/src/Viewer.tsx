@@ -6,8 +6,17 @@ import { chooseSave, desktop, execute, viewerContext } from './api';
 import AssetInspector from './AssetInspector';
 import PhotoView from './PhotoView';
 import Icon from './Icon';
-import { errorMessage, fullCrop, isTextEntry, validCrop, type Asset, type Crop } from './model';
+import {
+  errorMessage,
+  fullCrop,
+  isTextEntry,
+  validCrop,
+  type Asset,
+  type Crop,
+  type FocusInfo,
+} from './model';
 import { viewerIds } from './workspace';
+import './viewer-focus.css';
 
 export default function Viewer(props: {
   initialAssetId?: string;
@@ -26,11 +35,42 @@ export default function Viewer(props: {
   const [cropMode, setCropMode] = createSignal(false);
   const [crop, setCrop] = createSignal<Crop>({ ...fullCrop });
   const [controls, setControls] = createSignal(true);
+  const [focusEnabled, setFocusEnabled] = createSignal(false);
+  const [focusData, setFocusData] = createSignal<FocusInfo>();
+  const [focusLoading, setFocusLoading] = createSignal(false);
+  const [focusError, setFocusError] = createSignal('');
+  const [refreshing, setRefreshing] = createSignal(false);
   let container!: HTMLDivElement;
   let timer: ReturnType<typeof setTimeout>;
   let request = 0;
+  let focusRequest = 0;
   const revisions = new Map<string, number>();
   const index = createMemo(() => ids().indexOf(id() || ''));
+  const focusKey = createMemo(() => {
+    const current = asset();
+    return focusEnabled() && !cropMode() && !refreshing() && current?.id === id() && current
+      ? JSON.stringify({ id: current.id, revision: current.preview_revision || 0 })
+      : false;
+  });
+  createEffect(
+    on(focusKey, (key) => {
+      const token = ++focusRequest;
+      setFocusData(undefined);
+      setFocusError('');
+      setFocusLoading(!!key);
+      if (!key) return;
+      void execute<FocusInfo>('asset.focus', { id: JSON.parse(key).id })
+        .then((result) => {
+          if (token === focusRequest && key === focusKey()) setFocusData(result);
+        })
+        .catch((error) => {
+          if (token === focusRequest && key === focusKey()) setFocusError(errorMessage(error));
+        })
+        .finally(() => {
+          if (token === focusRequest) setFocusLoading(false);
+        });
+    }),
+  );
   const showControls = () => controls() || cropMode() || !!busy() || !!error();
   function activity() {
     setControls(true);
@@ -89,6 +129,7 @@ export default function Viewer(props: {
       clearTimeout(timer);
       window.removeEventListener('keydown', keyboard);
       request++;
+      focusRequest++;
       if (props.onClose) previousFocus?.focus();
       if (props.onClose) document.title = previousTitle;
     });
@@ -188,11 +229,19 @@ export default function Viewer(props: {
       move(-1);
     } else if (key === 'i') setInfo((value) => !value);
     else if (key === 'c') beginCrop();
-    else if (key === 'f') void fullscreen();
+    else if (key === 'p' && !event.repeat) {
+      event.preventDefault();
+      toggleFocus();
+    } else if (key === 'f') void fullscreen();
     else if (key === 'escape') {
       event.preventDefault();
       void escape();
     } else if (/^[0-5]$/.test(key)) void rate(Number(key));
+  }
+  function toggleFocus() {
+    if (!asset()) return;
+    setFocusEnabled((enabled) => !enabled);
+    activity();
   }
   async function action(label: string, run: () => Promise<void>) {
     if (busy()) return;
@@ -208,24 +257,30 @@ export default function Viewer(props: {
       activity();
     }
   }
-  async function changed(updated: Asset) {
-    const revision = updated.preview_revision || revisions.get(updated.id);
+  async function changed(updated: Asset, change: 'rating' | 'crop' | 'refresh') {
+    const revision =
+      change === 'crop' ? Date.now() : updated.preview_revision || revisions.get(updated.id);
     updated = { ...updated, preview_revision: revision };
     if (revision) revisions.set(updated.id, revision);
     if (updated.id === id()) setAsset(updated);
     props.onAssetChanged?.(updated);
     if (desktop)
       try {
-        await emit('asset-updated', { id: updated.id, revision });
+        await emit('asset-updated', {
+          id: updated.id,
+          change,
+          asset: updated,
+          ...(change === 'rating' ? {} : { revision }),
+        });
       } catch {
-        /* The edit already succeeded; focus refresh also updates the manager. */
+        setError('编辑已保存，但未能通知图库更新。请在图库使用“扫描更新”。');
       }
   }
   async function rate(rating: number) {
     const target = asset();
     if (!target) return;
     await action('保存评级…', async () =>
-      changed(await execute<Asset>('asset.rate', { id: target.id, rating })),
+      changed(await execute<Asset>('asset.rate', { id: target.id, rating }), 'rating'),
     );
   }
   function beginCrop() {
@@ -238,7 +293,7 @@ export default function Viewer(props: {
   async function saveCrop() {
     if (!asset() || !validCrop(crop())) return;
     await action('保存裁剪…', async () => {
-      await changed(await execute<Asset>('asset.crop', { id: asset()!.id, ...crop() }));
+      await changed(await execute<Asset>('asset.crop', { id: asset()!.id, ...crop() }), 'crop');
       setCropMode(false);
       setNotice('裁剪已保存，原片保持不变。');
     });
@@ -247,7 +302,7 @@ export default function Viewer(props: {
     const target = asset();
     if (!target) return;
     await action('重置裁剪…', async () => {
-      await changed(await execute<Asset>('asset.reset_crop', { id: target.id }));
+      await changed(await execute<Asset>('asset.reset_crop', { id: target.id }), 'crop');
       setCrop({ ...fullCrop });
       setCropMode(false);
     });
@@ -269,9 +324,14 @@ export default function Viewer(props: {
     const target = asset();
     if (!target || !desktop) return;
     await action('正在重新读取原图…', async () => {
-      const refreshed = await execute<Asset>('asset.refresh', { id: target.id });
-      await changed({ ...refreshed, preview_revision: Date.now() });
-      setNotice('已重新读取原图，评级与裁剪配方已保留。');
+      setRefreshing(true);
+      try {
+        const refreshed = await execute<Asset>('asset.refresh', { id: target.id });
+        await changed({ ...refreshed, preview_revision: Date.now() }, 'refresh');
+        setNotice('已重新读取原图，评级与裁剪配方已保留。');
+      } finally {
+        setRefreshing(false);
+      }
     });
   }
   return (
@@ -297,6 +357,28 @@ export default function Viewer(props: {
             </span>
           </div>
           <div class="viewer-toolbar-actions">
+            <button
+              class={`icon-button focus-toggle ${focusEnabled() ? 'active' : ''}`}
+              onClick={toggleFocus}
+              disabled={!asset()}
+              aria-label="显示对焦点（P）"
+              aria-pressed={focusEnabled()}
+              title="显示对焦点（P，裁剪时暂隐藏）"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                aria-hidden="true"
+              >
+                <path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5" />
+                <rect x="8" y="8" width="8" height="8" rx="1" />
+              </svg>
+              <span>对焦点</span>
+            </button>
             <Show when={desktop}>
               <button
                 class="icon-button"
@@ -400,13 +482,17 @@ export default function Viewer(props: {
               onNext={() => move(1)}
               hasPrevious={!busy() && !cropMode() && index() > 0}
               hasNext={!busy() && !cropMode() && index() < ids().length - 1}
+              focusEnabled={focusEnabled()}
+              focusData={focusData()}
+              focusLoading={focusLoading() || refreshing()}
+              focusError={focusError()}
             />
           )}
         </Show>
         <div class="viewer-bottom-status viewer-chrome">
           <span>{busy() || '← → 切换 · 滚轮缩放 · 拖动平移'}</span>
           <span>
-            <kbd>I</kbd> 信息 <kbd>C</kbd> 裁剪 <kbd>F</kbd> 全屏
+            <kbd>I</kbd> 信息 <kbd>C</kbd> 裁剪 <kbd>P</kbd> 对焦点 <kbd>F</kbd> 全屏
           </span>
         </div>
       </div>

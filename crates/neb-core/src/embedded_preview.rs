@@ -290,13 +290,17 @@ fn jpeg_reader(bytes: &[u8]) -> ImageReader<Cursor<&[u8]>> {
 }
 
 pub(crate) fn read(path: &Path) -> Result<DynamicImage> {
+    read_with_orientation(path).map(|(image, _)| image)
+}
+
+pub(crate) fn read_with_orientation(path: &Path) -> Result<(DynamicImage, u8)> {
     let file = File::open(path)?;
     let info = file.metadata()?;
     ensure!(
         info.is_file() && info.len() <= super::imaging::MAX_FILE_BYTES,
         "E_LIMIT: Invalid or oversized RAW preview source"
     );
-    decode(TiffReader {
+    decode_with_orientation(TiffReader {
         input: file,
         length: info.len(),
         little: true,
@@ -305,7 +309,14 @@ pub(crate) fn read(path: &Path) -> Result<DynamicImage> {
     })
 }
 
-fn decode<R: Read + Seek>(mut reader: TiffReader<R>) -> Result<DynamicImage> {
+#[cfg(test)]
+fn decode<R: Read + Seek>(reader: TiffReader<R>) -> Result<DynamicImage> {
+    decode_with_orientation(reader).map(|(image, _)| image)
+}
+
+fn decode_with_orientation<R: Read + Seek>(
+    mut reader: TiffReader<R>,
+) -> Result<(DynamicImage, u8)> {
     let mut images = Vec::new();
     for candidate in reader.candidates()? {
         let bytes = reader.read_at(candidate.offset, candidate.length, false)?;
@@ -350,7 +361,7 @@ fn decode<R: Read + Seek>(mut reader: TiffReader<R>) -> Result<DynamicImage> {
             image.apply_orientation(
                 Orientation::from_exif(orientation as u8).unwrap_or(Orientation::NoTransforms),
             );
-            return Ok(image);
+            return Ok((image, orientation as u8));
         }
     }
     bail!("E_UNSUPPORTED_CODEC: No decodable standard TIFF embedded JPEG preview")
@@ -518,8 +529,17 @@ mod tests {
         bytes.extend(((payload.len() + 2) as u16).to_be_bytes());
         bytes.extend(payload);
         bytes.extend(&original[2..]);
-        let image = from_bytes(tiff(true, &[bytes], 6, false)).unwrap();
+        let file = tiff(true, &[bytes], 6, false);
+        let (image, effective_orientation) = decode_with_orientation(TiffReader {
+            length: file.len() as u64,
+            input: Cursor::new(file),
+            little: true,
+            read_bytes: 0,
+            metadata_bytes: 0,
+        })
+        .unwrap();
         assert_eq!((image.width(), image.height()), (8, 5));
+        assert_eq!(effective_orientation, 1);
     }
 
     #[test]

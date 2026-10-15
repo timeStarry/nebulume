@@ -1,5 +1,6 @@
 import {
   createEffect,
+  For,
   createMemo,
   createResource,
   createSignal,
@@ -16,8 +17,10 @@ import {
   type Asset,
   type Crop,
   type Preview,
+  type FocusInfo,
 } from './model';
 import Icon from './Icon';
+import { focusPresentation } from './viewer-focus';
 
 export function Thumbnail(props: {
   asset: Asset;
@@ -109,6 +112,10 @@ export default function PhotoView(props: {
   onNext: () => void;
   hasPrevious: boolean;
   hasNext: boolean;
+  focusEnabled?: boolean;
+  focusData?: FocusInfo;
+  focusLoading?: boolean;
+  focusError?: string;
 }) {
   let stage!: HTMLDivElement;
   let wrap!: HTMLDivElement;
@@ -143,6 +150,16 @@ export default function PhotoView(props: {
     width: (preview()?.data?.width || 0) * fitScale() * zoom(),
     height: (preview()?.data?.height || 0) * fitScale() * zoom(),
   }));
+  const focus = createMemo(() => {
+    if (!props.focusEnabled) return { regions: [], message: '' };
+    if (props.cropMode)
+      return { regions: [], message: '裁剪模式中暂不显示对焦点；退出裁剪后恢复。' };
+    if (props.focusLoading) return { regions: [], message: '正在读取相机对焦信息…' };
+    if (props.focusError) return { regions: [], message: `对焦信息未能读取：${props.focusError}` };
+    if (preview.loading || !props.focusData)
+      return { regions: [], message: '正在等待预览与对焦信息…' };
+    return focusPresentation(props.focusData, preview()?.data?.coordinate_mapping);
+  });
   function fit() {
     setZoom(1);
     setPan({ x: 0, y: 0 });
@@ -261,9 +278,35 @@ export default function PhotoView(props: {
                     <span class="crop-corner bottom-right" />
                   </div>
                 </Show>
+                <Show when={focus().regions.length}>
+                  <div
+                    class="focus-overlay"
+                    role="img"
+                    aria-label={`相机记录的 ${focus().regions.length} 处对焦区域`}
+                  >
+                    <For each={focus().regions}>
+                      {(region) => (
+                        <div
+                          class={`focus-region ${region.kind}`}
+                          style={{
+                            left: `${region.x * 100}%`,
+                            top: `${region.y * 100}%`,
+                            width: `${region.width * 100}%`,
+                            height: `${region.height * 100}%`,
+                          }}
+                        />
+                      )}
+                    </For>
+                  </div>
+                </Show>
               </div>
             )}
           </Show>
+        </Show>
+        <Show when={props.focusEnabled}>
+          <div class="viewer-focus-status" role="status" aria-live="polite">
+            {focus().message}
+          </div>
         </Show>
         <Show when={!props.cropMode}>
           <button

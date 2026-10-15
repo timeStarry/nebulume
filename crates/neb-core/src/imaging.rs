@@ -261,8 +261,27 @@ pub fn render(
     crop: Option<Crop>,
     max_side: Option<u32>,
 ) -> Result<(DynamicImage, &'static str)> {
+    let frame = render_frame(path, crop, max_side)?;
+    Ok((frame.image, frame.source))
+}
+
+#[derive(serde::Serialize)]
+struct CoordinateMapping {
+    orientation: u8,
+    full_width: u32,
+    full_height: u32,
+    crop: Crop,
+}
+
+struct RenderedFrame {
+    image: DynamicImage,
+    source: &'static str,
+    coordinate_mapping: CoordinateMapping,
+}
+
+fn render_frame(path: &Path, crop: Option<Crop>, max_side: Option<u32>) -> Result<RenderedFrame> {
     check_file(path)?;
-    let (mut image, source) = if kind(&extension(path)) == Some("raw") {
+    let (mut image, source, orientation) = if kind(&extension(path)) == Some("raw") {
         // Keep enough full-frame pixels that a small saved crop can still fill
         // the requested preview. Exports pass None and render all sensor pixels.
         let raw_limit = max_side.map(|limit| {
@@ -272,12 +291,12 @@ pub fn render(
                 .min(f64::from(u32::MAX)) as u32
         });
         match render_sensor(path, raw_limit) {
-            Ok(image) => (image, "raw_demosaic"),
+            Ok((image, orientation)) => (image, "raw_demosaic", orientation),
             Err(raw_error) if max_side.is_some() => {
-                let preview = crate::embedded_preview::read(path).with_context(|| {
+                let (preview, orientation) = crate::embedded_preview::read_with_orientation(path).with_context(|| {
                     format!("RAW sensor decoding unavailable ({raw_error:#}); embedded preview fallback failed")
                 })?;
-                (preview, "embedded_jpeg")
+                (preview, "embedded_jpeg", orientation)
             }
             Err(error) => {
                 return Err(error.context(
@@ -295,7 +314,18 @@ pub fn render(
         let mut image =
             DynamicImage::from_decoder(decoder).context("E_DECODE: Image decoding failed")?;
         image.apply_orientation(orientation);
-        (image, "raster")
+        (image, "raster", orientation.to_exif())
+    };
+    let mut coordinate_mapping = CoordinateMapping {
+        orientation,
+        full_width: image.width(),
+        full_height: image.height(),
+        crop: Crop {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        },
     };
     if let Some(crop) = crop {
         crop.validate()?;
@@ -305,17 +335,30 @@ pub fn render(
         let right = (((crop.x + crop.width) * f64::from(width)).ceil() as u32).clamp(x + 1, width);
         let bottom =
             (((crop.y + crop.height) * f64::from(height)).ceil() as u32).clamp(y + 1, height);
+        coordinate_mapping.crop = Crop {
+            x: f64::from(x) / f64::from(width),
+            y: f64::from(y) / f64::from(height),
+            width: f64::from(right - x) / f64::from(width),
+            height: f64::from(bottom - y) / f64::from(height),
+        };
         image = image.crop_imm(x, y, right - x, bottom - y);
     }
-    Ok((image, source))
+    Ok(RenderedFrame {
+        image,
+        source,
+        coordinate_mapping,
+    })
 }
 
-fn render_sensor(path: &Path, max_side: Option<u32>) -> Result<DynamicImage> {
+fn render_sensor(path: &Path, max_side: Option<u32>) -> Result<(DynamicImage, u8)> {
     raw_header(path)?;
     let raw = std::panic::catch_unwind(|| rawloader::decode_file(path))
         .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected this file"))?
         .context("E_UNSUPPORTED_CODEC: RAW decoding failed; this camera or compression may be unsupported")?;
-    develop_raw(&raw, max_side)
+    let orientation = Orientation::from_exif(raw.orientation.to_u16() as u8)
+        .unwrap_or(Orientation::NoTransforms)
+        .to_exif();
+    Ok((develop_raw(&raw, max_side)?, orientation))
 }
 
 /// Deliberately simple, deterministic RAW development: channel-specific black /
@@ -469,12 +512,12 @@ pub fn preview(path: &Path, crop: Option<Crop>, max_size: u32) -> Result<Value> 
         (32..=4096).contains(&max_size),
         "E_INVALID: Preview max_size must be between 32 and 4096"
     );
-    let (image, source) = render(path, crop, Some(max_size))?;
-    let image = downsample(image, max_size);
+    let frame = render_frame(path, crop, Some(max_size))?;
+    let image = downsample(frame.image, max_size);
     let mut bytes = Cursor::new(Vec::new());
     JpegEncoder::new_with_quality(&mut bytes, 88).encode_image(&image.to_rgb8())?;
     Ok(
-        json!({"data_url": format!("data:image/jpeg;base64,{}", STANDARD.encode(bytes.into_inner())), "width": image.width(), "height": image.height(), "source": source}),
+        json!({"data_url": format!("data:image/jpeg;base64,{}", STANDARD.encode(bytes.into_inner())), "width": image.width(), "height": image.height(), "source": frame.source, "coordinate_mapping": frame.coordinate_mapping}),
     )
 }
 
@@ -534,4 +577,37 @@ pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Val
         )
     })?;
     Ok(json!({"path": dunce::canonicalize(destination)?.to_string_lossy()}))
+}
+
+#[cfg(test)]
+mod coordinate_tests {
+    use super::*;
+
+    #[test]
+    fn preview_reports_actual_crop_rounding_and_full_frame_before_downsample() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("grid.png");
+        RgbImage::from_pixel(70, 50, Rgb([30, 90, 120]))
+            .save(&path)
+            .unwrap();
+        let crop = Crop {
+            x: 0.13,
+            y: 0.22,
+            width: 0.32,
+            height: 0.5,
+        };
+        let cropped = preview(&path, Some(crop), 32).unwrap();
+        let mapping = &cropped["coordinate_mapping"];
+        assert_eq!(mapping["orientation"], 1);
+        assert_eq!(mapping["full_width"], 70);
+        assert_eq!(mapping["full_height"], 50);
+        assert_eq!(mapping["crop"]["x"], 9.0 / 70.0);
+        assert_eq!(mapping["crop"]["y"], 11.0 / 50.0);
+        assert_eq!(mapping["crop"]["width"], 23.0 / 70.0);
+        assert_eq!(mapping["crop"]["height"], 25.0 / 50.0);
+        let uncropped = preview(&path, None, 32).unwrap();
+        assert_eq!(uncropped["coordinate_mapping"]["full_width"], 70);
+        assert_eq!(uncropped["coordinate_mapping"]["crop"]["width"], 1.0);
+        assert_eq!(uncropped["width"], 32);
+    }
 }
