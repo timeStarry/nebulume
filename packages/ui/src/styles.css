@@ -2591,6 +2591,7 @@ kbd {
 }
 .library-card {
   display: block;
+  width: 100%;
   min-width: 0;
   text-align: left;
   padding: 19px 19px 0;
@@ -2600,6 +2601,64 @@ kbd {
   transition:
     border-color 0.15s,
     background 0.15s;
+}
+.library-card-container {
+  min-width: 0;
+}
+.library-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding-top: 8px;
+}
+.asset-card {
+  min-width: 0;
+}
+.asset-card > .thumbnail {
+  width: 100%;
+}
+.asset-variants {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  font-size: 9px;
+  color: #a8b59e;
+}
+.asset-variants > span {
+  margin-right: auto;
+}
+.asset-variants .button {
+  min-height: 23px;
+  padding: 0 7px;
+  font-size: 9px;
+}
+.button.danger {
+  border-color: #a37165;
+  color: #f0c0af;
+  background: #4b302a;
+}
+.confirmation-copy {
+  font-size: 12px;
+  line-height: 1.8;
+}
+.confirmation-copy p + p {
+  margin-top: 12px;
+  color: #b5bbaa;
+}
+.dialog-form .checkbox-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.dialog-form .checkbox-row input {
+  width: auto;
+}
+.field-help {
+  color: #a6b19c;
+  font-size: 11px;
+  line-height: 1.7;
 }
 .library-card:hover {
   border-color: #778c60;
@@ -2742,12 +2801,21 @@ kbd {
 }
 .collection-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   padding: 0 24px 17px;
   border-bottom: 1px solid #323e2c;
   color: #7e9670;
   font-size: 10px;
+}
+.collection-heading {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.collection-heading > div {
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .collection-controls .search-field {
   height: 33px;
@@ -2872,7 +2940,7 @@ kbd {
 .source-list-head,
 .source-row {
   display: grid;
-  grid-template-columns: minmax(210px, 1fr) 85px 150px 243px;
+  grid-template-columns: minmax(210px, 1fr) 85px 150px 280px;
   gap: 16px;
   align-items: center;
   min-width: 735px;

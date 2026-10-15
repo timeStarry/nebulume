@@ -20,6 +20,7 @@ struct MockVault {
     fail_load: AtomicBool,
     fail_save: AtomicBool,
     fail_delete: AtomicBool,
+    ignore_delete: AtomicBool,
 }
 impl CredentialStore for MockVault {
     fn load(&self, key: &str) -> Result<Option<Zeroizing<Vec<u8>>>, CredentialStoreError> {
@@ -44,7 +45,9 @@ impl CredentialStore for MockVault {
         if self.fail_delete.load(Ordering::SeqCst) {
             return Err(CredentialStoreError::Unavailable);
         }
-        self.records.lock().unwrap().remove(key);
+        if !self.ignore_delete.load(Ordering::SeqCst) {
+            self.records.lock().unwrap().remove(key);
+        }
         Ok(())
     }
 }
@@ -327,6 +330,130 @@ fn failed_settings_publication_restores_the_previous_vault_record() {
         .unwrap()
         .values()
         .all(|secret| **secret == *previous));
+}
+
+#[test]
+fn removing_a_source_forgets_its_vault_record_and_survives_restart() {
+    let data = tempfile::tempdir().unwrap();
+    let vault = Arc::new(MockVault::default());
+    let mut registry =
+        StorageRegistry::open_with_credential_store(data.path(), vault.clone()).unwrap();
+    let removed = registry
+        .add(request("https://removed.invalid", None))
+        .unwrap();
+    let retained = registry
+        .add(request("https://retained.invalid", None))
+        .unwrap();
+    let original_records = vault.records.lock().unwrap().len();
+    assert_eq!(registry.remove(&removed.id).unwrap().id, removed.id);
+    assert_eq!(vault.records.lock().unwrap().len(), original_records - 1);
+    assert_eq!(registry.list().len(), 1);
+    assert_eq!(registry.list()[0].id, retained.id);
+    assert!(registry.check(&removed.id).is_err());
+    assert!(registry.remove(&removed.id).is_err());
+    let reopened = StorageRegistry::open_with_credential_store(data.path(), vault).unwrap();
+    assert_eq!(reopened.list().len(), 1);
+    assert_eq!(reopened.list()[0].id, retained.id);
+    let settings = fs::read_to_string(data.path().join("storage.json")).unwrap();
+    assert!(!settings.contains(&removed.id));
+    assert!(!settings.contains("fixture-pass"));
+}
+
+#[test]
+fn removal_failure_keeps_source_and_restores_credentials() {
+    for failure in ["load", "delete", "publish"] {
+        let data = tempfile::tempdir().unwrap();
+        let vault = Arc::new(MockVault::default());
+        let mut registry =
+            StorageRegistry::open_with_credential_store(data.path(), vault.clone()).unwrap();
+        let config = registry
+            .add(request("https://example.invalid", None))
+            .unwrap();
+        let prior = vault.records.lock().unwrap().clone();
+        match failure {
+            "load" => vault.fail_load.store(true, Ordering::SeqCst),
+            "delete" => vault.fail_delete.store(true, Ordering::SeqCst),
+            _ => {
+                fs::rename(
+                    data.path().join("storage.json"),
+                    data.path().join("before.json"),
+                )
+                .unwrap();
+                fs::create_dir(data.path().join("storage.json")).unwrap();
+            }
+        }
+        assert!(registry.remove(&config.id).is_err(), "{failure}");
+        assert_eq!(registry.list()[0].id, config.id);
+        assert_eq!(*vault.records.lock().unwrap(), prior);
+        if failure != "publish" {
+            let reopened = StorageRegistry::open_with_credential_store(data.path(), vault).unwrap();
+            assert_eq!(reopened.list()[0].id, config.id);
+        }
+    }
+}
+
+#[test]
+fn removal_verifies_vault_deletion_and_reports_failed_rollback() {
+    for failure in ["silent-delete", "rollback"] {
+        let data = tempfile::tempdir().unwrap();
+        let vault = Arc::new(MockVault::default());
+        let mut registry =
+            StorageRegistry::open_with_credential_store(data.path(), vault.clone()).unwrap();
+        let config = registry
+            .add(request("https://example.invalid", None))
+            .unwrap();
+        if failure == "silent-delete" {
+            vault.ignore_delete.store(true, Ordering::SeqCst);
+        } else {
+            fs::rename(
+                data.path().join("storage.json"),
+                data.path().join("before.json"),
+            )
+            .unwrap();
+            fs::create_dir(data.path().join("storage.json")).unwrap();
+            vault.fail_save.store(true, Ordering::SeqCst);
+        }
+        let error = format!("{:#}", registry.remove(&config.id).unwrap_err());
+        assert_eq!(registry.list()[0].id, config.id);
+        if failure == "silent-delete" {
+            assert!(error.contains("did not remove"));
+            assert_eq!(vault.records.lock().unwrap().len(), 1);
+        } else {
+            assert!(error.contains("could not be restored; re-enter credentials"));
+            assert!(vault.records.lock().unwrap().is_empty());
+        }
+        assert!(!error.contains("fixture-pass"));
+    }
+}
+
+#[test]
+fn removing_local_and_session_sources_never_contacts_vault_or_deletes_files() {
+    let data = tempfile::tempdir().unwrap();
+    let photos = tempfile::tempdir().unwrap();
+    let original = photos.path().join("retained.jpg");
+    fs::write(&original, b"immutable synthetic original").unwrap();
+    let vault = Arc::new(MockVault::default());
+    vault.fail_load.store(true, Ordering::SeqCst);
+    vault.fail_delete.store(true, Ordering::SeqCst);
+    let mut registry =
+        StorageRegistry::open_with_credential_store(data.path(), vault.clone()).unwrap();
+    let local = registry
+        .add(
+            serde_json::from_value(serde_json::json!({
+                "name":"Local fixture", "kind":"local", "endpoint":photos.path()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let session = registry
+        .add(request("https://session.invalid", Some(false)))
+        .unwrap();
+    registry.remove(&local.id).unwrap();
+    registry.remove(&session.id).unwrap();
+    assert!(registry.list().is_empty());
+    assert_eq!(fs::read(original).unwrap(), b"immutable synthetic original");
+    assert_eq!(vault.loads.load(Ordering::SeqCst), 0);
+    assert_eq!(vault.writes.load(Ordering::SeqCst), 0);
 }
 
 #[test]

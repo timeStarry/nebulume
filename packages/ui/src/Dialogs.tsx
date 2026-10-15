@@ -83,17 +83,30 @@ export function LibraryDialog(props: {
   sources: StorageConfig[];
   initialSource?: StorageConfig;
   initialPrefix?: string;
+  existing?: Library;
   onSourceAdded: (source: StorageConfig) => void;
   onClose: () => void;
-  onAdded: (library: Library) => void;
+  onAdded: (library: Library, bindingChanged?: boolean) => void;
 }) {
   const [name, setName] = createSignal(
-    props.initialPrefix?.replace(/\/$/, '').split('/').pop() || props.initialSource?.name || '',
+    props.existing?.name ||
+      props.initialPrefix?.replace(/\/$/, '').split('/').pop() ||
+      props.initialSource?.name ||
+      '',
   );
   const [sourceId, setSourceId] = createSignal(
-    props.initialSource?.id || props.sources[0]?.id || '',
+    props.existing?.storage_id || props.initialSource?.id || props.sources[0]?.id || '',
   );
-  const [prefix, setPrefix] = createSignal(props.initialPrefix || '');
+  const [prefix, setPrefix] = createSignal(
+    props.existing?.source_prefix || props.initialPrefix || '',
+  );
+  const [pair, setPair] = createSignal(props.existing?.pair_raw_jpeg || false);
+  const [confirmBinding, setConfirmBinding] = createSignal(false);
+  const bindingChanged = () =>
+    !!props.existing &&
+    desktop &&
+    (sourceId() !== (props.existing.storage_id || '') ||
+      prefix().trim() !== (props.existing.source_prefix || ''));
   const [error, setError] = createSignal('');
   const [busy, setBusy] = createSignal(false);
   async function browseLocal() {
@@ -109,6 +122,7 @@ export function LibraryDialog(props: {
       props.onSourceAdded(source);
       setSourceId(source.id);
       setPrefix('');
+      setConfirmBinding(false);
       if (!name()) setName(source.name);
     } catch (e) {
       setError(errorMessage(e));
@@ -118,16 +132,29 @@ export function LibraryDialog(props: {
   }
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    if (!sourceId()) return;
+    if ((!sourceId() && desktop) || (!desktop && !props.existing)) return;
+    if (bindingChanged() && !confirmBinding()) {
+      setConfirmBinding(true);
+      return;
+    }
+    const changed = bindingChanged();
     setBusy(true);
     setError('');
     try {
       props.onAdded(
-        await execute<Library>('library.add', {
+        await execute<Library>(props.existing ? 'library.update' : 'library.add', {
+          ...(props.existing ? { id: props.existing.id } : {}),
           name: name().trim(),
-          storage_id: sourceId(),
-          prefix: prefix().trim(),
+          pair_raw_jpeg: pair(),
+          ...(desktop
+            ? props.existing
+              ? bindingChanged()
+                ? { storage_id: sourceId(), source_prefix: prefix().trim() }
+                : {}
+              : { storage_id: sourceId(), prefix: prefix().trim() }
+            : {}),
         }),
+        changed,
       );
     } catch (e) {
       setError(errorMessage(e));
@@ -137,8 +164,12 @@ export function LibraryDialog(props: {
   }
   return (
     <Modal
-      title="建立图片库"
-      subtitle="选择一个存储位置并建立索引，保留文件原有目录结构。"
+      title={props.existing ? '图片库设置' : '建立图片库'}
+      subtitle={
+        props.existing
+          ? '名称与 RAW / JPEG 合并设置保存在此图片库。'
+          : '选择一个存储位置并建立索引，保留文件原有目录结构。'
+      }
       onClose={props.onClose}
       busy={busy()}
     >
@@ -151,42 +182,81 @@ export function LibraryDialog(props: {
             placeholder="例如：旅行摄影"
             required
             maxLength={100}
+            disabled={busy()}
           />
         </label>
-        <label>
-          存储源
-          <select
-            value={sourceId()}
-            onChange={(e) => {
-              setSourceId(e.currentTarget.value);
-              setPrefix('');
-            }}
-            required
-          >
-            <option value="" disabled>
-              选择已连接的存储位置
-            </option>
-            <For each={props.sources}>
-              {(source) => <option value={source.id}>{source.name}</option>}
-            </For>
-          </select>
-        </label>
-        <button class="button" type="button" onClick={browseLocal} disabled={busy() || !desktop}>
-          <Icon name="folder" size={16} />
-          选择本地文件夹…
-        </button>
-        <label class="library-prefix-field">
-          源内目录（可选）
+        <Show when={desktop}>
+          <label>
+            存储源
+            <select
+              value={sourceId()}
+              aria-label="存储源"
+              onChange={(e) => {
+                setSourceId(e.currentTarget.value);
+                setPrefix('');
+                setConfirmBinding(false);
+              }}
+              required
+              disabled={busy()}
+            >
+              <option value="" disabled>
+                选择已连接的存储位置
+              </option>
+              <For each={props.sources}>
+                {(source) => <option value={source.id}>{source.name}</option>}
+              </For>
+            </select>
+          </label>
+          <button class="button" type="button" onClick={browseLocal} disabled={busy() || !desktop}>
+            <Icon name="folder" size={16} />
+            选择本地文件夹…
+          </button>
+          <label class="library-prefix-field">
+            源内目录（可选）
+            <input
+              value={prefix()}
+              onInput={(e) => {
+                setPrefix(e.currentTarget.value);
+                setConfirmBinding(false);
+              }}
+              placeholder="留空使用此存储源的根目录"
+              disabled={busy()}
+            />
+          </label>
+        </Show>
+        <label class="checkbox-row">
           <input
-            value={prefix()}
-            onInput={(e) => setPrefix(e.currentTarget.value)}
-            placeholder="留空使用此存储源的根目录"
+            type="checkbox"
+            checked={pair()}
+            disabled={busy()}
+            onChange={(e) => setPair(e.currentTarget.checked)}
           />
+          合并显示 RAW + JPEG
         </label>
+        <p class="field-help">
+          同一目录内名称完全相同、且各有一份的 RAW 与 JPEG
+          合并为一项；保留两份原片，可分别打开，评级与裁剪各自独立。
+        </p>
         <div class="note">
           <Icon name="info" />
           <p>扫描建立影像索引。远程图片在查看时按需缓存，不会先下载整个图片库。</p>
         </div>
+        <Show when={bindingChanged()}>
+          <div class="workspace-message error" role="alert">
+            <span>
+              更改存储位置将清空此库的旧索引、评级和裁剪配方，再扫描新目录。原始文件不会移动或删除。
+            </span>
+          </div>
+        </Show>
+        <Show when={confirmBinding() && bindingChanged()}>
+          <div class="note binding-confirmation">
+            <p>
+              请确认将“{props.existing?.name}”改为{' '}
+              {props.sources.find((source) => source.id === sourceId())?.name} /{' '}
+              {prefix() || '根目录'}。点击下方确认按钮后才会清空旧索引及编辑信息。
+            </p>
+          </div>
+        </Show>
         <Show when={error()}>
           <div class="form-error" role="alert">
             <StorageError error={error()} />
@@ -196,11 +266,70 @@ export function LibraryDialog(props: {
           <button class="button" type="button" onClick={props.onClose} disabled={busy()}>
             取消
           </button>
-          <button class="button primary" disabled={busy() || !desktop || !sourceId()}>
-            {busy() ? '正在建立…' : '建立并扫描'}
+          <button
+            class="button primary"
+            disabled={busy() || (desktop ? !sourceId() : !props.existing)}
+          >
+            {busy()
+              ? '正在保存…'
+              : bindingChanged()
+                ? confirmBinding()
+                  ? '确认更改位置并清空索引'
+                  : '检查位置更改'
+                : props.existing
+                  ? '保存设置'
+                  : '建立并扫描'}
           </button>
         </footer>
       </form>
+    </Modal>
+  );
+}
+
+export function ConfirmDialog(props: {
+  title: string;
+  children: JSX.Element;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+  blocked?: boolean;
+}) {
+  const [busy, setBusy] = createSignal(false);
+  const [error, setError] = createSignal('');
+  async function confirm() {
+    setBusy(true);
+    setError('');
+    try {
+      await props.onConfirm();
+      props.onClose();
+    } catch (e) {
+      const message = errorMessage(e);
+      setError(
+        message.includes('E_IN_USE')
+          ? `存储源仍有关联图片库，请先更改这些库的存储位置或移除这些库。关联图片库：${message.replace(/^.*?E_IN_USE:\s*(?:Storage (?:source is referenced|is used) by libraries:\s*)?/i, '')}`
+          : message,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={props.title} onClose={props.onClose} busy={busy()}>
+      <div class="dialog-form">
+        <div class="confirmation-copy">{props.children}</div>
+        <Show when={error()}>
+          <div class="form-error" role="alert">
+            {error()}
+          </div>
+        </Show>
+        <footer class="modal-footer">
+          <button class="button" disabled={busy()} onClick={props.onClose}>
+            取消
+          </button>
+          <button class="button danger" disabled={busy() || props.blocked} onClick={confirm}>
+            {busy() ? '正在移除…' : '确认移除'}
+          </button>
+        </footer>
+      </div>
     </Modal>
   );
 }

@@ -394,6 +394,67 @@ impl StorageRegistry {
         Ok(config)
     }
 
+    /// Unregister a source and its saved credentials. Never touches source files.
+    /// The service must reject removal while a catalog library references it.
+    pub fn remove(&mut self, id: &str) -> Result<StorageConfig> {
+        let config = self.config(id)?.clone();
+        // Detect poisoned process state before publishing a persistent change.
+        self.states
+            .get_mut()
+            .map_err(|_| anyhow::anyhow!("Credential state is unavailable"))?;
+        self.clients
+            .get_mut()
+            .map_err(|_| anyhow::anyhow!("Storage connection lock is unavailable"))?;
+        let saved: Vec<_> = self
+            .configs
+            .iter()
+            .filter(|entry| entry.id != id)
+            .cloned()
+            .map(|mut entry| {
+                entry.connected = false;
+                entry
+            })
+            .collect();
+        if config.kind != "local" && config.remember_credentials {
+            let key = self.credential_key(&config);
+            let prior = self
+                .credential_store
+                .load(&key)
+                .context("Cannot remove saved credentials")?;
+            let operation = (|| -> Result<()> {
+                self.credential_store
+                    .delete(&key)
+                    .context("Cannot remove saved credentials")?;
+                if self.credential_store.load(&key)?.is_some() {
+                    bail!("The system credential store did not remove the saved record");
+                }
+                atomic_json(&self.config_path, &saved)
+            })();
+            if let Err(error) = operation {
+                let restored = match prior {
+                    Some(secret) => self.credential_store.save(&key, &secret),
+                    None => self.credential_store.delete(&key),
+                };
+                if restored.is_err() {
+                    return Err(error.context("Removing storage failed and its credential record could not be restored; re-enter credentials before reconnecting"));
+                }
+                return Err(error);
+            }
+        } else {
+            atomic_json(&self.config_path, &saved)?;
+        }
+        self.configs = saved;
+        self.states
+            .get_mut()
+            .expect("state checked above")
+            .remove(id);
+        self.clients
+            .get_mut()
+            .expect("clients checked above")
+            .remove(id);
+        Ok(config)
+    }
+
     fn config(&self, id: &str) -> Result<&StorageConfig> {
         let config = self
             .configs

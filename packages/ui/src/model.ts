@@ -10,6 +10,7 @@ export interface Library {
   source_endpoint?: string;
   connected?: boolean;
   hidden?: boolean;
+  pair_raw_jpeg?: boolean;
 }
 export interface Crop {
   x: number;
@@ -35,6 +36,22 @@ export interface Asset {
   source_key?: string | null;
   /** Client-side refresh token; never persisted to the catalog. */
   preview_revision?: number;
+  variants?: Pick<Asset, 'id' | 'filename' | 'extension' | 'kind'>[];
+}
+export interface AssetListOptions {
+  library_id?: string;
+  query?: string;
+  rating?: number;
+  format?: 'all' | 'raw' | 'jpeg';
+  sort_by?: 'modified_at' | 'filename' | 'rating';
+  sort_direction?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+}
+export interface AssetListResult {
+  items: Asset[];
+  total: number;
+  file_total?: number;
 }
 export interface Preview {
   data_url: string;

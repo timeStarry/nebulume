@@ -5,7 +5,9 @@ import {
   type Crop,
   type Library,
   type Preview,
+  type AssetListOptions,
 } from './model';
+import { browserAssetList } from './workspace';
 
 const files = new Map<string, File>();
 const assets = new Map<string, Asset>();
@@ -15,7 +17,9 @@ const browserLibrary: Library = {
   name: '临时图片库',
   root: '浏览器内存 · 关闭页面后清除',
   created_at: new Date().toISOString(),
+  pair_raw_jpeg: false,
 };
+let libraryVisible = true;
 
 async function canvasFor(id: string): Promise<HTMLCanvasElement> {
   const file = files.get(id);
@@ -62,9 +66,11 @@ function applyCrop(original: HTMLCanvasElement, crop?: Crop | null): HTMLCanvasE
 
 export async function addBrowserFiles(
   selected: File[],
-): Promise<{ added: number; errors: string[] }> {
+): Promise<{ added: number; added_ids: string[]; errors: string[] }> {
   const errors: string[] = [];
   let added = 0;
+  const addedIds: string[] = [];
+  libraryVisible = true;
   for (const file of selected) {
     const id = crypto.randomUUID();
     files.set(id, file);
@@ -86,12 +92,13 @@ export async function addBrowserFiles(
         availability: 'available',
       });
       added++;
+      addedIds.push(id);
     } catch (error) {
       files.delete(id);
       errors.push(`${file.name}：${(error as Error).message}`);
     }
   }
-  return { added, errors };
+  return { added, added_ids: addedIds, errors };
 }
 
 export async function demoCommand<T>(command: string, params: Record<string, unknown>): Promise<T> {
@@ -106,25 +113,36 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       };
       break;
     case 'library.list':
-      result = [browserLibrary];
+      result = libraryVisible ? [{ ...browserLibrary }] : [];
+      break;
+    case 'library.update':
+      if (params.id !== browserLibrary.id || !libraryVisible) throw new Error('图片库不存在。');
+      if (params.storage_id !== undefined || params.source_prefix !== undefined)
+        throw new Error('更改实际存储位置需要桌面版。');
+      if (params.name !== undefined) {
+        if (!String(params.name).trim()) throw new Error('请输入图片库名称。');
+        browserLibrary.name = String(params.name).trim();
+      }
+      if (params.pair_raw_jpeg !== undefined) browserLibrary.pair_raw_jpeg = !!params.pair_raw_jpeg;
+      result = { ...browserLibrary };
+      break;
+    case 'library.remove':
+      if (params.id !== browserLibrary.id || !libraryVisible) throw new Error('图片库不存在。');
+      assets.clear();
+      files.clear();
+      previewCache.clear();
+      libraryVisible = false;
+      result = { id: browserLibrary.id };
       break;
     case 'storage.list':
       result = [];
       break;
     case 'asset.list': {
-      const query = String(params.query || '').toLowerCase();
-      const list = [...assets.values()].filter(
-        (a) =>
-          (!query || a.filename.toLowerCase().includes(query)) &&
-          (!params.rating || a.rating >= Number(params.rating)),
+      result = browserAssetList(
+        [...assets.values()],
+        params as AssetListOptions,
+        browserLibrary.pair_raw_jpeg,
       );
-      result = {
-        items: list.slice(
-          Number(params.offset || 0),
-          Number(params.offset || 0) + Number(params.limit || 500),
-        ),
-        total: list.length,
-      };
       break;
     }
     case 'asset.get':

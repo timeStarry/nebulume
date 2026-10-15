@@ -167,6 +167,193 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
 const nav = (page: Page, name: string) =>
   page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name, exact: true });
 
+test('format, rating, sort key and direction combine in every paged catalog request', async ({
+  page,
+}) => {
+  const first = { ...photo, id: 'server-first', filename: 'Zulu.jpg', extension: 'jpg', rating: 4 };
+  const second = {
+    ...photo,
+    id: 'server-second',
+    filename: 'Alpha.jpg',
+    extension: 'jpg',
+    rating: 4,
+  };
+  const third = { ...photo, id: 'page-two', filename: 'Page2.jpg', extension: 'jpg', rating: 4 };
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'asset.list')
+      return { items: call.params.offset ? [third] : [first, second], total: 3, file_total: 3 };
+  });
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  await page.getByLabel('最低评级筛选').selectOption('3');
+  await page.getByLabel('文件格式筛选').selectOption('jpeg');
+  await page.getByLabel('排序字段').selectOption('filename');
+  await page.getByLabel('排序方向').selectOption('asc');
+  const matching = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
+  await expect.poll(matching).toMatchObject({
+    library_id: local.id,
+    rating: 3,
+    format: 'jpeg',
+    sort_by: 'filename',
+    sort_direction: 'asc',
+    offset: 0,
+    limit: 200,
+  });
+  // The UI must preserve the authoritative service order, even across pages.
+  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+    'aria-label',
+    'Zulu.jpg，4 星',
+  );
+  await page.getByRole('button', { name: '载入更多（2 / 3）' }).click();
+  await expect.poll(matching).toMatchObject({
+    rating: 3,
+    format: 'jpeg',
+    sort_by: 'filename',
+    sort_direction: 'asc',
+    offset: 2,
+  });
+  await expect(page.locator('.photo-grid .thumbnail').last()).toHaveAttribute(
+    'aria-label',
+    'Page2.jpg，4 星',
+  );
+  await page.getByLabel('排序方向').selectOption('desc');
+  await page.getByLabel('文件格式筛选').selectOption('raw');
+  await expect.poll(matching).toMatchObject({
+    rating: 3,
+    format: 'raw',
+    sort_by: 'filename',
+    sort_direction: 'desc',
+    offset: 0,
+  });
+  await page.setViewportSize({ width: 1024, height: 768 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+});
+
+test('library settings persist pairing, variants replace their representative, and rebinding requires explicit review', async ({
+  page,
+}) => {
+  let library: Library = { ...local, pair_raw_jpeg: false };
+  let failScan: (() => void) | undefined;
+  const raw = {
+    id: 'paired-raw',
+    filename: 'Mountain.nef',
+    extension: 'nef',
+    kind: 'raw' as const,
+  };
+  const jpg = { id: photo.id, filename: 'Mountain.jpg', extension: 'jpg', kind: 'raster' as const };
+  const other = { ...photo, id: 'other', filename: 'Other.png' };
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list') return [library];
+    if (call.command === 'storage.list')
+      return [{ id: 'local', name: '照片磁盘', kind: 'local', endpoint: 'D:\\Photos' }, nas];
+    if (call.command === 'library.update') {
+      library = { ...library, ...call.params } as Library;
+      return library;
+    }
+    if (call.command === 'library.scan')
+      return new Promise((_resolve, reject) => {
+        failScan = () => reject(new Error('新来源离线，扫描未完成'));
+      });
+    if (call.command === 'asset.list')
+      return {
+        items: library.pair_raw_jpeg
+          ? [{ ...photo, ...jpg, variants: [raw, jpg] }, other]
+          : [{ ...photo, ...jpg }, { ...photo, ...raw }, other],
+        total: library.pair_raw_jpeg ? 2 : 3,
+        file_total: 3,
+      };
+  });
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  await page.getByRole('button', { name: '本地摄影 图片库设置' }).click();
+  await page.getByLabel('图片库名称').fill('配对照片');
+  await page.getByLabel('合并显示 RAW + JPEG').check();
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'library.update')?.params)
+    .toEqual({ id: local.id, name: '配对照片', pair_raw_jpeg: true });
+  await expect(page.locator('.asset-variants')).toContainText('RAW + JPEG');
+  await expect(page.locator('.collection-heading')).toContainText('2 项 / 3 个文件');
+  await page.getByRole('button', { name: '打开 Mountain.nef RAW' }).click();
+  await expect
+    .poll(() => calls.filter((call) => call.command === '$native/open_viewer').at(-1)?.params)
+    .toEqual({ assetId: raw.id, assetIds: [raw.id, other.id] });
+  await page.getByRole('button', { name: '打开 Mountain.jpg JPEG' }).click();
+  await expect
+    .poll(() => calls.filter((call) => call.command === '$native/open_viewer').at(-1)?.params)
+    .toEqual({ assetId: jpg.id, assetIds: [jpg.id, other.id] });
+  await page.getByRole('button', { name: '配对照片 图片库设置' }).click();
+  await expect(page.getByLabel('合并显示 RAW + JPEG')).toBeChecked();
+  await page.getByLabel('存储源', { exact: true }).selectOption('nas');
+  await page.getByLabel('源内目录（可选）').fill('trips/');
+  await page.getByRole('button', { name: '检查位置更改' }).click();
+  expect(calls.filter((call) => call.command === 'library.update')).toHaveLength(1);
+  await expect(page.getByRole('dialog')).toContainText('旧索引、评级和裁剪配方');
+  await page.getByRole('button', { name: '确认更改位置并清空索引' }).click();
+  await expect
+    .poll(() => calls.filter((call) => call.command === 'library.update').at(-1)?.params)
+    .toEqual({
+      id: local.id,
+      name: '配对照片',
+      pair_raw_jpeg: true,
+      storage_id: 'nas',
+      source_prefix: 'trips/',
+    });
+  await expect.poll(() => calls.some((call) => call.command === 'library.scan')).toBe(true);
+  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(0);
+  await expect(page.getByRole('complementary', { name: '影像详情' })).not.toBeVisible();
+  failScan!();
+  await expect(page.getByRole('alert')).toContainText('新来源离线，扫描未完成');
+  await expect(page.getByRole('heading', { name: '图片库尚无照片' })).toBeVisible();
+  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(0);
+});
+
+test('removal dialogs preserve originals, block referenced sources and retain a raced reference error', async ({
+  page,
+}) => {
+  let libraries = [local, remote];
+  let sourcePresent = true;
+  let raced = false;
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list') return libraries;
+    if (call.command === 'storage.list') return sourcePresent ? [nas] : [];
+    if (call.command === 'library.remove') {
+      libraries = libraries.filter((library) => library.id !== call.params.id);
+      return { id: call.params.id };
+    }
+    if (call.command === 'storage.remove') {
+      if (!raced) {
+        raced = true;
+        throw new Error('E_IN_USE: Storage is used by libraries: 新增归档');
+      }
+      sourcePresent = false;
+      return { id: nas.id };
+    }
+  });
+  await page.getByRole('button', { name: '移除图片库 NAS 旅行' }).click();
+  await expect(page.getByRole('dialog')).toContainText('原始照片及目录不会删除');
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  expect(calls.some((call) => call.command === 'library.remove')).toBe(false);
+  await nav(page, '存储源').click();
+  await page.getByRole('button', { name: '移除存储源 家庭 NAS' }).click();
+  await expect(page.getByRole('dialog')).toContainText('NAS 旅行');
+  await expect(page.getByRole('button', { name: '确认移除', exact: true })).toBeDisabled();
+  expect(calls.some((call) => call.command === 'storage.remove')).toBe(false);
+  await page.getByRole('button', { name: '管理关联图片库' }).click();
+  await page.getByRole('button', { name: '移除图片库 NAS 旅行' }).click();
+  await page.getByRole('button', { name: '确认移除', exact: true }).click();
+  await expect(page.getByRole('button', { name: '打开图片库 NAS 旅行' })).not.toBeVisible();
+  await nav(page, '存储源').click();
+  await page.getByRole('button', { name: '移除存储源 家庭 NAS' }).click();
+  await page.getByRole('button', { name: '确认移除', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('关联图片库：新增归档');
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: '确认移除', exact: true }).click();
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await expect(page.getByRole('button', { name: '移除存储源 家庭 NAS' })).not.toBeVisible();
+  expect(calls.filter((call) => call.command === 'storage.remove')).toHaveLength(2);
+});
+
 test('embedded RAW preview is labeled and raw EXIF is disclosed without duplicating main parameters', async ({
   page,
 }) => {
@@ -217,7 +404,7 @@ test('embedded RAW preview is labeled and raw EXIF is disclosed without duplicat
   ).toHaveCount(1);
   const parameters = page.locator('.shooting-parameters');
   await expect(parameters).toContainText('Fixture lens');
-  await expect(parameters).toContainText('400');
+  await expect(page.locator('.exposure-summary')).toContainText('400');
   for (const label of ['拍摄时区', '曝光补偿', '曝光程序', '闪光灯', '白平衡']) {
     await expect(parameters).toContainText(label);
   }
@@ -315,6 +502,7 @@ test('a failed connection is reported, stored credentials can browse, and a dire
     name: '旅行归档',
     storage_id: 'nas',
     prefix: 'trips/',
+    pair_raw_jpeg: false,
   });
   await expect
     .poll(() =>

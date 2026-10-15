@@ -136,7 +136,11 @@ test('HTTPS defaults to standard validation and LAN HTTP is explicitly marked wi
   await expect(page.getByText('HTTP · 未加密', { exact: true })).toBeVisible();
   await expect(page.getByRole('radio')).toHaveCount(0);
   await page.getByRole('button', { name: '添加连接', exact: true }).click();
-  await page.getByRole('button', { name: '浏览目录', exact: true }).last().click();
+  await page
+    .locator('.source-row')
+    .filter({ hasText: 'http://192.168.1.10:5005/dav/' })
+    .getByRole('button', { name: '浏览目录', exact: true })
+    .click();
   await expect(page.getByText('HTTP · 未加密', { exact: true })).toBeVisible();
   expect(
     fixture.requests.filter((request) => request.command === 'storage.add').at(-1)!.params

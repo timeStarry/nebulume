@@ -3,7 +3,7 @@ use anyhow::{anyhow, ensure, Context, Result};
 use neb_core::{Asset, Core, Library};
 use neb_ingest::IngestService;
 use neb_storage::{AddStorageRequest, StorageConfig, StorageRegistry};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -11,7 +11,7 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, RwLock},
 };
 
 pub struct Service {
@@ -20,6 +20,7 @@ pub struct Service {
     ingest: Mutex<IngestService>,
     cache_root: PathBuf,
     cache_operations: Mutex<()>,
+    catalog_operations: RwLock<()>,
 }
 
 #[derive(Debug, Serialize)]
@@ -38,6 +39,7 @@ impl From<anyhow::Error> for CommandError {
             "E_UNSUPPORTED_CODEC",
             "E_NOT_FOUND",
             "E_CONFLICT",
+            "E_IN_USE",
         ]
         .into_iter()
         .find(|code| message.starts_with(code))
@@ -64,6 +66,7 @@ impl Service {
             ingest: Mutex::new(IngestService::open(data_dir.join("ingest"))?),
             cache_root: data_dir.join("remote-cache"),
             cache_operations: Mutex::new(()),
+            catalog_operations: RwLock::new(()),
         };
         // Associate legacy local libraries without making unavailable volumes prevent startup.
         for library in service.core.libraries()? {
@@ -89,6 +92,31 @@ impl Service {
                 message: "params must be a JSON object".into(),
             });
         }
+        // Entry-point lock only: private helpers may call each other without
+        // recursively acquiring it. Always acquire catalog before storage/cache.
+        let _catalog_write = if command.starts_with("library.")
+            || matches!(
+                command,
+                "storage.add" | "storage.remove" | "file.open" | "import.execute"
+            ) {
+            Some(self.catalog_operations.write().map_err(|_| CommandError {
+                code: "E_OPERATION",
+                message: "Catalog operation state is unavailable".into(),
+            })?)
+        } else {
+            None
+        };
+        // Keep a captured library binding alive through materialization and the
+        // complete asset operation. Readers can run together, but cannot write
+        // stale local inspection results after a rebind or library removal.
+        let _catalog_read = if command.starts_with("asset.") {
+            Some(self.catalog_operations.read().map_err(|_| CommandError {
+                code: "E_OPERATION",
+                message: "Catalog operation state is unavailable".into(),
+            })?)
+        } else {
+            None
+        };
         self.dispatch(command, params).map_err(Into::into)
     }
 
@@ -140,6 +168,15 @@ impl Service {
 
     fn add_library(&self, params: &Value) -> Result<Value> {
         let name = string(params, "name")?;
+        let pair = params
+            .get("pair_raw_jpeg")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .context("E_INVALID: pair_raw_jpeg must be boolean")
+            })
+            .transpose()?
+            .unwrap_or(false);
         let source = if let Some(id) = params.get("storage_id").and_then(Value::as_str) {
             self.source(id)?
         } else {
@@ -163,22 +200,89 @@ impl Service {
         }) {
             return self.library_value(&library);
         }
-        let root = if source.kind == "local" {
+        let root = self.source_library_root(&source, prefix)?;
+        let library = self.core.add_library_with_options(name, &root, pair)?;
+        let library = self.core.bind_storage(&library.id, &source.id, prefix)?;
+        self.library_value(&library)
+    }
+
+    fn source_library_root(&self, source: &StorageConfig, prefix: &str) -> Result<PathBuf> {
+        if source.kind == "local" {
             self.storage
                 .lock()
                 .map_err(|_| anyhow!("Storage state unavailable"))?
-                .local_root(&source.id, prefix)?
+                .local_root(&source.id, prefix)
         } else {
             let root = self
                 .cache_root
                 .join(&source.id)
                 .join(hex::encode(Sha256::digest(prefix.as_bytes())));
             fs::create_dir_all(&root).context("E_IO: Cannot create remote library cache")?;
-            root
+            Ok(root)
+        }
+    }
+
+    fn update_library(&self, params: Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        struct Update {
+            id: String,
+            name: Option<String>,
+            pair_raw_jpeg: Option<bool>,
+            storage_id: Option<String>,
+            source_prefix: Option<String>,
+        }
+        let update: Update =
+            serde_json::from_value(params).context("E_INVALID: Invalid library update")?;
+        let previous = self.core.library(&update.id)?;
+        let source_id = update
+            .storage_id
+            .as_deref()
+            .or(previous.storage_id.as_deref());
+        let prefix = update
+            .source_prefix
+            .as_deref()
+            .unwrap_or(&previous.source_prefix)
+            .trim_end_matches('/');
+        neb_storage::validate_key(prefix, true)?;
+        let changed =
+            source_id != previous.storage_id.as_deref() || prefix != previous.source_prefix;
+        let resolved = if changed {
+            let source_id = source_id
+                .context("E_INVALID: Select a storage source before changing its directory")?;
+            let source = self.source(source_id)?;
+            Some((self.source_library_root(&source, prefix)?, source_id))
+        } else {
+            None
         };
-        let library = self.core.add_library(name, &root)?;
-        let library = self.core.bind_storage(&library.id, &source.id, prefix)?;
+        let binding = resolved
+            .as_ref()
+            .map(|(root, source)| (root.as_path(), *source, prefix));
+        let library = self.core.update_library(
+            &update.id,
+            update.name.as_deref(),
+            update.pair_raw_jpeg,
+            binding,
+        )?;
         self.library_value(&library)
+    }
+
+    fn remove_storage(&self, id: &str) -> Result<Value> {
+        let references = self.core.libraries_for_storage(id)?;
+        ensure!(
+            references.is_empty(),
+            "E_IN_USE: Storage is used by libraries: {}",
+            references
+                .iter()
+                .map(|library| library.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let removed = self
+            .storage
+            .lock()
+            .map_err(|_| anyhow!("Storage state unavailable"))?
+            .remove(id)?;
+        Ok(serde_json::to_value(removed)?)
     }
 
     fn scan_library(&self, id: &str) -> Result<Value> {
@@ -382,6 +486,11 @@ impl Service {
         match command {
             "library.list" => self.library_list(),
             "library.add" => self.add_library(&params),
+            "library.update" => self.update_library(params),
+            "library.remove" => {
+                let id = string(&params, "id")?;
+                Ok(json!({"id":id,"removed_assets":self.core.remove_library(id)?}))
+            }
             "library.scan" => self.scan_library(string(&params, "library_id")?),
             "system.info" => Ok(json!({
                 "name": "Nebulume", "version": env!("CARGO_PKG_VERSION"), "api_version": 1,
@@ -409,6 +518,7 @@ impl Service {
                     .map_err(|_| anyhow!("Storage state unavailable"))?;
                 Ok(serde_json::to_value(storage.add(request)?)?)
             }
+            "storage.remove" => self.remove_storage(string(&params, "id")?),
             "storage.check" => {
                 let storage = self
                     .storage
@@ -548,6 +658,113 @@ impl Read for BoundedImageReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hidden_library_references_also_prevent_storage_removal() {
+        let data = tempfile::tempdir().unwrap();
+        let photos = tempfile::tempdir().unwrap();
+        let photo = photos.path().join("photo.ppm");
+        fs::write(&photo, b"P6\n1 1\n255\n\xff\x00\x00").unwrap();
+        let svc = Service::open(data.path()).unwrap();
+        let source = svc
+            .execute(
+                "storage.add",
+                json!({"name":"Local","kind":"local","endpoint":photos.path()}),
+            )
+            .unwrap();
+        let asset = svc.execute("file.open", json!({"path":photo})).unwrap();
+        let library_id = asset["library_id"].as_str().unwrap();
+        svc.core
+            .bind_storage(library_id, source["id"].as_str().unwrap(), "")
+            .unwrap();
+        assert!(svc.core.libraries().unwrap().is_empty());
+        assert_eq!(
+            svc.execute("storage.remove", json!({"id":source["id"]}))
+                .unwrap_err()
+                .code,
+            "E_IN_USE"
+        );
+        svc.execute("library.remove", json!({"id":library_id}))
+            .unwrap();
+        svc.execute("storage.remove", json!({"id":source["id"]}))
+            .unwrap();
+        assert!(photo.is_file());
+    }
+
+    #[test]
+    fn local_materialization_holds_binding_until_rebind_can_clear_old_assets() {
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old");
+        let new = temp.path().join("new");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(&new).unwrap();
+        let photo = old.join("photo.ppm");
+        let bytes = b"P6\n1 1\n255\n\xff\x00\x00";
+        fs::write(&photo, bytes).unwrap();
+        let svc = Arc::new(Service::open(temp.path().join("data")).unwrap());
+        let library = svc
+            .execute("library.add", json!({"name":"Old","root":old}))
+            .unwrap();
+        let source = svc
+            .execute(
+                "storage.add",
+                json!({"name":"New","kind":"local","endpoint":new}),
+            )
+            .unwrap();
+        svc.execute("library.scan", json!({"library_id":library["id"]}))
+            .unwrap();
+        let asset = svc
+            .execute("asset.list", json!({"library_id":library["id"]}))
+            .unwrap()["items"][0]
+            .clone();
+        // Stall refresh inside materialize, after execute has captured its read
+        // lease. A binding change must wait for this complete operation.
+        let cache = svc.cache_operations.lock().unwrap();
+        let refreshing = {
+            let svc = Arc::clone(&svc);
+            let id = asset["id"].clone();
+            std::thread::spawn(move || svc.execute("asset.refresh", json!({"id":id})))
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if svc.catalog_operations.try_write().is_err() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Refresh did not acquire its library lease"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let rebinding = {
+            let svc = Arc::clone(&svc);
+            let id = library["id"].clone();
+            std::thread::spawn(move || {
+                let result = svc.execute(
+                    "library.update",
+                    json!({"id":id,"storage_id":source["id"],"source_prefix":""}),
+                );
+                done_tx.send(()).unwrap();
+                result
+            })
+        };
+        assert!(done_rx.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(cache);
+        refreshing.join().unwrap().unwrap();
+        rebinding.join().unwrap().unwrap();
+        assert_eq!(
+            svc.execute("asset.list", json!({"library_id":library["id"]}))
+                .unwrap()["total"],
+            0
+        );
+        assert!(svc.core.asset(asset["id"].as_str().unwrap()).is_err());
+        assert_eq!(fs::read(photo).unwrap(), bytes);
+    }
+
     #[test]
     fn bounded_download_accepts_exact_size_and_rejects_overflow_without_truncation_success() {
         let mut exact = BoundedImageReader {

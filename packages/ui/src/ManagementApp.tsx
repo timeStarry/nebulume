@@ -11,7 +11,7 @@ import {
 import { listen } from '@tauri-apps/api/event';
 import { chooseImage, desktop, execute, openViewerWindow } from './api';
 import { addBrowserFiles } from './demo';
-import { LibraryDialog, StorageDialog } from './Dialogs';
+import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import { Thumbnail } from './PhotoView';
 import StorageWorkspace from './StorageWorkspace';
@@ -22,11 +22,13 @@ import {
   errorMessage,
   isTextEntry,
   type Asset,
+  type AssetListOptions,
+  type AssetListResult,
   type Library,
   type ScanResult,
   type StorageConfig,
 } from './model';
-import { libraryLocation, sourceKind, type WorkspaceSection } from './workspace';
+import { libraryLocation, sourceKind, variantViewerIds, type WorkspaceSection } from './workspace';
 
 type Dialog = 'library' | 'storage' | null;
 export default function ManagementApp() {
@@ -37,10 +39,14 @@ export default function ManagementApp() {
   const [libraryId, setLibraryId] = createSignal<string>();
   const [assets, setAssets] = createSignal<Asset[]>([]);
   const [total, setTotal] = createSignal(0);
+  const [fileTotal, setFileTotal] = createSignal<number>();
   const [selectedId, setSelectedId] = createSignal<string>();
   const [query, setQuery] = createSignal('');
   const [rating, setRating] = createSignal(0);
-  const [sort, setSort] = createSignal('newest');
+  const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
+  const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('modified_at');
+  const [direction, setDirection] =
+    createSignal<NonNullable<AssetListOptions['sort_direction']>>('desc');
   const [thumbSize, setThumbSize] = createSignal(readThumbSize());
   const [info, setInfo] = createSignal(false);
   const [ready, setReady] = createSignal(false);
@@ -50,6 +56,15 @@ export default function ManagementApp() {
   const [notice, setNotice] = createSignal('');
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const [editingSource, setEditingSource] = createSignal<StorageConfig>();
+  const [editingLibrary, setEditingLibrary] = createSignal<Library>();
+  const [removing, setRemoving] = createSignal<
+    { kind: 'library'; item: Library } | { kind: 'source'; item: StorageConfig }
+  >();
+  const removalReferences = createMemo(() =>
+    removing()?.kind === 'source'
+      ? libraries().filter((library) => library.storage_id === removing()?.item.id)
+      : [],
+  );
   const [librarySource, setLibrarySource] = createSignal<StorageConfig>();
   const [libraryPrefix, setLibraryPrefix] = createSignal('');
   const [overlay, setOverlay] = createSignal<{ id: string; ids: string[] }>();
@@ -61,15 +76,6 @@ export default function ManagementApp() {
   const visibleLibraries = createMemo(() => libraries().filter((library) => !library.hidden));
   const currentLibrary = createMemo(() =>
     libraries().find((library) => library.id === libraryId()),
-  );
-  const sortedAssets = createMemo(() =>
-    [...assets()].sort((a, b) =>
-      sort() === 'name'
-        ? a.filename.localeCompare(b.filename)
-        : sort() === 'rating'
-          ? b.rating - a.rating || a.filename.localeCompare(b.filename)
-          : String(b.modified_at).localeCompare(String(a.modified_at)),
-    ),
   );
   const selected = createMemo(() => assets().find((asset) => asset.id === selectedId()));
   const [detail, { mutate: mutateDetail, refetch: refetchDetail }] = createResource(
@@ -122,10 +128,13 @@ export default function ManagementApp() {
     const token = ++request;
     setLoading(true);
     try {
-      const result = await execute<{ items: Asset[]; total: number }>('asset.list', {
+      const result = await execute<AssetListResult>('asset.list', {
         library_id: id,
         query: query().trim() || undefined,
         rating: rating() || undefined,
+        format: format(),
+        sort_by: sort(),
+        sort_direction: direction(),
         limit: 200,
         offset: append ? assets().length : 0,
       });
@@ -137,6 +146,7 @@ export default function ManagementApp() {
       const next = append ? [...assets(), ...revised] : revised;
       setAssets(next);
       setTotal(result.total);
+      setFileTotal(result.file_total);
       if (!next.some((item) => item.id === selectedId())) setSelectedId(next[0]?.id);
     } catch (e) {
       if (token === request) setError(errorMessage(e));
@@ -149,8 +159,13 @@ export default function ManagementApp() {
     libraryId();
     query();
     rating();
+    format();
+    sort();
+    direction();
     const initialized = ready();
     if (active !== 'libraries' || !libraryId() || !initialized) return;
+    request++;
+    setLoading(true);
     const timeout = setTimeout(() => void loadAssets(), 120);
     onCleanup(() => clearTimeout(timeout));
   });
@@ -173,6 +188,7 @@ export default function ManagementApp() {
     setSelectedId(undefined);
     setQuery('');
     setRating(0);
+    setFormat('all');
     setInfo(false);
     setLibraryId(library.id);
     setSection('libraries');
@@ -180,9 +196,28 @@ export default function ManagementApp() {
     setNotice('');
   }
   function newLibrary(source?: StorageConfig, prefix = '') {
+    setEditingLibrary(undefined);
     setLibrarySource(source);
     setLibraryPrefix(prefix);
     setDialog('library');
+  }
+  function editLibrary(library: Library) {
+    setEditingLibrary(library);
+    setLibrarySource(undefined);
+    setLibraryPrefix('');
+    setDialog('library');
+  }
+  async function removeItem() {
+    const target = removing();
+    if (!target) return;
+    await execute(target.kind === 'library' ? 'library.remove' : 'storage.remove', {
+      id: target.item.id,
+    });
+    if (target.kind === 'library') {
+      setLibraries((items) => items.filter((item) => item.id !== target.item.id));
+      if (libraryId() === target.item.id) navigate('libraries');
+    } else setSources((items) => items.filter((item) => item.id !== target.item.id));
+    setNotice(`已移除 ${target.item.name}，原始文件保持不变。`);
   }
   function editSource(source?: StorageConfig) {
     setEditingSource(source);
@@ -217,10 +252,27 @@ export default function ManagementApp() {
         );
     });
   }
+  async function scanReboundLibrary(library: Library) {
+    const token = ++request;
+    setAssets([]);
+    setTotal(0);
+    setFileTotal(undefined);
+    setSelectedId(undefined);
+    setInfo(false);
+    mutateDetail({ asset: null, error: '' });
+    setLoading(true);
+    try {
+      await scan(library);
+    } finally {
+      if (token === request && libraryId() === library.id) setLoading(false);
+    }
+  }
   function replaceAsset(asset: Asset) {
     if (asset.preview_revision) revisions.set(asset.id, asset.preview_revision);
     asset = { ...asset, preview_revision: revisions.get(asset.id) };
-    setAssets((items) => items.map((item) => (item.id === asset.id ? asset : item)));
+    setAssets((items) =>
+      items.map((item) => (item.id === asset.id ? { ...asset, variants: item.variants } : item)),
+    );
     if (asset.id === selectedId()) mutateDetail({ asset, error: '' });
   }
   async function rate(value: number) {
@@ -228,7 +280,7 @@ export default function ManagementApp() {
     const id = selected()!.id;
     await action('保存评级…', async () => {
       replaceAsset(await execute<Asset>('asset.rate', { id, rating: value }));
-      if (rating() > value) await loadAssets();
+      await loadAssets();
     });
   }
   async function resetCrop() {
@@ -249,7 +301,7 @@ export default function ManagementApp() {
       setNotice('已重新读取原图，评级与裁剪配方已保留。');
     });
   }
-  async function openAsset(asset: Asset, ids = sortedAssets().map((item) => item.id)) {
+  async function openAsset(asset: Pick<Asset, 'id'>, ids = assets().map((item) => item.id)) {
     if (desktop)
       await action('正在打开查看窗口…', async () => {
         await openViewerWindow(asset.id, ids);
@@ -287,10 +339,9 @@ export default function ManagementApp() {
       });
       setAssets(listing.items);
       setTotal(listing.total);
-      const asset =
-        result.added > 0
-          ? listing.items.at(-Math.min(result.added, listing.items.length))
-          : undefined;
+      const asset = result.added_ids[0]
+        ? await execute<Asset>('asset.get', { id: result.added_ids[0] })
+        : undefined;
       setSelectedId(asset?.id || listing.items[0]?.id);
       setNotice(`已载入 ${result.added} 张图片；本次浏览器会话关闭后清除。`);
       if (result.errors.length) setError(result.errors.join('\n'));
@@ -300,7 +351,8 @@ export default function ManagementApp() {
     input.value = '';
   }
   function keyboard(event: KeyboardEvent) {
-    if (dialog() || overlay() || isTextEntry(event.target) || event.defaultPrevented) return;
+    if (dialog() || removing() || overlay() || isTextEntry(event.target) || event.defaultPrevented)
+      return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && libraryId()) {
       event.preventDefault();
       searchInput?.focus();
@@ -308,10 +360,10 @@ export default function ManagementApp() {
     }
     if (event.ctrlKey || event.metaKey || event.altKey || section() !== 'libraries' || !libraryId())
       return;
-    const index = sortedAssets().findIndex((asset) => asset.id === selectedId());
+    const index = assets().findIndex((asset) => asset.id === selectedId());
     if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
       event.preventDefault();
-      const next = sortedAssets()[index + (event.key === 'ArrowRight' ? 1 : -1)];
+      const next = assets()[index + (event.key === 'ArrowRight' ? 1 : -1)];
       if (next) setSelectedId(next.id);
     } else if (
       event.key === 'Enter' &&
@@ -484,27 +536,50 @@ export default function ManagementApp() {
                     }
                   >
                     {(library) => (
-                      <button
-                        class="library-card"
-                        onClick={() => enterLibrary(library)}
-                        aria-label={`打开图片库 ${library.name}`}
-                      >
-                        <div class="library-card-top">
-                          <Icon name="folder" size={26} />
-                          <span>{sourceKind(library.source_kind)}</span>
-                          <Icon name="right" size={17} />
+                      <article class="library-card-container">
+                        <button
+                          class="library-card"
+                          onClick={() => enterLibrary(library)}
+                          aria-label={`打开图片库 ${library.name}`}
+                        >
+                          <div class="library-card-top">
+                            <Icon name="folder" size={26} />
+                            <span>{sourceKind(library.source_kind)}</span>
+                            <Icon name="right" size={17} />
+                          </div>
+                          <h2>{library.name}</h2>
+                          <p title={libraryLocation(library)}>{libraryLocation(library)}</p>
+                          <div class="library-card-footer">
+                            <span>{library.source_name || '本地图片库'}</span>
+                            <small>
+                              {library.pair_raw_jpeg
+                                ? 'RAW + JPEG 合并'
+                                : library.source_kind && library.source_kind !== 'local'
+                                  ? '远程按需读取'
+                                  : '原位管理'}
+                            </small>
+                          </div>
+                        </button>
+                        <div class="library-card-actions">
+                          <button
+                            class="button small"
+                            aria-label={`${library.name} 图片库设置`}
+                            disabled={!!busy()}
+                            onClick={() => editLibrary(library)}
+                          >
+                            <Icon name="settings" size={14} />
+                            设置
+                          </button>
+                          <button
+                            class="button small"
+                            aria-label={`移除图片库 ${library.name}`}
+                            disabled={!!busy()}
+                            onClick={() => setRemoving({ kind: 'library', item: library })}
+                          >
+                            移除
+                          </button>
                         </div>
-                        <h2>{library.name}</h2>
-                        <p title={libraryLocation(library)}>{libraryLocation(library)}</p>
-                        <div class="library-card-footer">
-                          <span>{library.source_name || '本地图片库'}</span>
-                          <small>
-                            {library.source_kind && library.source_kind !== 'local'
-                              ? '远程按需读取'
-                              : '原位管理'}
-                          </small>
-                        </div>
-                      </button>
+                      </article>
                     )}
                   </For>
                 </div>
@@ -526,9 +601,31 @@ export default function ManagementApp() {
                     </button>
                     <span>/</span>
                     <h1>{library().name}</h1>
-                    <small>{total()} 张</small>
+                    <small>
+                      {total()} 项
+                      {fileTotal() !== undefined && fileTotal() !== total()
+                        ? ` / ${fileTotal()} 个文件`
+                        : ''}
+                    </small>
                   </div>
                   <div>
+                    <button
+                      class="button"
+                      aria-label={`${library().name} 图片库设置`}
+                      disabled={!!busy()}
+                      onClick={() => editLibrary(library())}
+                    >
+                      <Icon name="settings" size={15} />
+                      设置
+                    </button>
+                    <button
+                      class="button"
+                      aria-label={`移除图片库 ${library().name}`}
+                      disabled={!!busy()}
+                      onClick={() => setRemoving({ kind: 'library', item: library() })}
+                    >
+                      移除
+                    </button>
                     <button
                       class="button"
                       onClick={() => (desktop ? scan(library()) : fileInput.click())}
@@ -586,13 +683,36 @@ export default function ManagementApp() {
                     </For>
                   </select>
                   <select
-                    value={sort()}
-                    onChange={(event) => setSort(event.currentTarget.value)}
-                    aria-label="已载入照片排序"
+                    value={format()}
+                    onChange={(event) =>
+                      setFormat(
+                        event.currentTarget.value as NonNullable<AssetListOptions['format']>,
+                      )
+                    }
+                    aria-label="文件格式筛选"
                   >
-                    <option value="newest">修改时间 ↓</option>
-                    <option value="name">文件名 A—Z</option>
-                    <option value="rating">评级优先</option>
+                    <option value="all">所有格式</option>
+                    <option value="raw">RAW</option>
+                    <option value="jpeg">JPEG</option>
+                  </select>
+                  <select
+                    value={sort()}
+                    onChange={(event) =>
+                      setSort(event.currentTarget.value as NonNullable<AssetListOptions['sort_by']>)
+                    }
+                    aria-label="排序字段"
+                  >
+                    <option value="modified_at">修改时间</option>
+                    <option value="filename">文件名</option>
+                    <option value="rating">评级</option>
+                  </select>
+                  <select
+                    value={direction()}
+                    onChange={(event) => setDirection(event.currentTarget.value as 'asc' | 'desc')}
+                    aria-label="排序方向"
+                  >
+                    <option value="desc">降序 ↓</option>
+                    <option value="asc">升序 ↑</option>
                   </select>
                   <div class="collection-controls-spacer" />
                   <span>缩略图</span>
@@ -620,13 +740,13 @@ export default function ManagementApp() {
                           <h2>
                             {loading()
                               ? '正在读取图片…'
-                              : query() || rating()
+                              : query() || rating() || format() !== 'all'
                                 ? '没有匹配的照片'
                                 : '图片库尚无照片'}
                           </h2>
                           <p>
-                            {query() || rating()
-                              ? '更换搜索词或降低评级筛选。'
+                            {query() || rating() || format() !== 'all'
+                              ? '调整搜索词、评级或文件格式筛选。'
                               : desktop
                                 ? '扫描此目录建立索引，照片在原位置保留。'
                                 : '选择本地图片开始体验。'}
@@ -635,14 +755,14 @@ export default function ManagementApp() {
                             <button
                               class="button"
                               onClick={() =>
-                                query() || rating()
-                                  ? (setQuery(''), setRating(0))
+                                query() || rating() || format() !== 'all'
+                                  ? (setQuery(''), setRating(0), setFormat('all'))
                                   : desktop
                                     ? scan(library())
                                     : fileInput.click()
                               }
                             >
-                              {query() || rating()
+                              {query() || rating() || format() !== 'all'
                                 ? '清除筛选'
                                 : desktop
                                   ? '扫描图片库'
@@ -653,14 +773,41 @@ export default function ManagementApp() {
                       }
                     >
                       <div class="photo-grid" style={{ '--thumbnail-size': `${thumbSize()}px` }}>
-                        <For each={sortedAssets()}>
+                        <For each={assets()}>
                           {(asset) => (
-                            <Thumbnail
-                              asset={asset}
-                              selected={selectedId() === asset.id}
-                              onSelect={() => setSelectedId(asset.id)}
-                              onOpen={() => openAsset(asset)}
-                            />
+                            <div class="asset-card">
+                              <Thumbnail
+                                asset={asset}
+                                selected={selectedId() === asset.id}
+                                onSelect={() => setSelectedId(asset.id)}
+                                onOpen={() => openAsset(asset)}
+                              />
+                              <Show when={asset.variants?.length}>
+                                <div
+                                  class="asset-variants"
+                                  aria-label={`${asset.filename} 配对文件`}
+                                >
+                                  <span>RAW + JPEG</span>
+                                  <For each={asset.variants}>
+                                    {(variant) => (
+                                      <button
+                                        class="button small"
+                                        aria-label={`打开 ${variant.filename} ${variant.kind === 'raw' ? 'RAW' : 'JPEG'}`}
+                                        title={variant.filename}
+                                        onClick={() =>
+                                          openAsset(
+                                            variant,
+                                            variantViewerIds(assets(), asset.id, variant.id),
+                                          )
+                                        }
+                                      >
+                                        {variant.kind === 'raw' ? 'RAW' : 'JPEG'}
+                                      </button>
+                                    )}
+                                  </For>
+                                </div>
+                              </Show>
+                            </div>
                           )}
                         </For>
                       </div>
@@ -723,7 +870,9 @@ export default function ManagementApp() {
                 </div>
                 <footer class="collection-status">
                   <span>
-                    {loading() ? '正在读取索引…' : `已载入 ${assets().length} / ${total()} 张`}
+                    {loading()
+                      ? '正在读取索引…'
+                      : `已载入 ${assets().length} / ${total()} 项${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()} 个匹配文件` : ''} · 全库排序`}
                   </span>
                   <span>双击或 Enter 独立查看 · I 详情 · 0–5 评级</span>
                 </footer>
@@ -739,6 +888,7 @@ export default function ManagementApp() {
             onUpdated={updateSource}
             onCreateLibrary={newLibrary}
             onRefresh={refreshSources}
+            onRemove={(source) => setRemoving({ kind: 'source', item: source })}
           />
         </div>
         <div class="persistent-workspace" hidden={section() !== 'cards'}>
@@ -778,15 +928,54 @@ export default function ManagementApp() {
           sources={sources()}
           initialSource={librarySource()}
           initialPrefix={libraryPrefix()}
+          existing={editingLibrary()}
           onSourceAdded={updateSource}
           onClose={() => setDialog(null)}
-          onAdded={(library) => {
+          onAdded={(library, bindingChanged) => {
+            const wasEditing = !!editingLibrary();
             setLibraries((items) => [...items.filter((item) => item.id !== library.id), library]);
             setDialog(null);
-            enterLibrary(library);
-            void scan(library);
+            if (!wasEditing) enterLibrary(library);
+            if (bindingChanged && library.id === libraryId()) void scanReboundLibrary(library);
+            else if (!wasEditing || bindingChanged) void scan(library);
+            else {
+              if (library.id === libraryId()) void loadAssets();
+              setNotice(`已保存 ${library.name} 的图片库设置。`);
+            }
           }}
         />
+      </Show>
+      <Show when={removing()}>
+        {(target) => (
+          <ConfirmDialog
+            title={target().kind === 'library' ? '移除图片库' : '移除存储源'}
+            onClose={() => setRemoving(undefined)}
+            onConfirm={removeItem}
+            blocked={removalReferences().length > 0}
+          >
+            <p>确认移除“{target().item.name}”？</p>
+            <p>
+              {target().kind === 'library'
+                ? '仅删除此图片库的索引、评级与裁剪配方。原始照片及目录不会删除，存储源连接保持不变。'
+                : '仅删除连接配置与保存的登录凭据，不删除存储位置中的任何文件。如有图片库正在引用此来源，须先移除这些图片库。'}
+            </p>
+            <Show when={removalReferences().length}>
+              <p>以下图片库正在使用此来源，请先在设置中更改存储位置或移除图片库：</p>
+              <ul>
+                <For each={removalReferences()}>{(library) => <li>{library.name}</li>}</For>
+              </ul>
+              <button
+                class="button"
+                onClick={() => {
+                  setRemoving(undefined);
+                  navigate('libraries');
+                }}
+              >
+                管理关联图片库
+              </button>
+            </Show>
+          </ConfirmDialog>
+        )}
       </Show>
       <Show when={dialog() === 'storage'}>
         <StorageDialog
@@ -807,6 +996,7 @@ export default function ManagementApp() {
             initialAssetIds={context().ids}
             onClose={() => {
               setOverlay(undefined);
+              void loadAssets();
               document.title = 'Nebulume — 影像管理';
             }}
             onAssetChanged={replaceAsset}

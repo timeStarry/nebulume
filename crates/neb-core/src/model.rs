@@ -12,6 +12,8 @@ pub struct Library {
     pub storage_id: Option<String>,
     pub source_prefix: String,
     pub hidden: bool,
+    #[serde(default)]
+    pub pair_raw_jpeg: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
@@ -28,7 +28,8 @@ pub struct Core {
 }
 
 const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key";
-const LIBRARY_COLUMNS: &str = "id,name,root,created_at,storage_id,source_prefix,hidden";
+const LIBRARY_COLUMNS: &str =
+    "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg";
 // Bump when inspection semantics change. This lives only in the private cache
 // fingerprint, so old catalogs upgrade on access without rewriting user EXIF.
 const INSPECTION_VERSION: &str = "inspect-v2";
@@ -44,7 +45,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 2,
+            version <= 3,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -58,6 +59,12 @@ impl Core {
                  ALTER TABLE assets ADD COLUMN source_key TEXT;
                  CREATE UNIQUE INDEX assets_remote_key ON assets(library_id,source_key) WHERE source_key IS NOT NULL;
                  PRAGMA user_version=2;",
+            )?;
+        }
+        if version < 3 {
+            migration.execute_batch(
+                "ALTER TABLE libraries ADD COLUMN pair_raw_jpeg INTEGER NOT NULL DEFAULT 0 CHECK(pair_raw_jpeg IN (0,1));
+                 PRAGMA user_version=3;",
             )?;
         }
         migration.commit()?;
@@ -85,11 +92,34 @@ impl Core {
                 struct Add {
                     name: String,
                     root: String,
+                    #[serde(default)]
+                    pair_raw_jpeg: bool,
                 }
                 let args: Add = parse(params)?;
-                Ok(serde_json::to_value(
-                    self.add_library(&args.name, Path::new(&args.root))?,
-                )?)
+                Ok(serde_json::to_value(self.add_library_with_options(
+                    &args.name,
+                    Path::new(&args.root),
+                    args.pair_raw_jpeg,
+                )?)?)
+            }
+            "library.update" => {
+                #[derive(Deserialize)]
+                struct Update {
+                    id: String,
+                    name: Option<String>,
+                    pair_raw_jpeg: Option<bool>,
+                }
+                let args: Update = parse(params)?;
+                Ok(serde_json::to_value(self.update_library(
+                    &args.id,
+                    args.name.as_deref(),
+                    args.pair_raw_jpeg,
+                    None,
+                )?)?)
+            }
+            "library.remove" => {
+                let id = id(&params)?;
+                Ok(json!({"id":id,"removed_assets":self.remove_library(&id)?}))
             }
             "library.scan" => {
                 #[derive(Deserialize)]
@@ -200,10 +230,25 @@ impl Core {
     }
 
     pub fn add_library(&self, name: &str, root: &Path) -> Result<Library> {
-        self.add_library_internal(name, root, false)
+        self.add_library_with_options(name, root, false)
     }
 
-    fn add_library_internal(&self, name: &str, root: &Path, hidden: bool) -> Result<Library> {
+    pub fn add_library_with_options(
+        &self,
+        name: &str,
+        root: &Path,
+        pair_raw_jpeg: bool,
+    ) -> Result<Library> {
+        self.add_library_internal(name, root, false, pair_raw_jpeg)
+    }
+
+    fn add_library_internal(
+        &self,
+        name: &str,
+        root: &Path,
+        hidden: bool,
+        pair_raw_jpeg: bool,
+    ) -> Result<Library> {
         let name = name.trim();
         ensure!(
             !name.is_empty() && name.chars().count() <= 120,
@@ -228,12 +273,13 @@ impl Core {
         {
             if existing.hidden && !hidden {
                 db.execute(
-                    "UPDATE libraries SET hidden=0,name=?1 WHERE id=?2",
-                    params![name, existing.id],
+                    "UPDATE libraries SET hidden=0,name=?1,pair_raw_jpeg=?2 WHERE id=?3",
+                    params![name, pair_raw_jpeg, existing.id],
                 )?;
                 return Ok(Library {
                     name: name.into(),
                     hidden: false,
+                    pair_raw_jpeg,
                     ..existing
                 });
             }
@@ -247,16 +293,18 @@ impl Core {
             storage_id: None,
             source_prefix: String::new(),
             hidden,
+            pair_raw_jpeg,
         };
         db.execute(
-            "INSERT INTO libraries(id,name,root,root_key,created_at,hidden) VALUES(?1,?2,?3,?4,?5,?6)",
+            "INSERT INTO libraries(id,name,root,root_key,created_at,hidden,pair_raw_jpeg) VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![
                 library.id,
                 library.name,
                 library.root,
                 root_key,
                 library.created_at,
-                library.hidden
+                library.hidden,
+                library.pair_raw_jpeg
             ],
         )?;
         Ok(library)
@@ -271,6 +319,108 @@ impl Core {
             )
             .optional()?
             .context("E_NOT_FOUND: Library does not exist")
+    }
+
+    /// Includes hidden standalone-file libraries so source deletion cannot leave
+    /// a dangling binding that the management list does not display.
+    pub fn libraries_for_storage(&self, storage_id: &str) -> Result<Vec<Library>> {
+        let db = self.db()?;
+        let mut statement = db.prepare(&format!(
+            "SELECT {LIBRARY_COLUMNS} FROM libraries WHERE storage_id=?1 ORDER BY name,id"
+        ))?;
+        let rows = statement
+            .query_map([storage_id], library_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// A supplied binding is already resolved by the storage service. Changing
+    /// it replaces only this library's catalog contents, never any source files.
+    pub fn update_library(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        pair_raw_jpeg: Option<bool>,
+        binding: Option<(&Path, &str, &str)>,
+    ) -> Result<Library> {
+        let mut db = self.db()?;
+        let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut library = transaction
+            .query_row(
+                &format!("SELECT {LIBRARY_COLUMNS} FROM libraries WHERE id=?1"),
+                [id],
+                library_row,
+            )
+            .optional()?
+            .context("E_NOT_FOUND: Library does not exist")?;
+        if let Some(name) = name {
+            let name = name.trim();
+            ensure!(
+                !name.is_empty() && name.chars().count() <= 120,
+                "E_INVALID: Library name must contain 1 to 120 characters"
+            );
+            library.name = name.into();
+        }
+        if let Some(pair) = pair_raw_jpeg {
+            library.pair_raw_jpeg = pair;
+        }
+        let mut changed_binding = false;
+        if let Some((root, source, prefix)) = binding {
+            ensure!(!source.is_empty(), "E_INVALID: Storage source is required");
+            let root =
+                dunce::canonicalize(root).context("E_NOT_FOUND: Library root is unavailable")?;
+            ensure!(root.is_dir(), "E_INVALID: Library root must be a directory");
+            let root = root
+                .to_str()
+                .context("E_INVALID: Library path must be valid Unicode")?
+                .to_string();
+            let conflict: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM libraries WHERE root_key=?1 AND id<>?2)",
+                params![path_key(&root), id],
+                |row| row.get(0),
+            )?;
+            ensure!(
+                !conflict,
+                "E_CONFLICT: Another library already uses this directory"
+            );
+            changed_binding = library.storage_id.as_deref() != Some(source)
+                || library.source_prefix != prefix
+                || path_key(&library.root) != path_key(&root);
+            library.root = root;
+            library.storage_id = Some(source.into());
+            library.source_prefix = prefix.into();
+        }
+        if changed_binding {
+            transaction.execute("DELETE FROM assets WHERE library_id=?1", [id])?;
+        }
+        transaction.execute("UPDATE libraries SET name=?1,pair_raw_jpeg=?2,root=?3,root_key=?4,storage_id=?5,source_prefix=?6 WHERE id=?7", params![library.name,library.pair_raw_jpeg,library.root,path_key(&library.root),library.storage_id,library.source_prefix,id])?;
+        transaction.commit()?;
+        drop(db);
+        if changed_binding {
+            if let Ok(mut previews) = self.previews.lock() {
+                previews.clear();
+            }
+        }
+        Ok(library)
+    }
+
+    pub fn remove_library(&self, id: &str) -> Result<usize> {
+        let mut db = self.db()?;
+        let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM libraries WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        ensure!(exists, "E_NOT_FOUND: Library does not exist");
+        let removed = transaction.execute("DELETE FROM assets WHERE library_id=?1", [id])?;
+        transaction.execute("DELETE FROM libraries WHERE id=?1", [id])?;
+        transaction.commit()?;
+        drop(db);
+        if let Ok(mut previews) = self.previews.lock() {
+            previews.clear();
+        }
+        Ok(removed)
     }
 
     pub fn bind_storage(
@@ -317,6 +467,7 @@ impl Core {
                 path.parent()
                     .context("E_INVALID: Image has no parent directory")?,
                 true,
+                false,
             )?,
         };
         self.index_file(&library, &path, kind, &extension, None)?;
@@ -698,6 +849,22 @@ impl Core {
             query.chars().count() <= 256,
             "E_INVALID: Search query is too long"
         );
+        let format = args.format.as_deref().unwrap_or("all");
+        ensure!(
+            ["all", "raw", "jpeg"].contains(&format),
+            "E_INVALID: Unknown image format filter"
+        );
+        let sort = match args.sort_by.as_deref().unwrap_or("modified_at") {
+            "modified_at" => "modified_at",
+            "filename" => "filename",
+            "rating" => "rating",
+            _ => bail!("E_INVALID: Unknown asset sort field"),
+        };
+        let direction = match args.sort_direction.as_deref().unwrap_or("desc") {
+            "asc" => "ASC",
+            "desc" => "DESC",
+            _ => bail!("E_INVALID: Unknown asset sort direction"),
+        };
         // Quote all user terms: FTS operators cannot escape into the expression.
         let search = query
             .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -705,24 +872,56 @@ impl Core {
             .map(|word| format!("\"{word}\"*"))
             .collect::<Vec<_>>()
             .join(" AND ");
-        let where_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0)) AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4))";
+        let scope_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
+        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg')))");
         let db = self.db()?;
-        let total: u64 = db.query_row(
-            &format!("SELECT COUNT(*) FROM assets WHERE {where_sql}"),
-            params![
-                args.library_id,
-                args.rating,
-                search,
-                if search.is_empty() {
-                    "\"__nebulume_no_query__\""
-                } else {
-                    &search
-                }
-            ],
-            |row| row.get(0),
-        )?;
-        let mut statement = db.prepare(&format!("SELECT {ASSET_COLUMNS} FROM assets WHERE {where_sql} ORDER BY modified_at DESC,path ASC LIMIT ?5 OFFSET ?6"))?;
-        let items = statement
+        // Determine ambiguity from the unfiltered library. Only thin identity
+        // fields are read globally; large metadata blobs are loaded for the page.
+        let mut groups: HashMap<(String, String, String), Vec<PairVariant>> = HashMap::new();
+        let mut grouping = db.prepare(&format!("SELECT id,library_id,COALESCE(source_key,path),filename,extension,kind FROM assets WHERE {scope_sql} AND library_id IN (SELECT id FROM libraries WHERE pair_raw_jpeg=1) AND (kind='raw' OR lower(extension) IN ('jpg','jpeg'))"))?;
+        let members = grouping.query_map([&args.library_id], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                PairVariant {
+                    id: row.get(0)?,
+                    filename: row.get(3)?,
+                    extension: row.get(4)?,
+                    kind: row.get(5)?,
+                },
+            ))
+        })?;
+        for member in members {
+            let (library, location, variant) = member?;
+            let location = Path::new(&location);
+            if let (Some(directory), Some(stem)) = (
+                location.parent(),
+                location.file_stem().and_then(|s| s.to_str()),
+            ) {
+                groups
+                    .entry((
+                        library,
+                        directory.to_string_lossy().into_owned(),
+                        stem.to_string(),
+                    ))
+                    .or_default()
+                    .push(variant);
+            }
+        }
+        let mut pairs: HashMap<String, [PairVariant; 2]> = HashMap::new();
+        for mut members in groups.into_values() {
+            if members.len() != 2 || members.iter().filter(|m| m.kind == "raw").count() != 1 {
+                continue;
+            }
+            members.sort_by_key(|member| member.kind != "raw");
+            let pair = [members.remove(0), members.remove(0)];
+            pairs.insert(pair[0].id.clone(), pair.clone());
+            pairs.insert(pair[1].id.clone(), pair);
+        }
+        let mut statement = db.prepare(&format!(
+            "SELECT id FROM assets WHERE {where_sql} ORDER BY {sort} {direction},path ASC,id ASC"
+        ))?;
+        let ids = statement
             .query_map(
                 params![
                     args.library_id,
@@ -733,13 +932,57 @@ impl Core {
                     } else {
                         &search
                     },
-                    limit,
-                    args.offset.unwrap_or(0)
+                    format
                 ],
-                asset_row,
+                |row| row.get::<_, String>(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(json!({"items": items, "total": total}))
+        let file_total = ids.len();
+        let matches: HashSet<_> = ids.iter().collect();
+        let displayed: Vec<_> = ids
+            .iter()
+            .filter(|id| {
+                pairs.get(*id).is_none_or(|pair| {
+                    let representative = if matches.contains(&pair[1].id) {
+                        &pair[1].id
+                    } else {
+                        &pair[0].id
+                    };
+                    *id == representative
+                })
+            })
+            .collect();
+        let total = displayed.len();
+        let page: Vec<_> = displayed
+            .into_iter()
+            .skip(args.offset.unwrap_or(0) as usize)
+            .take(limit as usize)
+            .collect();
+        let mut items = Vec::with_capacity(page.len());
+        if !page.is_empty() {
+            let placeholders = vec!["?"; page.len()].join(",");
+            let mut statement = db.prepare(&format!(
+                "SELECT {ASSET_COLUMNS} FROM assets WHERE id IN ({placeholders})"
+            ))?;
+            let assets = statement
+                .query_map(rusqlite::params_from_iter(page.iter().copied()), asset_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut assets: HashMap<_, _> = assets
+                .into_iter()
+                .map(|asset| (asset.id.clone(), asset))
+                .collect();
+            for id in page {
+                let asset = assets
+                    .remove(id)
+                    .context("E_CONFLICT: Asset list changed while reading")?;
+                let mut value = serde_json::to_value(asset)?;
+                if let Some(pair) = pairs.get(id) {
+                    value["variants"] = serde_json::to_value(pair)?;
+                }
+                items.push(value);
+            }
+        }
+        Ok(json!({"items": items, "total": total, "file_total":file_total}))
     }
 
     fn preview(&self, asset: &Asset, max_size: u32, uncropped: bool) -> Result<Value> {
@@ -793,6 +1036,17 @@ struct AssetQuery {
     rating: Option<u8>,
     limit: Option<u32>,
     offset: Option<u32>,
+    format: Option<String>,
+    sort_by: Option<String>,
+    sort_direction: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PairVariant {
+    id: String,
+    filename: String,
+    extension: String,
+    kind: String,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T> {
@@ -860,6 +1114,7 @@ fn library_row(row: &Row<'_>) -> rusqlite::Result<Library> {
         storage_id: row.get(4)?,
         source_prefix: row.get(5)?,
         hidden: row.get(6)?,
+        pair_raw_jpeg: row.get(7)?,
     })
 }
 

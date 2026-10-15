@@ -18,6 +18,7 @@ export default function StorageWorkspace(props: {
   onUpdated: (source: StorageConfig) => void;
   onCreateLibrary: (source: StorageConfig, prefix: string) => void;
   onRefresh: () => void;
+  onRemove: (source: StorageConfig) => void;
 }) {
   const [selected, setSelected] = createSignal<string>();
   const [prefix, setPrefix] = createSignal('');
@@ -217,6 +218,14 @@ export default function StorageWorkspace(props: {
                   title="连接设置 / 重连"
                 >
                   <Icon name="settings" size={16} />
+                </button>
+                <button
+                  class="button small"
+                  onClick={() => props.onRemove(item)}
+                  disabled={!!busy()}
+                  aria-label={`移除存储源 ${item.name}`}
+                >
+                  移除
                 </button>
               </div>
             </article>

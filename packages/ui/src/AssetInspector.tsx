@@ -13,17 +13,12 @@ import {
 } from './model';
 import { displayDate } from './workspace';
 import Icon from './Icon';
-
-const diagnosticLabels: Record<string, string> = {
-  'Decode Status': '原始解码状态',
-  Decoder: '解析方式',
-  'Preview Source': '预览来源',
-  'Preview Dimensions': '预览尺寸',
-  Format: '文件格式',
-  'Pixel Format': '像素格式',
-  'Sensor Dimensions': '传感器尺寸',
-  CFA: '感光阵列',
-};
+import {
+  diagnosticLabels,
+  exposureParameters,
+  inspectorMetadataGroups,
+} from './inspector-metadata';
+import './inspector.css';
 
 export default function AssetInspector(props: {
   asset: Asset;
@@ -57,6 +52,14 @@ export default function AssetInspector(props: {
     const h = histogram()?.data;
     return h ? Math.max(...h.red, ...h.green, ...h.blue, 1) : 1;
   });
+  const exposure = createMemo(() => exposureParameters(props.asset.metadata));
+  const metadataGroups = createMemo(() => inspectorMetadataGroups(props.asset.metadata));
+  const hasExif = createMemo(
+    () =>
+      metadataGroups().length > 0 ||
+      exposure().some((field) => field.value !== null) ||
+      Object.keys(props.asset.metadata).some((key) => key.startsWith('EXIF ')),
+  );
   return (
     <aside class="asset-inspector" aria-label="影像详情">
       <div class="inspector-heading">
@@ -181,102 +184,87 @@ export default function AssetInspector(props: {
           <i />
           <span>255</span>
         </div>
+        <dl class="exposure-summary" aria-label="曝光参数">
+          <For each={exposure()}>
+            {(field) => (
+              <div classList={{ 'is-missing': field.value === null }}>
+                <dt>{field.label}</dt>
+                <dd
+                  title={field.value || '未记录'}
+                  aria-label={field.value === null ? `${field.label}未记录` : undefined}
+                >
+                  {field.value || '—'}
+                </dd>
+              </div>
+            )}
+          </For>
+        </dl>
         <p class="histogram-source">
           {renderSourceLabel(histogram()?.data?.source) || histogram()?.error}
         </p>
       </section>
       <section class="inspector-section">
         <div class="section-title">
-          <h3>拍摄参数</h3>
+          <h3>拍摄信息</h3>
           <span>EXIF</span>
         </div>
-        <Show
-          when={Object.keys(props.asset.metadata).length}
-          fallback={<p class="metadata-empty">此文件未提供可读取的 EXIF 信息。</p>}
-        >
-          <dl class="metadata shooting-parameters">
-            <For
-              each={Object.entries(props.asset.metadata).filter(
-                ([key]) => !key.startsWith('EXIF ') && !diagnosticLabels[key],
-              )}
-            >
-              {([key, value]) => (
-                <>
-                  <dt>
-                    {(
-                      {
-                        Camera: '相机',
-                        Make: '品牌',
-                        Model: '型号',
-                        Lens: '镜头',
-                        ISO: 'ISO',
-                        Aperture: '光圈',
-                        ExposureTime: '快门',
-                        Exposure: '快门',
-                        FocalLength: '焦距',
-                        'Focal Length': '焦距',
-                        'Focal Length (35 mm)': '等效焦距',
-                        DateTimeOriginal: '拍摄时间',
-                        Captured: '拍摄时间',
-                        'Capture Time Zone': '拍摄时区',
-                        Timezone: '时区',
-                        'Exposure Bias': '曝光补偿',
-                        'Exposure Program': '曝光程序',
-                        Flash: '闪光灯',
-                        'White Balance': '白平衡',
-                        Metering: '测光模式',
-                        Artist: '作者',
-                        Copyright: '版权',
-                        Software: '软件',
-                        Orientation: '方向',
-                        ColorSpace: '色彩空间',
-                        'Color Space': '色彩空间',
-                      } as Record<string, string>
-                    )[key] || key}
-                  </dt>
-                  <dd>{value}</dd>
-                </>
-              )}
-            </For>
-          </dl>
-          <Show when={Object.keys(props.asset.metadata).some((key) => key.startsWith('EXIF '))}>
-            <details class="exif-details exif-fields">
-              <summary>全部有效 EXIF 字段</summary>
-              <dl class="metadata">
-                <For
-                  each={Object.entries(props.asset.metadata).filter(([key]) =>
-                    key.startsWith('EXIF '),
-                  )}
-                >
-                  {([key, value]) => (
-                    <>
-                      <dt>{key.slice(5)}</dt>
-                      <dd>{value}</dd>
-                    </>
-                  )}
-                </For>
-              </dl>
-            </details>
-          </Show>
-          <Show when={Object.keys(props.asset.metadata).some((key) => diagnosticLabels[key])}>
-            <details class="exif-details decode-diagnostics">
-              <summary>解码诊断</summary>
-              <dl class="metadata">
-                <For
-                  each={Object.entries(props.asset.metadata).filter(
-                    ([key]) => diagnosticLabels[key],
-                  )}
-                >
-                  {([key, value]) => (
-                    <>
-                      <dt>{diagnosticLabels[key]}</dt>
-                      <dd>{key === 'Preview Source' ? renderSourceLabel(value) : value}</dd>
-                    </>
-                  )}
-                </For>
-              </dl>
-            </details>
-          </Show>
+        <Show when={!hasExif()}>
+          <p class="metadata-empty">此文件未提供可读取的 EXIF 信息。</p>
+        </Show>
+        <div class="shooting-parameters">
+          <For each={metadataGroups()}>
+            {(group) => (
+              <section class="inspector-metadata-group" aria-label={group.title}>
+                <h4>{group.title}</h4>
+                <dl class="metadata">
+                  <For each={group.parameters}>
+                    {(field) => (
+                      <>
+                        <dt>{field.label}</dt>
+                        <dd>{field.value}</dd>
+                      </>
+                    )}
+                  </For>
+                </dl>
+              </section>
+            )}
+          </For>
+        </div>
+        <Show when={Object.keys(props.asset.metadata).some((key) => key.startsWith('EXIF '))}>
+          <details class="exif-details exif-fields">
+            <summary>全部有效 EXIF 字段</summary>
+            <dl class="metadata">
+              <For
+                each={Object.entries(props.asset.metadata).filter(([key]) =>
+                  key.startsWith('EXIF '),
+                )}
+              >
+                {([key, value]) => (
+                  <>
+                    <dt>{key.slice(5)}</dt>
+                    <dd>{value}</dd>
+                  </>
+                )}
+              </For>
+            </dl>
+          </details>
+        </Show>
+        <Show when={Object.keys(props.asset.metadata).some((key) => diagnosticLabels[key])}>
+          <details class="exif-details decode-diagnostics">
+            <summary>解码诊断</summary>
+            <dl class="metadata">
+              <For
+                each={Object.entries(props.asset.metadata).filter(([key]) => diagnosticLabels[key])}
+              >
+                {([key, value]) => (
+                  <>
+                    <dt>{diagnosticLabels[key]}</dt>
+                    <dd>{key === 'Preview Source' ? renderSourceLabel(value) : value}</dd>
+                  </>
+                )}
+              </For>
+            </dl>
+          </details>
         </Show>
       </section>
       <section class="inspector-section">

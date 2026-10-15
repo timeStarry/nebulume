@@ -1,0 +1,53 @@
+.asset-inspector .exposure-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.asset-inspector .exposure-summary > div {
+  min-width: 0;
+  padding: 0 7px;
+  text-align: center;
+}
+
+.asset-inspector .exposure-summary > div + div {
+  border-left: 1px solid #343d32;
+}
+
+.asset-inspector .exposure-summary dt {
+  color: #91a286;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.asset-inspector .exposure-summary dd {
+  margin: 4px 0 0;
+  color: #e3e9dc;
+  font-size: 15px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.asset-inspector .exposure-summary .is-missing dd {
+  color: #84917d;
+}
+
+.asset-inspector .inspector-metadata-group + .inspector-metadata-group {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #30392d;
+}
+
+.asset-inspector .inspector-metadata-group h4 {
+  margin: 0 0 12px;
+  color: #c2cdb8;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.asset-inspector .inspector-metadata-group .metadata {
+  gap: 8px 7px;
+}
