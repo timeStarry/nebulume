@@ -29,6 +29,9 @@ pub struct Core {
 
 const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key";
 const LIBRARY_COLUMNS: &str = "id,name,root,created_at,storage_id,source_prefix,hidden";
+// Bump when inspection semantics change. This lives only in the private cache
+// fingerprint, so old catalogs upgrade on access without rewriting user EXIF.
+const INSPECTION_VERSION: &str = "inspect-v2";
 
 impl Core {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
@@ -305,7 +308,7 @@ impl Core {
         let library = self
             .libraries()?
             .into_iter()
-            .filter(|library| path.starts_with(&library.root))
+            .filter(|library| path_is_within(&path, Path::new(&library.root)))
             .max_by_key(|library| library.root.len());
         let library = match library {
             Some(library) => library,
@@ -316,7 +319,7 @@ impl Core {
                 true,
             )?,
         };
-        self.index_file(&library, &path, kind, &extension)?;
+        self.index_file(&library, &path, kind, &extension, None)?;
         let key = path_key(&path.to_string_lossy());
         self.db()?
             .query_row(
@@ -331,14 +334,7 @@ impl Core {
         let asset = self.asset(id)?;
         let library = self.library(&asset.library_id)?;
         let path = self.checked_asset_path(&asset)?;
-        self.index_file(&library, &path, &asset.kind, &asset.extension)?;
-        if let Some(key) = asset.source_key.as_deref() {
-            // A cache write time is not the remote original's modification time.
-            self.db()?.execute(
-                "UPDATE assets SET modified_at='',filename=?1 WHERE id=?2",
-                params![key.rsplit('/').next().unwrap_or(key), id],
-            )?;
-        }
+        self.index_file(&library, &path, &asset.kind, &asset.extension, Some(&asset))?;
         self.asset(id)
     }
 
@@ -483,7 +479,7 @@ impl Core {
             "E_PATH: Library root now resolves to a different directory"
         );
         ensure!(
-            path.starts_with(&root),
+            path_is_within(&path, &root),
             "E_PATH: Original now resolves outside the registered library"
         );
         ensure!(path.is_file(), "E_OFFLINE: Original is not a regular file");
@@ -536,7 +532,7 @@ impl Core {
                 report.skipped += 1;
                 continue;
             };
-            match self.index_file(&library, path, kind, &extension) {
+            match self.index_file(&library, path, kind, &extension, None) {
                 Ok((false, _)) => report.skipped += 1,
                 Ok((true, error)) => {
                     report.indexed += 1;
@@ -583,30 +579,50 @@ impl Core {
         path: &Path,
         kind: &str,
         extension: &str,
+        registered_asset: Option<&Asset>,
     ) -> Result<(bool, Option<String>)> {
         let path = dunce::canonicalize(path)?;
         ensure!(
-            path.starts_with(&library.root),
+            path_is_within(&path, Path::new(&library.root)),
             "E_PATH: File resolves outside the library root"
         );
         let info = fs::metadata(&path)?;
         let modified = info.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let stamp = modified
+        let modified_nanos = modified
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos()
-            .to_string();
-        let path_string = path
-            .to_str()
-            .context("E_INVALID: Image path is not valid Unicode")?
-            .to_owned();
+            .as_nanos();
+        let stamp = format!("{INSPECTION_VERSION}:{modified_nanos}");
+        // A remote placeholder was registered before its file existed. On Windows
+        // canonicalization may add a verbatim prefix only after that long cache
+        // file exists. Keep the registered identity (including a refreshed cache
+        // filename), while all inspection uses the checked canonical I/O path.
+        let registered_remote = registered_asset.filter(|asset| asset.source_key.is_some());
+        let path_string = match registered_remote {
+            Some(asset) => asset.path.clone(),
+            None => path
+                .to_str()
+                .context("E_INVALID: Image path is not valid Unicode")?
+                .to_owned(),
+        };
         let key = path_key(&path_string);
-        let old: Option<(String, u64, String, String)> = self.db()?.query_row(
-            "SELECT id,size,modified_stamp,availability FROM assets WHERE library_id=?1 AND path_key=?2",
-            params![library.id, key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).optional()?;
+        let old: Option<(String, u64, String, String)> = if let Some(asset) = registered_remote {
+            Some(self.db()?.query_row(
+                "SELECT id,size,modified_stamp,availability FROM assets WHERE id=?1 AND library_id=?2 AND path=?3 AND source_key=?4",
+                params![asset.id, library.id, path_string, asset.source_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).optional()?.context("E_CONFLICT: Remote cache changed while reading; retry the image")?)
+        } else {
+            self.db()?.query_row(
+                "SELECT id,size,modified_stamp,availability FROM assets WHERE library_id=?1 AND path_key=?2",
+                params![library.id, key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).optional()?
+        };
         if let Some((_, size, old_stamp, availability)) = &old {
-            if *size == info.len() && *old_stamp == stamp && availability == "available" {
+            if *size == info.len()
+                && *old_stamp == stamp
+                && matches!(availability.as_str(), "available" | "unsupported")
+            {
                 return Ok((false, None));
             }
         }
@@ -640,6 +656,22 @@ impl Core {
             .and_then(|s| s.to_str())
             .unwrap_or_default();
         let modified_at: DateTime<Utc> = modified.into();
+        if let Some(asset) = registered_remote {
+            // A scan can replace this cache revision while image inspection runs.
+            // Update only the captured remote record, never create a local shadow
+            // row or attach the old file's metadata to a newer cache revision.
+            let source_key = asset.source_key.as_deref().expect("remote asset has a key");
+            let changed = self.db()?.execute(
+                "UPDATE assets SET filename=?1,extension=?2,kind=?3,size=?4,modified_at='',modified_stamp=?5,width=?6,height=?7,metadata_json=?8,availability=?9
+                 WHERE id=?10 AND library_id=?11 AND path=?12 AND source_key=?13",
+                params![source_key.rsplit('/').next().unwrap_or(source_key), extension, kind, info.len(), stamp, width, height, serde_json::to_string(&metadata)?, availability, asset.id, library.id, path_string, source_key],
+            )?;
+            ensure!(
+                changed == 1,
+                "E_CONFLICT: Remote cache changed while reading; retry the image"
+            );
+            return Ok((true, error));
+        }
         self.db()?.execute(
             "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
@@ -784,6 +816,41 @@ fn path_key(path: &str) -> String {
     }
 }
 
+// Inputs are canonical paths, or roots recorded from canonicalization. Do not
+// simplify the I/O path: long Windows paths still need their verbatim prefix.
+// Only the drive/UNC prefix representation is equivalent; all remaining path
+// components retain their exact comparison and component boundaries.
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        root.components().all(|expected| {
+            let Some(actual) = components.next() else {
+                return false;
+            };
+            match (actual, expected) {
+                (Component::Prefix(actual), Component::Prefix(expected)) => {
+                    match (actual.kind(), expected.kind()) {
+                        (
+                            Prefix::Disk(a) | Prefix::VerbatimDisk(a),
+                            Prefix::Disk(b) | Prefix::VerbatimDisk(b),
+                        ) => a == b,
+                        (
+                            Prefix::UNC(a_server, a_share) | Prefix::VerbatimUNC(a_server, a_share),
+                            Prefix::UNC(b_server, b_share) | Prefix::VerbatimUNC(b_server, b_share),
+                        ) => a_server == b_server && a_share == b_share,
+                        (a, b) => a == b,
+                    }
+                }
+                (a, b) => a == b,
+            }
+        })
+    }
+    #[cfg(not(windows))]
+    path.starts_with(root)
+}
+
 fn library_row(row: &Row<'_>) -> rusqlite::Result<Library> {
     Ok(Library {
         id: row.get(0)?,
@@ -837,4 +904,240 @@ fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
         availability: row.get(13)?,
         source_key: row.get(14)?,
     })
+}
+
+#[cfg(all(test, windows))]
+mod windows_path_tests {
+    use super::path_is_within;
+    use std::path::Path;
+
+    #[test]
+    fn verbatim_aliases_preserve_drive_share_and_component_boundaries() {
+        for (path, root, expected) in [
+            (r"\\?\C:\photos\cache.jpg", r"C:\photos", true),
+            (r"C:\photos\cache.jpg", r"\\?\C:\photos", true),
+            (r"\\?\UNC\nas\photos\cache.jpg", r"\\nas\photos", true),
+            (r"\\nas\photos\cache.jpg", r"\\?\UNC\nas\photos", true),
+            (r"\\?\D:\photos\cache.jpg", r"C:\photos", false),
+            (r"\\?\C:\photos-other\cache.jpg", r"C:\photos", false),
+            (
+                r"\\?\UNC\other-nas\photos\cache.jpg",
+                r"\\nas\photos",
+                false,
+            ),
+            (
+                r"\\?\UNC\nas\photos-other\cache.jpg",
+                r"\\nas\photos",
+                false,
+            ),
+            (r"\\.\C:\photos\cache.jpg", r"C:\photos", false),
+            (r"\\?\Volume{sample}\photos\cache.jpg", r"C:\photos", false),
+        ] {
+            assert_eq!(
+                path_is_within(Path::new(path), Path::new(root)),
+                expected,
+                "{path} within {root}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod remote_refresh_tests {
+    use super::Core;
+    use serde_json::json;
+    use std::{fs, path::Path};
+
+    #[test]
+    fn stale_remote_cache_cannot_create_a_shadow_asset_after_revision_changes() {
+        let data = tempfile::tempdir().unwrap();
+        let root = data.path().join("cache");
+        fs::create_dir(&root).unwrap();
+        let core = Core::open(data.path().join("catalog")).unwrap();
+        let library = core.add_library("remote", &root).unwrap();
+        core.bind_storage(&library.id, "source", "album").unwrap();
+        let captured = core
+            .register_remote_asset(&library.id, "album/photo.ppm", "old.ppm", 17)
+            .unwrap();
+        let photo = b"P6\n2 1\n255\n\xff\x00\x00\x00\xff\x00";
+        fs::write(&captured.path, photo).unwrap();
+        core.dispatch("asset.rate", json!({"id":captured.id,"rating":4}))
+            .unwrap();
+        core.dispatch(
+            "asset.crop",
+            json!({"id":captured.id,"x":0.0,"y":0.0,"width":0.5,"height":1.0}),
+        )
+        .unwrap();
+        // Model a concurrent scan changing the cache revision after a reader has
+        // captured its old Asset. The old file remains readable but is no longer current.
+        core.use_refreshed_cache(&captured.id, "new.ppm").unwrap();
+        fs::write(root.join("new.ppm"), photo).unwrap();
+        let error = core
+            .index_file(
+                &library,
+                Path::new(&captured.path),
+                "raster",
+                "ppm",
+                Some(&captured),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("E_CONFLICT"));
+        assert_eq!(core.dispatch("asset.list", json!({})).unwrap()["total"], 1);
+        let current = core.refresh_asset(&captured.id).unwrap();
+        assert_eq!(current.id, captured.id);
+        assert_eq!(current.source_key, captured.source_key);
+        assert!(current.path.ends_with("new.ppm"));
+        assert_eq!(current.rating, 4);
+        assert_eq!(current.crop.unwrap().width, 0.5);
+        assert_eq!(current.width, Some(2));
+    }
+}
+
+#[cfg(test)]
+mod inspection_cache_tests {
+    use super::Core;
+    use image::{codecs::jpeg::JpegEncoder, Rgb, RgbImage};
+    use rusqlite::params;
+    use serde_json::json;
+    use std::{fs, path::Path, time::SystemTime};
+
+    fn jpeg() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        JpegEncoder::new(&mut bytes)
+            .encode_image(&RgbImage::from_pixel(8, 6, Rgb([30, 90, 160])))
+            .unwrap();
+        bytes
+    }
+
+    fn unsupported_camera_with_preview() -> Vec<u8> {
+        let jpeg = jpeg();
+        let mut tiff = b"II\x2a\x00\x08\x00\x00\x00".to_vec();
+        tiff.extend(2u16.to_le_bytes());
+        for (tag, value) in [(513u16, 38u32), (514, jpeg.len() as u32)] {
+            tiff.extend(tag.to_le_bytes());
+            tiff.extend(4u16.to_le_bytes());
+            tiff.extend(1u32.to_le_bytes());
+            tiff.extend(value.to_le_bytes());
+        }
+        tiff.extend(0u32.to_le_bytes());
+        tiff.extend(jpeg);
+        tiff
+    }
+
+    #[test]
+    fn legacy_inspection_is_upgraded_from_existing_files_without_losing_identity_or_edits() {
+        for (remote, extension, old_availability) in [
+            (false, "jpg", "available"),
+            (true, "jpg", "available"),
+            (true, "nef", "unsupported"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("photos");
+            let catalog = temp.path().join("catalog");
+            fs::create_dir(&root).unwrap();
+            let core = Core::open(&catalog).unwrap();
+            let library = core.add_library("legacy", &root).unwrap();
+            let filename = format!("photo.{extension}");
+            let original = if extension == "nef" {
+                unsupported_camera_with_preview()
+            } else {
+                jpeg()
+            };
+            fs::write(root.join(&filename), &original).unwrap();
+            let asset = if remote {
+                core.bind_storage(&library.id, "offline-source", "album")
+                    .unwrap();
+                core.register_remote_asset(
+                    &library.id,
+                    &format!("album/{filename}"),
+                    &filename,
+                    original.len() as u64,
+                )
+                .unwrap()
+            } else {
+                core.open_file(&root.join(&filename)).unwrap()
+            };
+            core.dispatch("asset.rate", json!({"id":asset.id,"rating":4}))
+                .unwrap();
+            core.dispatch(
+                "asset.crop",
+                json!({"id":asset.id,"x":0.0,"y":0.0,"width":0.5,"height":1.0}),
+            )
+            .unwrap();
+            let old_stamp = fs::metadata(&asset.path)
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .to_string();
+            core.db().unwrap().execute(
+                "UPDATE assets SET modified_stamp=?1,availability=?2,width=0,height=0,metadata_json=?3 WHERE id=?4",
+                params![old_stamp, old_availability, r#"{"Artist":"[[]]","Legacy Inspection":"old","Decode Status":"old unsupported"}"#, asset.id],
+            ).unwrap();
+            drop(core);
+            let core = Core::open(&catalog).unwrap();
+            // No directory scan or remote read: only the already cached file is inspected.
+            let refreshed = core.refresh_asset(&asset.id).unwrap();
+            assert_eq!(refreshed.id, asset.id);
+            assert_eq!(refreshed.path, asset.path);
+            assert_eq!(refreshed.source_key, asset.source_key);
+            assert_eq!(refreshed.rating, 4);
+            assert_eq!(refreshed.crop.unwrap().width, 0.5);
+            assert_eq!((refreshed.width, refreshed.height), (Some(8), Some(6)));
+            assert_eq!(refreshed.availability, "available");
+            assert!(!refreshed.metadata.contains_key("Artist"));
+            assert!(!refreshed.metadata.contains_key("Legacy Inspection"));
+            assert!(!serde_json::to_string(&refreshed)
+                .unwrap()
+                .contains("inspect-v"));
+            if extension == "nef" {
+                assert_eq!(refreshed.metadata["Preview Source"], "embedded_jpeg");
+            }
+            assert_eq!(refreshed.modified_at.is_empty(), remote);
+            let repeated = core
+                .index_file(
+                    &library,
+                    Path::new(&refreshed.path),
+                    &refreshed.kind,
+                    extension,
+                    Some(&refreshed),
+                )
+                .unwrap();
+            assert!(
+                !repeated.0,
+                "an unchanged current-version inspection must be reused"
+            );
+            assert_eq!(core.dispatch("asset.list", json!({})).unwrap()["total"], 1);
+            assert_eq!(fs::read(&asset.path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn unsupported_inspection_is_memoized_but_explicit_invalidation_retries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("photos");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("damaged.nef"), b"not a raw image").unwrap();
+        let core = Core::open(temp.path().join("catalog")).unwrap();
+        let library = core.add_library("unsupported", &root).unwrap();
+        let first = core.scan(&library.id).unwrap();
+        assert_eq!(first.indexed, 1);
+        assert_eq!(first.errors.len(), 1);
+        let asset = core.dispatch("asset.list", json!({})).unwrap()["items"][0].clone();
+        assert_eq!(asset["availability"], "unsupported");
+        let second = core.scan(&library.id).unwrap();
+        assert_eq!(second.indexed, 0);
+        assert_eq!(second.skipped, 1);
+        core.invalidate_asset(asset["id"].as_str().unwrap())
+            .unwrap();
+        let retried = core.scan(&library.id).unwrap();
+        assert_eq!(retried.indexed, 1);
+        assert_eq!(retried.errors.len(), 1);
+        assert_eq!(
+            core.dispatch("asset.list", json!({})).unwrap()["items"][0]["id"],
+            asset["id"]
+        );
+    }
 }

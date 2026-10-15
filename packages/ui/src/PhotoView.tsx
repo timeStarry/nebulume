@@ -12,6 +12,7 @@ import {
   cropFromPoints,
   errorMessage,
   imageRequestKey,
+  renderSourceLabel,
   type Asset,
   type Crop,
   type Preview,
@@ -287,7 +288,9 @@ export default function PhotoView(props: {
         </Show>
       </div>
       <div class="viewer-controls">
-        <span class="preview-source">{preview()?.data?.source || '影像预览'}</span>
+        <span class="preview-source">
+          {renderSourceLabel(preview()?.data?.source) || '影像预览'}
+        </span>
         <div class="zoom-controls">
           <button onClick={fit}>适合窗口</button>
           <button

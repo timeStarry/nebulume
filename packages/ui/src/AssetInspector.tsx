@@ -5,6 +5,7 @@ import {
   errorMessage,
   histogramPath,
   imageRequestKey,
+  renderSourceLabel,
   validCrop,
   type Asset,
   type Crop,
@@ -12,6 +13,17 @@ import {
 } from './model';
 import { displayDate } from './workspace';
 import Icon from './Icon';
+
+const diagnosticLabels: Record<string, string> = {
+  'Decode Status': '原始解码状态',
+  Decoder: '解析方式',
+  'Preview Source': '预览来源',
+  'Preview Dimensions': '预览尺寸',
+  Format: '文件格式',
+  'Pixel Format': '像素格式',
+  'Sensor Dimensions': '传感器尺寸',
+  CFA: '感光阵列',
+};
 
 export default function AssetInspector(props: {
   asset: Asset;
@@ -58,7 +70,7 @@ export default function AssetInspector(props: {
         <h2 title={props.asset.filename}>{props.asset.filename}</h2>
         <p>
           {props.asset.width && props.asset.height
-            ? `${props.asset.width} × ${props.asset.height} px`
+            ? `${props.asset.metadata['Preview Source'] === 'embedded_jpeg' ? '预览尺寸 ' : ''}${props.asset.width} × ${props.asset.height} px`
             : '尺寸待解析'}
           <span>·</span>
           {bytes(props.asset.size)}
@@ -169,7 +181,9 @@ export default function AssetInspector(props: {
           <i />
           <span>255</span>
         </div>
-        <p class="histogram-source">{histogram()?.data?.source || histogram()?.error}</p>
+        <p class="histogram-source">
+          {renderSourceLabel(histogram()?.data?.source) || histogram()?.error}
+        </p>
       </section>
       <section class="inspector-section">
         <div class="section-title">
@@ -180,8 +194,12 @@ export default function AssetInspector(props: {
           when={Object.keys(props.asset.metadata).length}
           fallback={<p class="metadata-empty">此文件未提供可读取的 EXIF 信息。</p>}
         >
-          <dl class="metadata">
-            <For each={Object.entries(props.asset.metadata)}>
+          <dl class="metadata shooting-parameters">
+            <For
+              each={Object.entries(props.asset.metadata).filter(
+                ([key]) => !key.startsWith('EXIF ') && !diagnosticLabels[key],
+              )}
+            >
               {([key, value]) => (
                 <>
                   <dt>
@@ -194,10 +212,25 @@ export default function AssetInspector(props: {
                         ISO: 'ISO',
                         Aperture: '光圈',
                         ExposureTime: '快门',
+                        Exposure: '快门',
                         FocalLength: '焦距',
+                        'Focal Length': '焦距',
+                        'Focal Length (35 mm)': '等效焦距',
                         DateTimeOriginal: '拍摄时间',
+                        Captured: '拍摄时间',
+                        'Capture Time Zone': '拍摄时区',
+                        Timezone: '时区',
+                        'Exposure Bias': '曝光补偿',
+                        'Exposure Program': '曝光程序',
+                        Flash: '闪光灯',
+                        'White Balance': '白平衡',
+                        Metering: '测光模式',
+                        Artist: '作者',
+                        Copyright: '版权',
+                        Software: '软件',
                         Orientation: '方向',
                         ColorSpace: '色彩空间',
+                        'Color Space': '色彩空间',
                       } as Record<string, string>
                     )[key] || key}
                   </dt>
@@ -206,6 +239,44 @@ export default function AssetInspector(props: {
               )}
             </For>
           </dl>
+          <Show when={Object.keys(props.asset.metadata).some((key) => key.startsWith('EXIF '))}>
+            <details class="exif-details exif-fields">
+              <summary>全部有效 EXIF 字段</summary>
+              <dl class="metadata">
+                <For
+                  each={Object.entries(props.asset.metadata).filter(([key]) =>
+                    key.startsWith('EXIF '),
+                  )}
+                >
+                  {([key, value]) => (
+                    <>
+                      <dt>{key.slice(5)}</dt>
+                      <dd>{value}</dd>
+                    </>
+                  )}
+                </For>
+              </dl>
+            </details>
+          </Show>
+          <Show when={Object.keys(props.asset.metadata).some((key) => diagnosticLabels[key])}>
+            <details class="exif-details decode-diagnostics">
+              <summary>解码诊断</summary>
+              <dl class="metadata">
+                <For
+                  each={Object.entries(props.asset.metadata).filter(
+                    ([key]) => diagnosticLabels[key],
+                  )}
+                >
+                  {([key, value]) => (
+                    <>
+                      <dt>{diagnosticLabels[key]}</dt>
+                      <dd>{key === 'Preview Source' ? renderSourceLabel(value) : value}</dd>
+                    </>
+                  )}
+                </For>
+              </dl>
+            </details>
+          </Show>
         </Show>
       </section>
       <section class="inspector-section">

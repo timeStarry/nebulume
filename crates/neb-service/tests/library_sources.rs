@@ -55,10 +55,34 @@ fn local_library_belongs_to_a_source_and_old_root_input_still_works() {
 
 #[test]
 fn webdav_library_indexes_without_get_then_caches_on_demand_and_works_offline() {
+    let data = tempfile::tempdir().unwrap();
+    webdav_library_roundtrip(data.path(), false, false);
+}
+
+#[cfg(windows)]
+#[test]
+fn webdav_long_cache_path_preserves_existing_placeholder_identity_and_edits() {
+    use std::os::windows::ffi::OsStrExt;
+    for already_published in [false, true] {
+        let data = tempfile::tempdir().unwrap();
+        // The root stays below MAX_PATH; the hashed cache filename crosses it.
+        let base_len = data.path().as_os_str().encode_wide().count();
+        let profile = data
+            .path()
+            .join("p".repeat(115usize.checked_sub(base_len + 1).unwrap()));
+        webdav_library_roundtrip(&profile, true, already_published);
+    }
+}
+
+fn webdav_library_roundtrip(
+    data: &std::path::Path,
+    expect_long_cache: bool,
+    already_published: bool,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
-        for step in 0..3 {
+        for step in 0..if already_published { 2 } else { 3 } {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = Vec::new();
             loop {
@@ -81,16 +105,19 @@ fn webdav_library_indexes_without_get_then_caches_on_demand_and_works_offline() 
                 (
                     "200 OK",
                     "image/x-portable-pixmap",
-                    if step == 1 { PHOTO } else { CHANGED_PHOTO },
+                    if step == 1 && !already_published {
+                        PHOTO
+                    } else {
+                        CHANGED_PHOTO
+                    },
                 )
             };
             write!(stream,"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
             stream.write_all(body).unwrap();
         }
     });
-    let data = tempfile::tempdir().unwrap();
-    let svc = Service::open(data.path()).unwrap();
-    let source=svc.execute("storage.add",json!({"name":"测试DAV","kind":"webdav","endpoint":endpoint,"remember_credentials":false})).unwrap();
+    let svc = Service::open(data).unwrap();
+    let source=svc.execute("storage.add",json!({"name":"测试DAV","kind":"webdav","endpoint":endpoint,"username":"test-user","password":"synthetic-fixture","remember_credentials":false})).unwrap();
     let library = svc
         .execute(
             "library.add",
@@ -110,7 +137,34 @@ fn webdav_library_indexes_without_get_then_caches_on_demand_and_works_offline() 
     assert_eq!(asset["source_key"], "album/photo.ppm");
     assert_eq!(asset["availability"], "remote");
     assert!(!std::path::Path::new(asset["path"].as_str().unwrap()).exists());
+    if expect_long_cache {
+        assert!(library["root"].as_str().unwrap().len() < 260);
+        assert!(asset["path"].as_str().unwrap().len() > 260);
+        assert!(!library["root"].as_str().unwrap().starts_with(r"\\?\"));
+    }
+    if already_published {
+        // An old failed preview may have downloaded the original before hitting
+        // the path guard. Recovery must reuse that cache without another GET.
+        fs::write(asset["path"].as_str().unwrap(), PHOTO).unwrap();
+    }
+    // Edit the already indexed placeholder, then reopen the catalog before the
+    // first GET. The fix must work with existing indexes without rebuilding them.
+    svc.execute("asset.rate", json!({"id":asset["id"],"rating":3}))
+        .unwrap();
+    let cropped = svc
+        .execute(
+            "asset.crop",
+            json!({"id":asset["id"],"x":0.0,"y":0.0,"width":0.5,"height":1.0}),
+        )
+        .unwrap();
+    drop(svc);
+    let svc = Service::open(data).unwrap();
+    svc.execute("storage.add",json!({"name":"测试DAV","kind":"webdav","endpoint":endpoint,"username":"test-user","password":"synthetic-fixture","remember_credentials":false})).unwrap();
     let opened = svc.execute("asset.get", json!({"id":asset["id"]})).unwrap();
+    assert_eq!(opened["id"], asset["id"]);
+    assert_eq!(opened["path"], asset["path"]);
+    assert_eq!(opened["rating"], 3);
+    assert_eq!(opened["crop"], cropped["crop"]);
     assert_eq!(opened["width"], 2);
     assert_eq!(opened["height"], 1);
     assert_eq!(opened["availability"], "available");
@@ -131,9 +185,16 @@ fn webdav_library_indexes_without_get_then_caches_on_demand_and_works_offline() 
     assert_eq!(refreshed["width"], 1);
     assert_eq!(refreshed["height"], 2);
     assert_eq!(refreshed["rating"], 3);
+    assert_eq!(refreshed["crop"], cropped["crop"]);
+    assert_ne!(refreshed["path"], opened["path"]);
+    assert_eq!(
+        fs::read(refreshed["path"].as_str().unwrap()).unwrap(),
+        CHANGED_PHOTO
+    );
+    assert_eq!(fs::read(opened["path"].as_str().unwrap()).unwrap(), PHOTO);
     server.join().unwrap();
     drop(svc);
-    let svc = Service::open(data.path()).unwrap();
+    let svc = Service::open(data).unwrap();
     let preview = svc
         .execute("asset.preview", json!({"id":asset["id"],"max_size":32}))
         .unwrap();
@@ -145,6 +206,15 @@ fn webdav_library_indexes_without_get_then_caches_on_demand_and_works_offline() 
         svc.execute("asset.get", json!({"id":asset["id"]})).unwrap()["rating"],
         3
     );
+    assert_eq!(
+        svc.execute("asset.list", json!({"library_id":library["id"]}))
+            .unwrap()["total"],
+        1
+    );
+    let histogram = svc
+        .execute("asset.histogram", json!({"id":asset["id"]}))
+        .unwrap();
+    assert!(histogram["pixels"].as_u64().unwrap() > 0);
 }
 
 #[test]
@@ -166,6 +236,47 @@ fn file_open_is_available_through_the_same_service_without_implicit_directory_sc
     assert_eq!(fs::read(photos.path().join("opened.ppm")).unwrap(), PHOTO);
     assert!(svc
         .execute("file.open", json!({"path":photos.path()}))
+        .is_err());
+}
+
+#[test]
+fn local_asset_reads_reinspect_changes_and_keep_offline_metadata_and_edits() {
+    let data = tempfile::tempdir().unwrap();
+    let photos = tempfile::tempdir().unwrap();
+    let path = photos.path().join("photo.ppm");
+    fs::write(&path, PHOTO).unwrap();
+    let svc = Service::open(data.path()).unwrap();
+    let asset = svc.execute("file.open", json!({"path":path})).unwrap();
+    svc.execute("asset.rate", json!({"id":asset["id"],"rating":4}))
+        .unwrap();
+    svc.execute(
+        "asset.crop",
+        json!({"id":asset["id"],"x":0.0,"y":0.0,"width":0.5,"height":1.0}),
+    )
+    .unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, CHANGED_PHOTO).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified + std::time::Duration::from_secs(2)))
+        .unwrap();
+    let refreshed = svc.execute("asset.get", json!({"id":asset["id"]})).unwrap();
+    assert_eq!(refreshed["id"], asset["id"]);
+    assert_eq!(refreshed["width"], 1);
+    assert_eq!(refreshed["height"], 2);
+    assert_eq!(refreshed["rating"], 4);
+    assert_eq!(refreshed["crop"]["width"], 0.5);
+    assert_ne!(refreshed["modified_at"], asset["modified_at"]);
+    fs::remove_file(&path).unwrap();
+    let offline = svc.execute("asset.get", json!({"id":asset["id"]})).unwrap();
+    assert_eq!(offline, refreshed);
+    assert!(svc
+        .execute("asset.preview", json!({"id":asset["id"]}))
+        .is_err());
+    assert!(svc
+        .execute("asset.refresh", json!({"id":asset["id"]}))
         .is_err());
 }
 

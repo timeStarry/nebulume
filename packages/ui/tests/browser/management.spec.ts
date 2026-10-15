@@ -167,6 +167,80 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
 const nav = (page: Page, name: string) =>
   page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name, exact: true });
 
+test('embedded RAW preview is labeled and raw EXIF is disclosed without duplicating main parameters', async ({
+  page,
+}) => {
+  await fixture(page, (call) => {
+    if (call.command === 'asset.get')
+      return {
+        ...photo,
+        kind: 'raw',
+        extension: 'nef',
+        filename: 'Camera.nef',
+        metadata: {
+          Camera: 'Fixture camera',
+          Lens: 'Fixture lens',
+          ISO: '400',
+          'Capture Time Zone': '+08:00',
+          'Exposure Bias': '0 EV',
+          'Exposure Program': 'Aperture priority',
+          Flash: 'No flash',
+          'White Balance': 'Auto',
+          'EXIF Model': 'Fixture camera',
+          'Preview Source': 'embedded_jpeg',
+          'Preview Dimensions': '960 × 640',
+          Decoder: '相机内嵌预览 · RAW 原始解码不可用',
+          'Decode Status': 'RAW 原始解码不可用：完整底层诊断 '.repeat(20),
+          Format: 'NEF',
+        },
+      };
+    if (call.command === 'asset.preview')
+      return { data_url: image, width: 1, height: 1, source: 'embedded_jpeg' };
+    if (call.command === 'asset.histogram')
+      return {
+        red: Array(256).fill(1),
+        green: Array(256).fill(1),
+        blue: Array(256).fill(1),
+        luminance: Array(256).fill(1),
+        pixels: 256,
+        source: 'embedded_jpeg',
+      };
+  });
+  await page.goto('/?viewer=1');
+  await expect(page.locator('.main-photo')).toBeVisible();
+  await expect(page.locator('.preview-source')).toHaveText('相机内嵌预览 · RAW 原始解码不可用');
+  await page.keyboard.press('i');
+  await expect(page.locator('.histogram-source')).toHaveText('相机内嵌预览 · RAW 原始解码不可用');
+  await expect(page.locator('.inspector-file')).toContainText('预览尺寸 960 × 640 px');
+  await expect(
+    page.getByText('Fixture camera', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(1);
+  const parameters = page.locator('.shooting-parameters');
+  await expect(parameters).toContainText('Fixture lens');
+  await expect(parameters).toContainText('400');
+  for (const label of ['拍摄时区', '曝光补偿', '曝光程序', '闪光灯', '白平衡']) {
+    await expect(parameters).toContainText(label);
+  }
+  for (const label of [
+    '原始解码状态',
+    '解析方式',
+    '预览来源',
+    '预览尺寸',
+    '文件格式',
+    '完整底层诊断',
+  ]) {
+    await expect(parameters).not.toContainText(label);
+  }
+  await expect(page.locator('.decode-diagnostics dl')).not.toBeVisible();
+  await expect(page.locator('.exif-fields dl')).not.toBeVisible();
+  await page.getByText('全部有效 EXIF 字段').click();
+  await expect(page.locator('.exif-fields dl')).toContainText('Fixture camera');
+  await page.getByText('解码诊断', { exact: true }).click();
+  await expect(page.locator('.decode-diagnostics dl')).toContainText(
+    'RAW 原始解码不可用：完整底层诊断 '.repeat(20),
+  );
+});
+
 test('library management is the default, metadata is on demand and native viewing uses scoped context', async ({
   page,
 }) => {
@@ -249,6 +323,80 @@ test('a failed connection is reported, stored credentials can browse, and a dire
       ),
     )
     .toBe(true);
+});
+
+test('a failed browse revokes previous verification and refreshes missing credential state without losing its directory', async ({
+  page,
+}) => {
+  let fail = false;
+  await fixture(page, (call) => {
+    if (call.command === 'storage.list' && fail)
+      return [{ ...nas, connected: false, credential_status: 'missing' }];
+    if (call.command === 'storage.browse') {
+      if (fail) throw new Error('Credentials are missing; reconnect this storage');
+      return {
+        entries: call.params.prefix
+          ? [{ key: 'trips/Mountain.png', is_dir: false, size: 12000 }]
+          : [{ key: 'trips/', is_dir: true, size: 0 }],
+        next_cursor: null,
+      };
+    }
+  });
+  await nav(page, '存储源').click();
+  await page.getByRole('button', { name: '浏览目录', exact: true }).click();
+  await page.getByRole('button', { name: 'trips', exact: true }).click();
+  await expect(page.locator('.source-row .source-status')).toHaveText('已验证');
+  fail = true;
+  await page.getByRole('button', { name: '刷新目录', exact: true }).click();
+  await expect(page.locator('.source-row .source-status')).toHaveText('连接失败');
+  await expect(page.locator('.source-row .credential-status')).toHaveText('需要连接凭据');
+  await expect(page.getByRole('alert')).toContainText('此连接没有可用的登录信息');
+  await expect(page.locator('.directory-path code')).toHaveText('trips/');
+  await expect(page.getByRole('button', { name: '打开连接设置', exact: true })).toBeEnabled();
+});
+
+test('a late failed-browse status refresh cannot overwrite a newer successful connection', async ({
+  page,
+}) => {
+  let fail = false;
+  let release!: (sources: StorageConfig[]) => void;
+  const pending = new Promise<StorageConfig[]>((resolve) => {
+    release = resolve;
+  });
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'storage.list' && fail) return pending;
+    if (call.command === 'storage.browse') {
+      if (fail) throw new Error('Credentials are missing; reconnect this storage');
+      return { entries: [], next_cursor: null };
+    }
+  });
+  await nav(page, '存储源').click();
+  await page.getByRole('button', { name: '浏览目录', exact: true }).click();
+  await expect(page.locator('.source-row .source-status')).toHaveText('已验证');
+  fail = true;
+  await page.getByRole('button', { name: '刷新目录', exact: true }).click();
+  await expect.poll(() => calls.filter((call) => call.command === 'storage.list').length).toBe(2);
+  await expect(page.locator('.source-row .source-status')).toHaveText('连接失败');
+  await page.getByRole('button', { name: '关闭目录浏览' }).click();
+  fail = false;
+  await page.getByRole('button', { name: '浏览目录', exact: true }).click();
+  await expect(page.locator('.source-row .source-status')).toHaveText('已验证');
+  const returned = page.waitForResponse(
+    (response) =>
+      response.url().includes('__management_rpc') &&
+      response.request().postDataJSON()?.command === 'storage.list',
+  );
+  release([{ ...nas, connected: false, credential_status: 'unavailable' }]);
+  await (await returned).finished();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(page.locator('.source-row .source-status')).toHaveText('已验证');
+  await expect(page.locator('.source-row .credential-status')).toHaveText('已保存至系统安全存储');
+  await expect(page.getByRole('alert')).not.toBeVisible();
 });
 
 test('card imports target local libraries, retain review across navigation and consume backend indexing results', async ({

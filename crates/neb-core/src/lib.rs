@@ -4,6 +4,7 @@
 //! explicit exports create a new file. A catalog remains usable offline.
 
 mod catalog;
+mod embedded_preview;
 mod imaging;
 mod model;
 
@@ -21,8 +22,9 @@ pub fn capabilities() -> serde_json::Value {
         "raw": {
             "engine": "rawloader 0.37.2",
             "mode": "sensor_decode_basic_demosaic",
+            "preview_fallback": "bounded_standard_tiff_embedded_jpeg; viewing and rendered RGB histograms only",
             "formats": ["dng", "cr2", "nef", "arw", "raf", "orf", "rw2", "pef", "srw", "raw"],
-            "limitations": "Camera-dependent; CR3, HEIC/HEIF and AVIF are not decoded. Basic RAW rendering is not a color-managed professional development pipeline. No embedded preview substitution."
+            "limitations": "Camera-dependent; CR3, HEIC/HEIF and AVIF are not decoded. Basic RAW rendering is not a color-managed professional development pipeline. Unsupported TIFF RAW files may display a clearly labeled embedded camera JPEG; this is not sensor decoding and never substitutes for RAW export. MakerNotes, BigTIFF and arbitrary JPEG scans are not supported by the fallback."
         },
         "histogram": "256-bin RGB and Rec.709 luma over the rendered crop, sampled at max 2048 pixels per side",
         "editing": ["normalized_non_destructive_crop", "reset_crop", "jpeg_export_no_overwrite"],

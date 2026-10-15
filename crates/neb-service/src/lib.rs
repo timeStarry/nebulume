@@ -295,8 +295,13 @@ impl Service {
             .map_err(|_| anyhow!("Cache state unavailable"))?;
         let asset = self.core.asset(id)?;
         let Some(key) = asset.source_key.as_deref() else {
-            return if force {
+            if force {
                 self.core.invalidate_asset(id)?;
+            }
+            return if force || Path::new(&asset.path).is_file() {
+                // Inspection versions and changed originals update on access.
+                // Missing local files can still expose their stored metadata;
+                // rendering retains the core's canonical path/offline guards.
                 self.core.refresh_asset(id)
             } else {
                 Ok(asset)

@@ -6,6 +6,7 @@ import {
   histogramFromPixels,
   imageRequestKey,
   isTextEntry,
+  renderSourceLabel,
   validCrop,
 } from '../src/model';
 import { demoCommand } from '../src/demo';
@@ -48,6 +49,12 @@ describe('non-destructive crop coordinates', () => {
 });
 
 describe('real pixel histogram', () => {
+  it('distinguishes embedded camera JPEGs from sensor rendering and browser pixels', () => {
+    expect(renderSourceLabel('embedded_jpeg')).toBe('相机内嵌预览 · RAW 原始解码不可用');
+    expect(renderSourceLabel('raw_demosaic')).toBe('RAW 基础显影 · 显示 RGB');
+    expect(renderSourceLabel('浏览器真实裁剪 · 显示 RGB')).toBe('浏览器真实裁剪 · 显示 RGB');
+    expect(renderSourceLabel(undefined)).toBe('');
+  });
   it('counts RGB and luminance bins while excluding fully transparent pixels', () => {
     const histogram = histogramFromPixels(
       new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 25, 25, 25, 0]),

@@ -76,7 +76,21 @@ export default function StorageWorkspace(props: {
       setCursor(result.next_cursor);
       props.onUpdated({ ...item, connected: true });
     } catch (e) {
-      if (token === request) setError(errorMessage(e));
+      if (token !== request || selected() !== item.id) return;
+      const message = errorMessage(e);
+      setError(message);
+      setChecks((previous) => ({ ...previous, [item.id]: { ok: false, message } }));
+      // Revoke the previous success immediately, then retrieve credential state resolved by
+      // this attempt (for example a missing or locked system credential record).
+      props.onUpdated({ ...item, connected: false });
+      try {
+        const latest = await execute<StorageConfig[]>('storage.list');
+        if (token !== request || selected() !== item.id) return;
+        const current = latest.find((candidate) => candidate.id === item.id);
+        if (current) props.onUpdated(current);
+      } catch {
+        // Keep the original browse error and unverified state if status refresh also fails.
+      }
     } finally {
       if (token === request) setBusy('');
     }

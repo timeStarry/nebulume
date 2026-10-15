@@ -1074,6 +1074,17 @@ code {
   color: #798d6d;
   line-height: 1.9;
 }
+.exif-details {
+  margin-top: 18px;
+}
+.exif-details summary {
+  color: #a2afa0;
+  font-size: 10px;
+  cursor: pointer;
+}
+.exif-details[open] summary {
+  margin-bottom: 14px;
+}
 .inspector-empty {
   padding: 70px 24px;
   flex: 1;

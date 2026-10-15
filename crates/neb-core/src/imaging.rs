@@ -94,16 +94,9 @@ pub fn read_exif(path: &Path) -> BTreeMap<String, String> {
         (Tag::Software, "Software"),
     ] {
         if let Some(field) = exif.get_field(tag, In::PRIMARY) {
-            metadata.insert(
-                label.to_owned(),
-                field
-                    .display_value()
-                    .with_unit(&exif)
-                    .to_string()
-                    .chars()
-                    .take(2048)
-                    .collect(),
-            );
+            if let Some(value) = format_exif_field(field, &exif, 2048) {
+                metadata.insert(label.to_owned(), value);
+            }
         }
     }
     // Preserve discoverable EXIF fields alongside the common human-readable labels.
@@ -113,17 +106,28 @@ pub fn read_exif(path: &Path) -> BTreeMap<String, String> {
             continue;
         }
         let name = format!("EXIF {}", field.tag);
-        metadata.entry(name).or_insert_with(|| {
-            field
-                .display_value()
-                .with_unit(&exif)
-                .to_string()
-                .chars()
-                .take(512)
-                .collect()
-        });
+        if let Some(value) = format_exif_field(field, &exif, 512) {
+            metadata.entry(name).or_insert(value);
+        }
     }
     metadata
+}
+
+fn format_exif_field(field: &exif::Field, exif: &exif::Exif, limit: usize) -> Option<String> {
+    let value = if let exif::Value::Ascii(values) = &field.value {
+        values
+            .iter()
+            .filter_map(|bytes| {
+                let decoded = String::from_utf8_lossy(bytes);
+                let text = decoded.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+                (!text.is_empty()).then(|| text.to_owned())
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    } else {
+        field.display_value().with_unit(exif).to_string()
+    };
+    (!value.trim().is_empty()).then(|| value.chars().take(limit).collect())
 }
 
 pub fn inspect(path: &Path) -> Result<Inspection> {
@@ -132,7 +136,29 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     let extension = extension(path);
     metadata.insert("Format".into(), extension.to_ascii_uppercase());
     let (mut width, mut height, orientation) = if kind(&extension) == Some("raw") {
-        let raw = raw_header(path)?;
+        let raw = match raw_header(path) {
+            Ok(raw) => raw,
+            Err(raw_error) => {
+                let preview = crate::embedded_preview::read(path).with_context(|| {
+                    format!("RAW metadata unavailable ({raw_error:#}); embedded preview fallback failed")
+                })?;
+                metadata.insert("Decoder".into(), "相机内嵌预览 · RAW 原始解码不可用".into());
+                metadata.insert("Preview Source".into(), "embedded_jpeg".into());
+                metadata.insert(
+                    "Preview Dimensions".into(),
+                    format!("{} × {}", preview.width(), preview.height()),
+                );
+                metadata.insert(
+                    "Decode Status".into(),
+                    format!("RAW 原始解码不可用：{raw_error:#}"),
+                );
+                return Ok(Inspection {
+                    width: preview.width(),
+                    height: preview.height(),
+                    metadata,
+                });
+            }
+        };
         metadata.insert(
             "Camera".into(),
             format!("{} {}", raw.clean_make, raw.clean_model)
@@ -237,10 +263,6 @@ pub fn render(
 ) -> Result<(DynamicImage, &'static str)> {
     check_file(path)?;
     let (mut image, source) = if kind(&extension(path)) == Some("raw") {
-        raw_header(path)?;
-        let raw = std::panic::catch_unwind(|| rawloader::decode_file(path))
-            .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected this file"))?
-            .context("E_UNSUPPORTED_CODEC: RAW decoding failed; this camera or compression may be unsupported")?;
         // Keep enough full-frame pixels that a small saved crop can still fill
         // the requested preview. Exports pass None and render all sensor pixels.
         let raw_limit = max_side.map(|limit| {
@@ -249,7 +271,20 @@ pub fn render(
                 .ceil()
                 .min(f64::from(u32::MAX)) as u32
         });
-        (develop_raw(&raw, raw_limit)?, "raw_demosaic")
+        match render_sensor(path, raw_limit) {
+            Ok(image) => (image, "raw_demosaic"),
+            Err(raw_error) if max_side.is_some() => {
+                let preview = crate::embedded_preview::read(path).with_context(|| {
+                    format!("RAW sensor decoding unavailable ({raw_error:#}); embedded preview fallback failed")
+                })?;
+                (preview, "embedded_jpeg")
+            }
+            Err(error) => {
+                return Err(error.context(
+                    "RAW 原始解码不可用，不能导出原始分辨率 JPEG；相机内嵌预览仅用于查看。",
+                ))
+            }
+        }
     } else {
         let mut decoder = image_reader(path)?
             .into_decoder()
@@ -273,6 +308,14 @@ pub fn render(
         image = image.crop_imm(x, y, right - x, bottom - y);
     }
     Ok((image, source))
+}
+
+fn render_sensor(path: &Path, max_side: Option<u32>) -> Result<DynamicImage> {
+    raw_header(path)?;
+    let raw = std::panic::catch_unwind(|| rawloader::decode_file(path))
+        .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected this file"))?
+        .context("E_UNSUPPORTED_CODEC: RAW decoding failed; this camera or compression may be unsupported")?;
+    develop_raw(&raw, max_side)
 }
 
 /// Deliberately simple, deterministic RAW development: channel-specific black /

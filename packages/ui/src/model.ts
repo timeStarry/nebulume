@@ -203,6 +203,15 @@ export function histogramPath(bins: number[], ceiling: number): string {
   if (!bins.length || !ceiling) return '';
   return `M0,80 ${bins.map((n, i) => `L${i},${80 - Math.min(1, n / ceiling) * 76}`).join(' ')} L255,80 Z`;
 }
+export function renderSourceLabel(source: string | undefined): string {
+  return source === 'embedded_jpeg'
+    ? '相机内嵌预览 · RAW 原始解码不可用'
+    : source === 'raw_demosaic'
+      ? 'RAW 基础显影 · 显示 RGB'
+      : source === 'raster'
+        ? '原图解码 · 显示 RGB'
+        : source || '';
+}
 export function isTextEntry(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
   return (
