@@ -2,14 +2,19 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { demoCommand } from './demo';
 import type { Volume } from './model';
-import { createConcurrencyLimit } from './concurrency';
+import { createPreviewScheduler, type PreviewRequestOptions } from './concurrency';
 
 export const desktop = isTauri();
-const previewLimit = createConcurrencyLimit(4);
-export function execute<T>(command: string, params: Record<string, unknown> = {}): Promise<T> {
+const schedulePreview = createPreviewScheduler();
+/** Preview options stay client-side. Signals cancel queued work, never in-flight native IPC. */
+export function execute<T>(
+  command: string,
+  params: Record<string, unknown> = {},
+  options: PreviewRequestOptions = {},
+): Promise<T> {
   const run = () =>
     desktop ? invoke<T>('execute', { command, params }) : demoCommand<T>(command, params);
-  return command === 'asset.preview' ? previewLimit(run) : run();
+  return command === 'asset.preview' ? schedulePreview(run, options) : run();
 }
 export async function chooseDirectory(title: string): Promise<string | null> {
   if (!desktop) return null;

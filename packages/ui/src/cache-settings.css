@@ -1,0 +1,262 @@
+.cache-settings {
+  display: grid;
+  gap: var(--nl-space-4);
+  min-width: 0;
+}
+.cache-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nl-space-3);
+}
+.cache-section-heading h2,
+.cache-section-heading h3 {
+  margin: 0;
+}
+.cache-settings > .cache-section-heading h2 {
+  font-size: var(--nl-text-lg);
+}
+.cache-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 1fr);
+  gap: var(--nl-space-4);
+  align-items: start;
+}
+.cache-settings-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--nl-space-4);
+}
+.cache-panel {
+  display: grid;
+  gap: var(--nl-space-3);
+  min-width: 0;
+  margin: 0;
+}
+.cache-panel > h3 {
+  font-size: var(--nl-text-base);
+  margin: 0;
+}
+.cache-panel > p,
+.cache-panel details p {
+  margin: 0;
+}
+.cache-description,
+.cache-panel #cache-budget-help {
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-sm);
+}
+.cache-panel #cache-budget-help.cache-field-error {
+  color: var(--nl-danger);
+}
+.cache-usage-number {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--nl-space-2);
+  font-variant-numeric: tabular-nums;
+}
+.cache-usage-number strong {
+  font-size: var(--nl-text-xl);
+  font-weight: var(--nl-weight-medium);
+}
+.cache-usage-number span {
+  color: var(--nl-text-muted);
+}
+.cache-panel progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  accent-color: var(--nl-interactive);
+}
+.cache-capacity-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nl-space-4);
+}
+.cache-capacity-control > div {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-space-2);
+}
+.cache-capacity-control input {
+  width: 100px;
+}
+.cache-breakdown,
+.cache-migration-facts {
+  margin: 0;
+  display: grid;
+  gap: var(--nl-space-2);
+  font-size: var(--nl-text-sm);
+}
+.cache-breakdown > div,
+.cache-migration-facts > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(0, 1fr);
+  gap: var(--nl-space-3);
+}
+.cache-breakdown dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cache-breakdown dt,
+.cache-migration-facts dt {
+  color: var(--nl-text-muted);
+}
+.cache-migration-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cache-path {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: var(--nl-font-mono);
+  font-size: var(--nl-text-sm);
+}
+.cache-field {
+  display: grid;
+  gap: var(--nl-space-2);
+  font-size: var(--nl-text-sm);
+}
+.cache-field select {
+  width: 100%;
+}
+.cache-callout {
+  margin: 0;
+  padding: var(--nl-space-3) var(--nl-space-4);
+  background: var(--nl-info-bg);
+  color: var(--nl-info);
+  border-radius: var(--nl-radius-md);
+  font-size: var(--nl-text-sm);
+}
+.cache-callout.warning {
+  background: var(--nl-warning-bg);
+  color: var(--nl-warning);
+}
+.cache-notice {
+  color: var(--nl-success);
+  margin: 0;
+  font-size: var(--nl-text-sm);
+}
+.cache-pinned-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--nl-space-3);
+}
+.cache-pinned-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--nl-space-3);
+}
+.cache-pinned-list li > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--nl-space-1);
+  font-size: var(--nl-text-sm);
+}
+.cache-pinned-list strong {
+  overflow-wrap: anywhere;
+  font-weight: var(--nl-weight-medium);
+}
+.cache-pinned-list span {
+  color: var(--nl-text-muted);
+}
+.cache-pinned-list .button {
+  flex-shrink: 0;
+}
+.cache-clean-options {
+  display: grid;
+  gap: var(--nl-space-3);
+  margin-bottom: var(--nl-space-4);
+}
+.cache-clean-options label,
+.cache-migration-review fieldset label,
+.cache-authorization {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--nl-space-2);
+}
+.cache-clean-options input,
+.cache-migration-review input[type='radio'],
+.cache-authorization input {
+  margin-top: 4px;
+  flex: none;
+}
+.cache-migration-review fieldset {
+  display: grid;
+  gap: var(--nl-space-3);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-md);
+  padding: var(--nl-space-3);
+}
+.cache-migration-review legend {
+  padding: 0 var(--nl-space-2);
+  color: var(--nl-text-muted);
+}
+.cache-migration-review .cache-authorization {
+  font-size: var(--nl-text-sm);
+  background: var(--nl-info-bg);
+  padding: var(--nl-space-3);
+  border-radius: var(--nl-radius-md);
+}
+/* Dialog form defaults stretch text fields; checkboxes and radios keep their own column. */
+.dialog-form .cache-checkbox {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--nl-space-2);
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+.dialog-form .cache-checkbox > input[type='checkbox'],
+.dialog-form .cache-checkbox > input[type='radio'] {
+  flex: 0 0 18px;
+  width: 18px;
+  min-width: 18px;
+  max-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 3px 0 0;
+  padding: 0;
+}
+.dialog-form .cache-checkbox > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cache-clean-options,
+.cache-migration-review,
+.cache-migration-review fieldset {
+  min-width: 0;
+}
+.cache-settings .form-error > .button {
+  margin-left: var(--nl-space-3);
+}
+@media (max-width: 1050px) {
+  .cache-settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 600px) {
+  .cache-section-heading,
+  .cache-pinned-list li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .cache-capacity-control {
+    gap: var(--nl-space-2);
+  }
+  .cache-migration-facts > div {
+    grid-template-columns: 1fr;
+    gap: var(--nl-space-1);
+  }
+  .cache-panel .button {
+    min-height: var(--nl-touch-target);
+  }
+}

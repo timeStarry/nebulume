@@ -63,13 +63,13 @@ const paths: Record<string, () => JSX.Element> = {
   ),
   settings: () => (
     <>
-      <path d="M4 7h16M4 17h16" />
-      <circle cx="9" cy="7" r="3" fill="currentColor" />
-      <circle cx="15" cy="17" r="3" fill="currentColor" />
+      <path d="m10.37 2.74 3.26 0 .35 2.34 1.62.68 1.4 1.06 2.2-.86 1.63 2.83-1.84 1.47.21 1.74-.21 1.74 1.84 1.47-1.63 2.83-2.2-.86-1.4 1.06-1.62.68-.35 2.34h-3.26l-.35-2.34-1.62-.68L7 17.18l-2.2.86-1.63-2.83 1.84-1.47L4.8 12l.21-1.74-1.84-1.47L4.8 5.96l2.2.86 1.4-1.06 1.62-.68Z" />
+      <circle cx="12" cy="12" r="3" />
     </>
   ),
   expand: () => <path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5" />,
   minus: () => <path d="M5 12h14" />,
+  menu: () => <path d="M4 6h16M4 12h16M4 18h16" />,
   clock: () => (
     <>
       <circle cx="12" cy="12" r="9" />
@@ -86,7 +86,7 @@ export default function Icon(props: { name: string; size?: number; class?: strin
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      stroke-width="1.55"
+      stroke-width="1.5"
       stroke-linecap="round"
       stroke-linejoin="round"
       aria-hidden="true"

@@ -1,6 +1,6 @@
 import type { Asset, AssetListOptions } from './model';
 
-export type AssetChange = 'rating' | 'crop' | 'refresh';
+export type AssetChange = 'rating' | 'crop' | 'metadata' | 'refresh';
 export interface AssetUpdated {
   id: string;
   revision?: number;
@@ -21,11 +21,17 @@ export function changedAssetFields(
     previous.modified_at !== next.modified_at ||
     previous.width !== next.width ||
     previous.height !== next.height ||
-    previous.availability !== next.availability ||
-    JSON.stringify(previous.metadata) !== JSON.stringify(next.metadata)
+    previous.availability !== next.availability
   )
     return 'refresh';
   if (JSON.stringify(previous.crop || null) !== JSON.stringify(next.crop || null)) return 'crop';
+  if (
+    previous.created_at !== next.created_at ||
+    previous.captured_at !== next.captured_at ||
+    previous.capture_status !== next.capture_status ||
+    JSON.stringify(previous.metadata) !== JSON.stringify(next.metadata)
+  )
+    return 'metadata';
   if (previous.rating !== next.rating) return 'rating';
   return undefined;
 }
@@ -49,7 +55,7 @@ export function needsCatalogReconcile(
     previous.extension !== next.extension
   )
     return true;
-  const field = options.sort_by || 'modified_at';
+  const field = options.sort_by || 'captured_at';
   return previous[field] !== next[field] || (!!options.rating && previous.rating !== next.rating);
 }
 
@@ -60,7 +66,15 @@ export function mergePendingUpdate(
 ): AssetUpdated {
   if (!previous) return next;
   const priority = (change?: AssetChange) =>
-    change === 'refresh' ? 3 : change === 'crop' ? 2 : change === 'rating' ? 1 : 0;
+    change === 'refresh'
+      ? 4
+      : change === 'crop'
+        ? 3
+        : change === 'metadata'
+          ? 2
+          : change === 'rating'
+            ? 1
+            : 0;
   return {
     ...next,
     // A bare event requires a fresh read; an older attached object must not hide it.

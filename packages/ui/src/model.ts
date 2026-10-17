@@ -26,6 +26,11 @@ export interface Asset {
   extension: string;
   kind: 'raster' | 'raw';
   size: number;
+  /** Filesystem/source creation time; empty or absent when the source cannot provide it. */
+  created_at?: string;
+  /** Camera local date/time, without a fabricated timezone; unavailable times are empty. */
+  captured_at?: string;
+  capture_status?: 'available' | 'missing' | 'pending';
   modified_at: string;
   width?: number;
   height?: number;
@@ -34,6 +39,8 @@ export interface Asset {
   crop?: Crop | null;
   availability: string;
   source_key?: string | null;
+  cache_pinned?: boolean;
+  cache_update_available?: boolean;
   /** Client-side refresh token; never persisted to the catalog. */
   preview_revision?: number;
   variants?: Pick<Asset, 'id' | 'filename' | 'extension' | 'kind'>[];
@@ -43,7 +50,7 @@ export interface AssetListOptions {
   query?: string;
   rating?: number;
   format?: 'all' | 'raw' | 'jpeg';
-  sort_by?: 'modified_at' | 'filename' | 'rating';
+  sort_by?: 'captured_at' | 'created_at' | 'modified_at' | 'filename' | 'rating';
   sort_direction?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
@@ -53,7 +60,26 @@ export interface AssetListResult {
   total: number;
   file_total?: number;
 }
+export interface CaptureIndexStatus {
+  library_id: string;
+  total: number;
+  known: number;
+  missing: number;
+  pending: number;
+  job: null | {
+    id: string;
+    library_id: string;
+    status: 'running' | 'stopping' | 'completed' | 'cancelled' | 'failed';
+    total: number;
+    processed: number;
+    found: number;
+    missing: number;
+    failed: number;
+    error?: string;
+  };
+}
 export interface Preview {
+  asset?: Asset;
   data_url: string;
   width: number;
   height: number;
@@ -79,6 +105,7 @@ export interface FocusInfo {
   regions: FocusRegion[];
 }
 export interface Histogram {
+  asset?: Asset;
   red: number[];
   green: number[];
   blue: number[];
@@ -240,6 +267,7 @@ export function histogramPath(bins: number[], ceiling: number): string {
   return `M0,80 ${bins.map((n, i) => `L${i},${80 - Math.min(1, n / ceiling) * 76}`).join(' ')} L255,80 Z`;
 }
 export function renderSourceLabel(source: string | undefined): string {
+  if (source === 'remote_embedded_jpeg') return '相机内嵌预览';
   return source === 'embedded_jpeg'
     ? '相机内嵌预览 · RAW 原始解码不可用'
     : source === 'raw_demosaic'

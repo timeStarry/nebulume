@@ -1,0 +1,46 @@
+.capture-index-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: var(--nl-text-xs);
+}
+.capture-index-control:empty {
+  display: none;
+}
+.capture-index-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--nl-text-secondary);
+  white-space: nowrap;
+}
+.capture-index-progress progress {
+  width: 100%;
+  height: 3px;
+  accent-color: var(--nl-interactive);
+}
+.capture-index-error {
+  color: var(--nl-danger);
+  max-width: 220px;
+  overflow-wrap: anywhere;
+}
+.capture-index-notice {
+  max-width: 180px;
+  color: var(--nl-text-secondary);
+}
+.collection-thumbnail-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.collection-thumbnail-size > input[type='range'] {
+  width: 88px;
+  height: 32px;
+}
+@media (max-width: 719px) {
+  .collection-thumbnail-size > input[type='range'] {
+    height: var(--nl-touch-target);
+  }
+}

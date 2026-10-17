@@ -1,10 +1,17 @@
 //! Read-only storage adapters and non-overwriting local publication.
 mod credentials;
+mod full_reader;
+mod range_reader;
 mod remote;
 mod safe;
+mod snapshot_browser;
 mod transport;
 
 pub use credentials::{CredentialStore, CredentialStoreError, SystemCredentialStore};
+pub use range_reader::{
+    RangeObjectIdentity, RangeReadError, RangeReadOptions, RangeReadStats, RemoteRangeReader,
+};
+pub use snapshot_browser::StorageBrowser;
 
 pub use transport::{inspect_tls, TlsCertificateInfo};
 
@@ -21,7 +28,10 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -97,6 +107,10 @@ pub struct StorageEntry {
     pub key: String,
     pub size: u64,
     pub is_dir: bool,
+    /// Source filesystem creation time, when the adapter can establish it.
+    /// Never the time at which an object was cached, indexed, or last modified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
 }
 #[derive(Debug, Serialize)]
 pub struct BrowsePage {
@@ -122,7 +136,7 @@ pub struct StorageCheck {
 struct SourceState {
     credentials: Option<Credentials>,
     credential_status: String,
-    connected: bool,
+    connected: Arc<AtomicBool>,
 }
 
 pub struct StorageRegistry {
@@ -171,7 +185,7 @@ impl StorageRegistry {
                 SourceState {
                     credentials: credential,
                     credential_status: config.credential_status.clone(),
-                    connected: false,
+                    connected: Arc::new(AtomicBool::new(false)),
                 },
             );
         }
@@ -193,7 +207,7 @@ impl StorageRegistry {
             .map(|mut config| {
                 if let Ok(states) = &states {
                     if let Some(state) = states.get(&config.id) {
-                        config.connected = state.connected;
+                        config.connected = state.connected.load(Ordering::Relaxed);
                         config.credential_status = state.credential_status.clone();
                     }
                 } else {
@@ -388,7 +402,7 @@ impl StorageRegistry {
                 SourceState {
                     credentials: Some(credentials),
                     credential_status: config.credential_status.clone(),
-                    connected: false,
+                    connected: Arc::new(AtomicBool::new(false)),
                 },
             );
         Ok(config)
@@ -520,7 +534,7 @@ impl StorageRegistry {
     fn connection_result(&self, id: &str, connected: bool) {
         if let Ok(mut states) = self.states.lock() {
             if let Some(state) = states.get_mut(id) {
-                state.connected = connected;
+                state.connected.store(connected, Ordering::Relaxed);
             }
         }
     }
@@ -582,6 +596,32 @@ impl StorageRegistry {
         result
     }
 
+    /// Captures a source without starting HTTP or DNS. Browse calls on the
+    /// returned independent snapshot do not borrow or lock this registry.
+    pub fn open_browser(&self, id: &str) -> Result<StorageBrowser> {
+        let config = self.config(id)?.clone();
+        let credentials = if config.kind == "local" {
+            Credentials::default()
+        } else {
+            self.credentials_for(&config)?
+        };
+        let client = self
+            .clients
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage connection lock is unavailable"))?
+            .get(id)
+            .cloned();
+        let connected = self
+            .states
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Credential state is unavailable"))?
+            .get(id)
+            .context("Storage credential state is unavailable")?
+            .connected
+            .clone();
+        Ok(StorageBrowser::new(config, credentials, client, connected))
+    }
+
     fn browse_inner(
         &self,
         id: &str,
@@ -623,6 +663,10 @@ impl StorageRegistry {
                     key,
                     size: metadata.len(),
                     is_dir: metadata.is_dir(),
+                    created_at: metadata.created().ok().map(|created| {
+                        chrono::DateTime::<chrono::Utc>::from(created)
+                            .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                    }),
                 });
             }
         }
@@ -647,6 +691,57 @@ impl StorageRegistry {
         let result = self.reader_inner(id, key);
         self.connection_result(id, result.is_ok());
         result
+    }
+
+    /// A private connection snapshot whose first read starts the request.
+    /// Unlike `reader`, creating this value does not perform remote I/O.
+    pub fn open_reader(&self, id: &str, key: &str) -> Result<Box<dyn Read + Send>> {
+        validate_key(key, false)?;
+        let config = self.config(id)?.clone();
+        if config.kind == "local" {
+            let root = safe_join(Path::new(&config.endpoint), &config.root, true)?;
+            return Ok(Box::new(open_scoped(&root, key)?));
+        }
+        let credentials = self.credentials_for(&config)?;
+        let client = self
+            .clients
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage connection lock is unavailable"))?
+            .get(id)
+            .cloned();
+        Ok(Box::new(full_reader::RemoteStreamReader::new(
+            client,
+            config,
+            credentials,
+            key.to_owned(),
+        )))
+    }
+
+    /// Snapshots the connection without issuing HTTP requests. Call `metadata`,
+    /// `read` or `seek` only after releasing any outer registry lock.
+    pub fn open_range_reader(&self, id: &str, key: &str) -> Result<RemoteRangeReader> {
+        self.open_range_reader_with_options(id, key, RangeReadOptions::default())
+    }
+
+    pub fn open_range_reader_with_options(
+        &self,
+        id: &str,
+        key: &str,
+        options: RangeReadOptions,
+    ) -> Result<RemoteRangeReader> {
+        validate_key(key, false)?;
+        let config = self.config(id)?.clone();
+        if config.kind == "local" {
+            return Err(RangeReadError::Unsupported.into());
+        }
+        let credentials = self.credentials_for(&config)?;
+        let client = self
+            .clients
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Storage connection lock is unavailable"))?
+            .get(id)
+            .cloned();
+        RemoteRangeReader::new(client, config, credentials, key, options).map_err(Into::into)
     }
 
     fn reader_inner(&self, id: &str, key: &str) -> Result<Box<dyn Read>> {

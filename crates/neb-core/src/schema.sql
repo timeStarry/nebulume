@@ -1,3 +1,5 @@
+-- Version-one baseline. Core::open applies all additive catalog migrations so
+-- existing catalogs and fresh catalogs follow the same upgrade path.
 CREATE TABLE IF NOT EXISTS libraries (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,

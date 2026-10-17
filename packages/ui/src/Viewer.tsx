@@ -1,4 +1,13 @@
-import { Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
+import {
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  on,
+  onCleanup,
+  onMount,
+} from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -9,13 +18,16 @@ import Icon from './Icon';
 import {
   errorMessage,
   fullCrop,
+  imageRequestKey,
   isTextEntry,
   validCrop,
   type Asset,
   type Crop,
   type FocusInfo,
+  type Preview,
 } from './model';
 import { viewerIds } from './workspace';
+import { focusPresentation } from './viewer-focus';
 import './viewer-focus.css';
 
 export default function Viewer(props: {
@@ -24,6 +36,7 @@ export default function Viewer(props: {
   onClose?: () => void;
   onAssetChanged?: (asset: Asset) => void;
 }) {
+  const focusHelpId = createUniqueId();
   const [ids, setIds] = createSignal<string[]>(props.initialAssetIds || []);
   const [id, setId] = createSignal(props.initialAssetId);
   const [asset, setAsset] = createSignal<Asset>();
@@ -35,6 +48,11 @@ export default function Viewer(props: {
   const [cropMode, setCropMode] = createSignal(false);
   const [crop, setCrop] = createSignal<Crop>({ ...fullCrop });
   const [controls, setControls] = createSignal(true);
+  const [controlFocus, setControlFocus] = createSignal(false);
+  const [previewPending, setPreviewPending] = createSignal(true);
+  const [previewFailed, setPreviewFailed] = createSignal(false);
+  const [previewKey, setPreviewKey] = createSignal('');
+  const [previewMapping, setPreviewMapping] = createSignal<Preview['coordinate_mapping']>();
   const [focusEnabled, setFocusEnabled] = createSignal(false);
   const [focusData, setFocusData] = createSignal<FocusInfo>();
   const [focusLoading, setFocusLoading] = createSignal(false);
@@ -45,12 +63,23 @@ export default function Viewer(props: {
   let request = 0;
   let focusRequest = 0;
   const revisions = new Map<string, number>();
+  const focusCache = new Map<string, Promise<FocusInfo>>();
   const index = createMemo(() => ids().indexOf(id() || ''));
   const focusKey = createMemo(() => {
     const current = asset();
-    return focusEnabled() && !cropMode() && !refreshing() && current?.id === id() && current
-      ? JSON.stringify({ id: current.id, revision: current.preview_revision || 0 })
+    return !refreshing() && current?.id === id() && current
+      ? JSON.stringify({
+          id: current.id,
+          path: current.path,
+          size: current.size,
+          modified_at: current.modified_at,
+          revision: current.preview_revision || 0,
+        })
       : false;
+  });
+  const currentPreviewKey = createMemo(() => {
+    const current = asset();
+    return current?.id === id() && current ? imageRequestKey(current, cropMode()) : false;
   });
   createEffect(
     on(focusKey, (key) => {
@@ -59,7 +88,12 @@ export default function Viewer(props: {
       setFocusError('');
       setFocusLoading(!!key);
       if (!key) return;
-      void execute<FocusInfo>('asset.focus', { id: JSON.parse(key).id })
+      let pending = focusCache.get(key);
+      if (!pending) {
+        pending = execute<FocusInfo>('asset.focus', { id: JSON.parse(key).id });
+        focusCache.set(key, pending);
+      }
+      void pending
         .then((result) => {
           if (token === focusRequest && key === focusKey()) setFocusData(result);
         })
@@ -71,7 +105,49 @@ export default function Viewer(props: {
         });
     }),
   );
-  const showControls = () => controls() || cropMode() || !!busy() || !!error();
+  const focus = createMemo(() => {
+    const data = focusData();
+    return data ? focusPresentation(data, previewMapping()) : { regions: [], message: '' };
+  });
+  const focusUnavailableReason = createMemo(() => {
+    if (!asset() || loading()) return '正在读取影像…';
+    if (cropMode()) return '裁剪时暂不显示对焦点';
+    if (refreshing() || focusLoading()) return '正在检测对焦信息…';
+    if (focusError()) return `对焦信息读取失败：${focusError()}`;
+    const data = focusData();
+    if (!data) return '正在检测对焦信息…';
+    if (data.status !== 'available') return focus().message;
+    if (previewPending() || previewKey() !== currentPreviewKey()) return '正在校验预览坐标…';
+    if (previewFailed()) return '预览不可用，无法校验对焦坐标';
+    return focus().regions.length ? '' : focus().message;
+  });
+  const focusVisible = createMemo(() => focusEnabled() && !focusUnavailableReason());
+  const showControls = () =>
+    controls() ||
+    controlFocus() ||
+    cropMode() ||
+    loading() ||
+    previewPending() ||
+    previewFailed() ||
+    focusLoading() ||
+    !!busy() ||
+    !!error();
+  function isControl(target: EventTarget | null) {
+    return (
+      target instanceof HTMLElement &&
+      !!target.closest('.viewer-chrome, .viewer-controls, .viewer-nav, .asset-inspector')
+    );
+  }
+  function recoverFocus(preferred?: HTMLElement | null) {
+    if (!container?.isConnected) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) return;
+    // A button can lose focus when an async action disables or replaces it.
+    // Recover only an empty document focus, never another field or control.
+    const target =
+      preferred?.isConnected && !preferred.matches(':disabled') ? preferred : container;
+    target.focus({ preventScroll: true });
+  }
   function activity() {
     setControls(true);
     clearTimeout(timer);
@@ -80,6 +156,10 @@ export default function Viewer(props: {
   async function loadAsset(nextId: string) {
     const token = ++request;
     setLoading(true);
+    setPreviewPending(true);
+    setPreviewFailed(false);
+    setPreviewKey('');
+    setPreviewMapping(undefined);
     setError('');
     setNotice('');
     setAsset(undefined);
@@ -106,7 +186,8 @@ export default function Viewer(props: {
   onMount(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
     const previousTitle = document.title;
-    if (props.onClose) container.focus();
+    // Single-letter shortcuts are active only while focus belongs to this viewer.
+    container.focus({ preventScroll: true });
     if (props.initialAssetId) {
       setIds(viewerIds(props.initialAssetId, props.initialAssetIds || []));
     } else if (desktop)
@@ -188,6 +269,8 @@ export default function Viewer(props: {
     }
   }
   function keyboard(event: KeyboardEvent) {
+    recoverFocus();
+    if (!container.contains(document.activeElement)) return;
     if (props.onClose && event.key === 'Tab') {
       const nodes = [
         ...container.querySelectorAll<HTMLElement>(
@@ -239,12 +322,15 @@ export default function Viewer(props: {
     } else if (/^[0-5]$/.test(key)) void rate(Number(key));
   }
   function toggleFocus() {
-    if (!asset()) return;
+    if (focusUnavailableReason()) return;
     setFocusEnabled((enabled) => !enabled);
     activity();
   }
   async function action(label: string, run: () => Promise<void>) {
     if (busy()) return;
+    const trigger = container.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement)
+      : null;
     setBusy(label);
     setError('');
     setNotice('');
@@ -255,6 +341,7 @@ export default function Viewer(props: {
     } finally {
       setBusy('');
       activity();
+      queueMicrotask(() => recoverFocus(trigger));
     }
   }
   async function changed(updated: Asset, change: 'rating' | 'crop' | 'refresh') {
@@ -295,7 +382,7 @@ export default function Viewer(props: {
     await action('保存裁剪…', async () => {
       await changed(await execute<Asset>('asset.crop', { id: asset()!.id, ...crop() }), 'crop');
       setCropMode(false);
-      setNotice('裁剪已保存，原片保持不变。');
+      setNotice('裁剪配方已保存。');
     });
   }
   async function resetCrop() {
@@ -328,7 +415,7 @@ export default function Viewer(props: {
       try {
         const refreshed = await execute<Asset>('asset.refresh', { id: target.id });
         await changed({ ...refreshed, preview_revision: Date.now() }, 'refresh');
-        setNotice('已重新读取原图，评级与裁剪配方已保留。');
+        setNotice('已重新读取原图。');
       } finally {
         setRefreshing(false);
       }
@@ -340,7 +427,16 @@ export default function Viewer(props: {
       tabIndex={-1}
       class={`immersive-viewer ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${info() ? 'with-info' : ''}`}
       onPointerMove={activity}
-      onPointerDown={activity}
+      onPointerDown={(event) => {
+        activity();
+        if ((event.target as HTMLElement).closest('.photo-stage') && !isControl(event.target))
+          container.focus({ preventScroll: true });
+      }}
+      onFocusIn={(event) => {
+        setControlFocus(isControl(event.target));
+        activity();
+      }}
+      onFocusOut={(event) => setControlFocus(isControl(event.relatedTarget))}
       role={props.onClose ? 'dialog' : undefined}
       aria-modal={props.onClose ? true : undefined}
       aria-label="沉浸影像查看器"
@@ -351,19 +447,25 @@ export default function Viewer(props: {
             <Icon name="grid" />
           </button>
           <div class="viewer-filename">
-            <strong>{asset()?.filename || '影像查看器'}</strong>
-            <span>
-              {Math.max(0, index() + 1)} / {ids().length}
-            </span>
+            <Show when={!info() || !asset()}>
+              <strong title={asset()?.filename}>{asset()?.filename || '影像查看器'}</strong>
+            </Show>
+            <Show when={ids().length > 1}>
+              <span aria-label={`第 ${Math.max(0, index() + 1)} 张，共 ${ids().length} 张`}>
+                {Math.max(0, index() + 1)} / {ids().length}
+              </span>
+            </Show>
           </div>
           <div class="viewer-toolbar-actions">
             <button
-              class={`icon-button focus-toggle ${focusEnabled() ? 'active' : ''}`}
+              class={`icon-button focus-toggle ${focusVisible() ? 'active' : ''}`}
               onClick={toggleFocus}
-              disabled={!asset()}
+              aria-disabled={!!focusUnavailableReason()}
               aria-label="显示对焦点（P）"
-              aria-pressed={focusEnabled()}
-              title="显示对焦点（P，裁剪时暂隐藏）"
+              aria-pressed={focusVisible()}
+              aria-keyshortcuts="P"
+              aria-describedby={focusHelpId}
+              title={focusUnavailableReason() || '对焦点（P）· 实线选定，虚线活动'}
             >
               <svg
                 width="18"
@@ -377,8 +479,11 @@ export default function Viewer(props: {
                 <path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5" />
                 <rect x="8" y="8" width="8" height="8" rx="1" />
               </svg>
-              <span>对焦点</span>
             </button>
+            <span id={focusHelpId} class="visually-hidden">
+              {focusUnavailableReason() ||
+                '显示相机记录的对焦区域。实线为选定区域，虚线为活动区域。'}
+            </span>
             <Show when={desktop}>
               <button
                 class="icon-button"
@@ -395,6 +500,8 @@ export default function Viewer(props: {
               onClick={() => (cropMode() ? setCropMode(false) : beginCrop())}
               disabled={!asset() || !!busy()}
               aria-label={cropMode() ? '退出裁剪' : '裁剪（C）'}
+              aria-pressed={cropMode()}
+              aria-keyshortcuts="C"
               title="裁剪（C）"
             >
               <Icon name="crop" />
@@ -404,6 +511,7 @@ export default function Viewer(props: {
               onClick={() => setInfo((value) => !value)}
               aria-label="影像信息（I）"
               aria-pressed={info()}
+              aria-keyshortcuts="I"
               title="影像信息（I）"
             >
               <Icon name="info" />
@@ -421,6 +529,7 @@ export default function Viewer(props: {
               class="icon-button"
               onClick={fullscreen}
               aria-label="切换全屏（F）"
+              aria-keyshortcuts="F"
               title="切换全屏（F）"
             >
               <Icon name="expand" />
@@ -429,6 +538,7 @@ export default function Viewer(props: {
               class="icon-button"
               onClick={close}
               aria-label="关闭查看器（Esc）"
+              aria-keyshortcuts="Escape"
               title="关闭（Esc）"
             >
               <Icon name="close" />
@@ -437,6 +547,7 @@ export default function Viewer(props: {
         </header>
         <Show when={error()}>
           <div class="viewer-alert error" role="alert">
+            <Icon name="info" />
             <span>{error()}</span>
             <button class="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}>
               <Icon name="close" size={15} />
@@ -445,6 +556,7 @@ export default function Viewer(props: {
         </Show>
         <Show when={notice()}>
           <div class="viewer-alert success" role="status">
+            <Icon name="check" />
             <span>{notice()}</span>
             <button class="icon-button" aria-label="关闭完成提示" onClick={() => setNotice('')}>
               <Icon name="close" size={15} />
@@ -454,7 +566,7 @@ export default function Viewer(props: {
         <Show
           when={asset()}
           fallback={
-            <div class="viewer-loading">
+            <div class="viewer-loading" role="status" aria-live="polite">
               {loading() ? (
                 <>
                   <span class="spinner" />
@@ -482,19 +594,45 @@ export default function Viewer(props: {
               onNext={() => move(1)}
               hasPrevious={!busy() && !cropMode() && index() > 0}
               hasNext={!busy() && !cropMode() && index() < ids().length - 1}
-              focusEnabled={focusEnabled()}
-              focusData={focusData()}
-              focusLoading={focusLoading() || refreshing()}
-              focusError={focusError()}
+              focusEnabled={focusVisible()}
+              focusRegions={focus().regions}
+              onPreviewStateChange={(state) => {
+                if (current().id !== id() || state.key !== currentPreviewKey()) return;
+                setPreviewKey(state.key);
+                setPreviewPending(state.loading);
+                setPreviewFailed(state.failed);
+                setPreviewMapping(state.loading || state.failed ? undefined : state.mapping);
+                if (
+                  !state.loading &&
+                  !state.failed &&
+                  state.asset?.id === current().id &&
+                  (state.asset.metadata !== current().metadata ||
+                    state.asset.width !== current().width ||
+                    state.asset.height !== current().height)
+                ) {
+                  const inspected = state.asset;
+                  setAsset(
+                    (previous) =>
+                      previous && {
+                        ...previous,
+                        width: inspected.width,
+                        height: inspected.height,
+                        metadata: inspected.metadata,
+                        availability: inspected.availability,
+                        cache_pinned: inspected.cache_pinned,
+                      },
+                  );
+                }
+              }}
             />
           )}
         </Show>
-        <div class="viewer-bottom-status viewer-chrome">
-          <span>{busy() || '← → 切换 · 滚轮缩放 · 拖动平移'}</span>
-          <span>
-            <kbd>I</kbd> 信息 <kbd>C</kbd> 裁剪 <kbd>P</kbd> 对焦点 <kbd>F</kbd> 全屏
-          </span>
-        </div>
+        <Show when={busy()}>
+          <div class="viewer-operation-status" role="status">
+            <span class="spinner small" />
+            {busy()}
+          </div>
+        </Show>
       </div>
       <Show when={info() && asset()}>
         <AssetInspector

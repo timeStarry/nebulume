@@ -36,6 +36,7 @@ export default function ImportWorkspace(props: {
   const [scanMessage, setScanMessage] = createSignal('');
   let initialized = false;
   const targets = () => localLibraries(props.libraries);
+  const historyJobs = () => history().filter((job) => job.id !== result()?.id);
   createEffect(() => {
     const available = targets();
     if (!available.some((l) => l.id === targetId())) setTargetId(available[0]?.id || '');
@@ -103,7 +104,7 @@ export default function ImportWorkspace(props: {
   }
   async function run() {
     if (!plan() || !reviewed() || !plannedTarget()) return;
-    setBusy('正在安全复制并验证…');
+    setBusy('正在复制并校验…');
     setError('');
     try {
       const completed = await execute<ImportResult>('import.execute', {
@@ -121,7 +122,7 @@ export default function ImportWorkspace(props: {
               library_id: plannedTarget()!.id,
             }));
           setScanMessage(
-            `目标图片库已更新：索引 ${scan.indexed} 项，跳过 ${scan.skipped} 项${scan.errors.length ? `，${scan.errors.length} 项异常` : ''}。`,
+            `图片库已更新${scan.errors.length ? `，${scan.errors.length} 项异常` : ''}。`,
           );
           if (scan.errors.length)
             setError(
@@ -131,7 +132,7 @@ export default function ImportWorkspace(props: {
                 .join('\n'),
             );
         } catch (e) {
-          setError(`文件导入已返回结果，但目标图片库索引未完成：${errorMessage(e)}`);
+          setError(`导入已结束，图片库更新未完成：${errorMessage(e)}`);
         }
         props.onImported(plannedTarget()!, completed);
       }
@@ -166,7 +167,6 @@ export default function ImportWorkspace(props: {
       <header class="workspace-heading">
         <div>
           <h1>存储卡</h1>
-          <p>从存储卡或文件夹导入到本地图片库，完成后自动更新索引。</p>
         </div>
         <button
           class="button"
@@ -191,10 +191,12 @@ export default function ImportWorkspace(props: {
         </div>
       </Show>
       <div class="import-work-grid">
-        <section class="import-task-panel">
+        <section class="import-task-panel" aria-label="导入任务" aria-busy={!!busy()}>
           <div class="work-panel-heading">
             <h2>导入照片</h2>
-            <span>{busy() || '原始文件始终保留'}</span>
+            <Show when={busy()}>
+              <span role="status">{busy()}</span>
+            </Show>
           </div>
           <div class="import-steps">
             <span classList={{ current: !plan() }}>
@@ -236,12 +238,15 @@ export default function ImportWorkspace(props: {
                     <button
                       type="button"
                       class={`volume-item ${source() === volume.path ? 'selected' : ''}`}
+                      aria-pressed={source() === volume.path}
                       onClick={() => setSource(volume.path)}
                     >
                       <Icon name="card" size={20} />
                       <div>
                         <strong>{volume.name || volume.path}</strong>
-                        <span>{volume.path}</span>
+                        <Show when={volume.name && volume.name !== volume.path}>
+                          <span>{volume.path}</span>
+                        </Show>
                       </div>
                       <small>
                         {volume.available_bytes != null
@@ -322,13 +327,12 @@ export default function ImportWorkspace(props: {
                   按文件内容跳过重复
                 </label>
               </div>
-              <p class="field-note">
-                日期归档使用 EXIF 拍摄日期；缺少日期的文件进入
-                unknown-date。导入不会删除来源或覆盖已有文件。
-              </p>
+              <Show when={layout() === 'date'}>
+                <p class="field-note">无拍摄日期的文件归入 unknown-date。</p>
+              </Show>
               <div class="workspace-form-actions">
                 <button class="button primary" disabled={!!busy() || !desktop || !targetId()}>
-                  {busy() || '生成导入计划'}
+                  生成导入计划
                 </button>
               </div>
             </form>
@@ -346,6 +350,7 @@ export default function ImportWorkspace(props: {
                   <strong>{plan()!.destination}</strong>
                 </div>
               </div>
+              <p class="field-note">保留来源文件，不覆盖已有文件。</p>
               <For each={plan()!.warnings || []}>
                 {(warning) => <p class="form-error">{warning}</p>}
               </For>
@@ -397,14 +402,17 @@ export default function ImportWorkspace(props: {
                   onClick={run}
                   disabled={!!busy() || !reviewed() || !plan()!.items.length}
                 >
-                  {busy() || '开始安全导入'}
+                  开始导入
                 </button>
               </div>
             </div>
           </Show>
           <Show when={result()}>
             <div class="inline-import-content">
-              <div class="import-completion">
+              <div
+                class="import-completion"
+                classList={{ 'has-issues': result()!.status !== 'completed' }}
+              >
                 <Icon name={result()!.failed ? 'info' : 'check'} size={26} />
                 <div>
                   <h3>{statusName(result()!.status)}</h3>
@@ -453,14 +461,16 @@ export default function ImportWorkspace(props: {
         <aside class="import-history-panel">
           <div class="work-panel-heading">
             <h2>导入历史</h2>
-            <span>{history().length} 个任务</span>
+            <Show when={historyJobs().length > 0}>
+              <span>{historyJobs().length} 个任务</span>
+            </Show>
           </div>
           <For
-            each={history()}
+            each={historyJobs()}
             fallback={
               <div class="compact-empty">
                 <Icon name="clock" size={25} />
-                <p>完成一次导入后，任务与逐文件结果会保存在这里。</p>
+                <p>{result() ? '暂无其他导入记录' : '暂无导入记录'}</p>
               </div>
             }
           >

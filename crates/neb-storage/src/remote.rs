@@ -8,6 +8,7 @@ use reqwest::{
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::Read;
 use url::Url;
 
@@ -29,7 +30,7 @@ pub fn validate_endpoint(endpoint: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn url_for(config: &StorageConfig, key: &str) -> Result<Url> {
+pub(crate) fn url_for(config: &StorageConfig, key: &str) -> Result<Url> {
     let mut url = validate_endpoint(&config.endpoint)?;
     {
         let mut segments = url
@@ -75,7 +76,7 @@ fn body(response: Response) -> Result<String> {
     String::from_utf8(bytes).context("Storage listing is not UTF-8")
 }
 
-fn dav_request(
+pub(crate) fn dav_request(
     client: &Client,
     credentials: &Credentials,
     method: Method,
@@ -95,13 +96,22 @@ pub fn reader(
     credentials: &Credentials,
     key: &str,
 ) -> Result<Box<dyn Read>> {
+    Ok(Box::new(read_response(client, config, credentials, key)?))
+}
+
+pub(crate) fn read_response(
+    client: &Client,
+    config: &StorageConfig,
+    credentials: &Credentials,
+    key: &str,
+) -> Result<Response> {
     let url = url_for(config, key)?;
     let response = if config.kind == "s3" {
         s3_request(client, credentials, config, url, &[])?.send()?
     } else {
         dav_request(client, credentials, Method::GET, url).send()?
     };
-    Ok(Box::new(checked(response)?))
+    checked(response)
 }
 
 pub fn browse(
@@ -153,6 +163,90 @@ struct ResourceType {
 #[derive(Deserialize)]
 struct Empty {}
 
+/// The serde XML model matches local names. Resolve namespaces separately for
+/// creationdate so a server-specific property with the same name is not used.
+/// Indices match the response/propstat order in the model above.
+fn dav_creation_dates(xml: &str) -> Result<HashMap<(usize, usize), Option<String>>> {
+    use quick_xml::{events::Event, name::ResolveResult, NsReader};
+    let mut reader = NsReader::from_str(xml);
+    let mut path: Vec<Vec<u8>> = Vec::new();
+    let mut response_index = 0;
+    let mut propstat_index = 0;
+    let mut dates = HashMap::new();
+    // Keep consuming resolved events even within the date so namespace scopes
+    // are restored correctly. Mark structured content invalid instead of
+    // guessing a date from an element's nested text.
+    let mut capture: Option<(usize, String, bool)> = None;
+    loop {
+        let (namespace, event) = reader.read_resolved_event()?;
+        match event {
+            Event::Start(element) => {
+                let local = element.local_name();
+                if let Some((_, _, plain_text)) = &mut capture {
+                    *plain_text = false;
+                }
+                if path.len() == 1 && local.as_ref() == b"response" {
+                    response_index += 1;
+                    propstat_index = 0;
+                } else if path.len() == 2 && local.as_ref() == b"propstat" {
+                    propstat_index += 1;
+                } else if path.len() == 4
+                    && path[1] == b"response"
+                    && path[2] == b"propstat"
+                    && path[3] == b"prop"
+                    && local.as_ref() == b"creationdate"
+                    && matches!(namespace, ResolveResult::Bound(namespace) if namespace.as_ref() == b"DAV:")
+                {
+                    capture = Some((path.len() + 1, String::new(), true));
+                }
+                path.push(local.as_ref().to_vec());
+            }
+            Event::End(_) => {
+                if capture
+                    .as_ref()
+                    .is_some_and(|(depth, _, _)| *depth == path.len())
+                {
+                    let (_, value, plain_text) = capture.take().expect("checked above");
+                    let date = plain_text
+                        .then(|| chrono::DateTime::parse_from_rfc3339(value.trim()).ok())
+                        .flatten()
+                        .map(|date| {
+                            date.with_timezone(&Utc)
+                                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                        });
+                    dates
+                        .entry((response_index - 1, propstat_index - 1))
+                        .and_modify(|previous| {
+                            if previous != &date {
+                                *previous = None;
+                            }
+                        })
+                        .or_insert(date);
+                }
+                path.pop();
+            }
+            Event::Empty(_) => {
+                if let Some((_, _, plain_text)) = &mut capture {
+                    *plain_text = false;
+                }
+            }
+            Event::Text(text) => {
+                if let Some((_, value, _)) = &mut capture {
+                    value.push_str(&text.unescape()?);
+                }
+            }
+            Event::CData(text) => {
+                if let Some((_, value, _)) = &mut capture {
+                    value.push_str(std::str::from_utf8(text.as_ref())?);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(dates)
+}
+
 fn browse_dav(
     client: &Client,
     config: &StorageConfig,
@@ -167,13 +261,14 @@ fn browse_dav(
     }
     let response = dav_request(client, credentials, Method::from_bytes(b"PROPFIND")?, url.clone())
         .header("Depth", "1").header("Content-Type", "application/xml; charset=utf-8")
-        .body("<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:resourcetype/></d:prop></d:propfind>").send()?;
-    let document: Multistatus =
-        quick_xml::de::from_str(&body(response)?).context("Invalid WebDAV listing")?;
+        .body("<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:resourcetype/><d:creationdate/></d:prop></d:propfind>").send()?;
+    let xml = body(response)?;
+    let document: Multistatus = quick_xml::de::from_str(&xml).context("Invalid WebDAV listing")?;
+    let creation_dates = dav_creation_dates(&xml).context("Invalid WebDAV listing")?;
     let root_url = url_for(config, "")?;
     let root_path = format!("{}/", root_url.path().trim_end_matches('/'));
     let mut entries = Vec::new();
-    for response in document.responses {
+    for (response_index, response) in document.responses.into_iter().enumerate() {
         let href = url.join(&response.href).context("Invalid WebDAV href")?;
         if href.origin() != root_url.origin() {
             bail!("WebDAV listing points outside the configured origin");
@@ -202,12 +297,24 @@ fn browse_dav(
         let mut found = false;
         let mut is_dir = false;
         let mut size = None;
-        for propstat in response
+        let mut created_at = None;
+        let mut creation_date_seen = false;
+        let mut conflicting_creation_dates = false;
+        for (propstat_index, propstat) in response
             .properties
             .into_iter()
-            .filter(|p| p.status.split_whitespace().nth(1) == Some("200"))
+            .enumerate()
+            .filter(|(_, p)| p.status.split_whitespace().nth(1) == Some("200"))
         {
             found = true;
+            if let Some(date) = creation_dates.get(&(response_index, propstat_index)) {
+                if creation_date_seen && &created_at != date {
+                    conflicting_creation_dates = true;
+                } else if !creation_date_seen {
+                    created_at = date.clone();
+                    creation_date_seen = true;
+                }
+            }
             is_dir |= propstat.prop.resourcetype.collection.is_some();
             if let Some(value) = propstat.prop.getcontentlength {
                 let value = value.trim();
@@ -230,6 +337,11 @@ fn browse_dav(
                 key,
                 size: size.unwrap_or(0),
                 is_dir,
+                created_at: if conflicting_creation_dates {
+                    None
+                } else {
+                    created_at
+                },
             });
         }
     }
@@ -334,6 +446,8 @@ fn browse_s3(
             key,
             size: object.size,
             is_dir: object.key.ends_with('/'),
+            // S3 lists LastModified, not object creation time.
+            created_at: None,
         });
     }
     for directory in listing.common_prefixes {
@@ -351,6 +465,7 @@ fn browse_s3(
             key,
             size: 0,
             is_dir: true,
+            created_at: None,
         });
     }
     if listing.is_truncated && listing.next_continuation_token.is_none() {
@@ -387,6 +502,17 @@ fn s3_request(
     client: &Client,
     credentials: &Credentials,
     config: &StorageConfig,
+    url: Url,
+    query: &[(String, String)],
+) -> Result<RequestBuilder> {
+    s3_request_with_method(client, credentials, config, Method::GET, url, query)
+}
+
+pub(crate) fn s3_request_with_method(
+    client: &Client,
+    credentials: &Credentials,
+    config: &StorageConfig,
+    method: Method,
     mut url: Url,
     query: &[(String, String)],
 ) -> Result<RequestBuilder> {
@@ -444,7 +570,8 @@ fn s3_request(
     }
     // URL segments are percent encoded once; S3 must not normalize or double encode keys.
     let canonical_request = format!(
-        "GET\n{}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{empty_hash}",
+        "{}\n{}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{empty_hash}",
+        method.as_str(),
         url.path()
     );
     let scope = format!("{date}/{region}/s3/aws4_request");
@@ -459,7 +586,7 @@ fn s3_request(
     let signature = hex::encode(hmac(&key, &to_sign));
     let authorization = format!("AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed_headers}, Signature={signature}");
     let mut request = client
-        .get(url)
+        .request(method, url)
         .header("x-amz-date", timestamp)
         .header("x-amz-content-sha256", empty_hash)
         .header("Authorization", authorization);

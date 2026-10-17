@@ -208,7 +208,7 @@ fn sort_and_filters_apply_to_the_complete_library_before_the_page() {
             json!({"sort_by":"modified_at","sort_direction":"asc"}),
             "m.NEF",
         ),
-        (json!({}), "a.jpg"),
+        (json!({}), "m.NEF"),
         (
             json!({"format":"jpeg","rating":3,"sort_by":"rating"}),
             "a.jpg",
@@ -327,7 +327,7 @@ fn version_two_catalog_migrates_pair_setting_without_changing_existing_assets() 
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        3
+        5
     );
     core.update_library("old", None, Some(true), None).unwrap();
     drop(core);

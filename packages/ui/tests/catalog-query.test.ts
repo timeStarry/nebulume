@@ -62,6 +62,85 @@ describe('browser catalog mirrors whole-library queries', () => {
     expect(raw.file_total).toBe(1);
     expect(browserAssetList(items, { rating: 4 }, true).items[0].id).toBe('raw');
   });
+  it('uses creation time independently of modification time, sorting unknown times last before pagination', () => {
+    const items = [
+      {
+        ...photo('new', 'a.jpg', 3),
+        created_at: '2026-10-15T00:00:00Z',
+        modified_at: '2020-01-01',
+      },
+      {
+        ...photo('old', 'z.jpg', 5),
+        created_at: '2020-01-01T00:00:00Z',
+        modified_at: '2026-10-15',
+      },
+      { ...photo('empty', 'b.jpg', 4), created_at: '' },
+      photo('missing', 'c.jpg', 4),
+      { ...photo('png', 'd.png', 5), created_at: '2030-01-01T00:00:00Z' },
+      { ...photo('low', 'e.jpg', 1), created_at: '2030-01-01T00:00:00Z' },
+    ];
+    const options = {
+      rating: 3,
+      format: 'jpeg' as const,
+      sort_by: 'created_at' as const,
+      limit: 2,
+    };
+    for (const [direction, known, unknown] of [
+      ['asc', ['old', 'new'], ['empty', 'missing']],
+      ['desc', ['new', 'old'], ['missing', 'empty']],
+    ] as const) {
+      const first = browserAssetList(items, { ...options, sort_direction: direction });
+      expect(first.items.map((item) => item.id)).toEqual(known);
+      expect(first.total).toBe(4);
+      expect(
+        browserAssetList(items, { ...options, sort_direction: direction, offset: 2 }).items.map(
+          (item) => item.id,
+        ),
+      ).toEqual(unknown);
+    }
+  });
+  it('defaults to camera capture time while pending and missing timestamps stay last in both directions', () => {
+    const items: Asset[] = [
+      {
+        ...photo('early', 'z.jpg', 5),
+        captured_at: '2020-01-01T08:30:00',
+        created_at: '2030-01-01',
+        modified_at: '2030-01-01',
+        capture_status: 'available',
+      },
+      {
+        ...photo('late', 'a.jpg', 3),
+        captured_at: '2026-10-17T08:30:00',
+        created_at: '2000-01-01',
+        modified_at: '2000-01-01',
+        capture_status: 'available',
+      },
+      { ...photo('pending', 'b.jpg', 4), captured_at: '', capture_status: 'pending' },
+      { ...photo('missing', 'c.jpg', 4), capture_status: 'missing' },
+    ];
+    expect(browserAssetList(items, {}).items.map((item) => item.id)).toEqual([
+      'late',
+      'early',
+      'pending',
+      'missing',
+    ]);
+    expect(
+      browserAssetList(items, {
+        sort_by: 'captured_at',
+        sort_direction: 'asc',
+        rating: 3,
+        format: 'jpeg',
+        limit: 1,
+      }).items.map((item) => item.id),
+    ).toEqual(['early']);
+    expect(
+      browserAssetList(items, {
+        sort_by: 'captured_at',
+        sort_direction: 'asc',
+        offset: 2,
+      }).items.map((item) => item.id),
+    ).toEqual(['missing', 'pending']);
+  });
   it('does not pair different directories, differently cased stems or ambiguous duplicates', () => {
     for (const items of [
       [photo('a', 'same.nef'), photo('b', 'same.jpg', 0, 'other')],

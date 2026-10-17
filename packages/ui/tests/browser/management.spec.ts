@@ -72,8 +72,28 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
           case 'asset.list':
             result = { items: [{ ...photo, library_id: call.params.library_id }], total: 1 };
             break;
+          case 'library.capture_index.status':
+            result = {
+              library_id: call.params.library_id,
+              total: 1,
+              known: 1,
+              missing: 0,
+              pending: 0,
+              job: null,
+            };
+            break;
           case 'asset.get':
             result = photo;
+            break;
+          case 'asset.focus':
+            result = {
+              status: 'missing',
+              reason: '此照片未记录对焦区域',
+              source: null,
+              coordinate_space: 'oriented_full_image',
+              orientation: 1,
+              regions: [],
+            };
             break;
           case 'asset.preview':
             result = { data_url: image, width: 1, height: 1, source: 'test fixture' };
@@ -106,6 +126,10 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
               },
             ];
             break;
+          case '$native/plugin:window|theme':
+            result = 'dark';
+            break;
+          case '$native/plugin:window|set_theme':
           case '$native/plugin:window|set_title':
             result = null;
             break;
@@ -167,68 +191,77 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
 const nav = (page: Page, name: string) =>
   page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name, exact: true });
 
-test('format, rating, sort key and direction combine in every paged catalog request', async ({
-  page,
-}) => {
-  const first = { ...photo, id: 'server-first', filename: 'Zulu.jpg', extension: 'jpg', rating: 4 };
-  const second = {
-    ...photo,
-    id: 'server-second',
-    filename: 'Alpha.jpg',
-    extension: 'jpg',
-    rating: 4,
-  };
-  const third = { ...photo, id: 'page-two', filename: 'Page2.jpg', extension: 'jpg', rating: 4 };
-  const calls = await fixture(page, (call) => {
-    if (call.command === 'asset.list')
-      return { items: call.params.offset ? [third] : [first, second], total: 3, file_total: 3 };
+for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
+  test(`${sortBy}: format, rating, sort key and direction combine in every paged catalog request`, async ({
+    page,
+  }) => {
+    const first = {
+      ...photo,
+      id: 'server-first',
+      filename: 'Zulu.jpg',
+      extension: 'jpg',
+      rating: 4,
+      created_at: '2026-10-15T00:00:00Z',
+    };
+    const second = {
+      ...photo,
+      id: 'server-second',
+      filename: 'Alpha.jpg',
+      extension: 'jpg',
+      rating: 4,
+      created_at: '2020-01-01T00:00:00Z',
+    };
+    const third = { ...photo, id: 'page-two', filename: 'Page2.jpg', extension: 'jpg', rating: 4 };
+    const calls = await fixture(page, (call) => {
+      if (call.command === 'asset.list')
+        return { items: call.params.offset ? [third] : [first, second], total: 3, file_total: 3 };
+    });
+    await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+    await page.getByLabel('最低评级筛选').selectOption('3');
+    await page.getByLabel('文件格式筛选').selectOption('jpeg');
+    await page.getByLabel('排序字段').selectOption(sortBy);
+    await page.getByLabel('排序方向').selectOption('asc');
+    const matching = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
+    await expect.poll(matching).toMatchObject({
+      library_id: local.id,
+      rating: 3,
+      format: 'jpeg',
+      sort_by: sortBy,
+      sort_direction: 'asc',
+      offset: 0,
+      limit: 200,
+    });
+    // The UI must preserve the authoritative service order, even across pages.
+    await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+      'aria-label',
+      'Zulu.jpg，4 星',
+    );
+    await page.getByRole('button', { name: '载入更多（2 / 3）' }).click();
+    await expect.poll(matching).toMatchObject({
+      rating: 3,
+      format: 'jpeg',
+      sort_by: sortBy,
+      sort_direction: 'asc',
+      offset: 2,
+    });
+    await expect(page.locator('.photo-grid .thumbnail').last()).toHaveAttribute(
+      'aria-label',
+      'Page2.jpg，4 星',
+    );
+    await page.getByLabel('排序方向').selectOption('desc');
+    await page.getByLabel('文件格式筛选').selectOption('raw');
+    await expect.poll(matching).toMatchObject({
+      rating: 3,
+      format: 'raw',
+      sort_by: sortBy,
+      sort_direction: 'desc',
+      offset: 0,
+    });
+    await page.setViewportSize({ width: 1024, height: 768 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
   });
-  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
-  await page.getByLabel('最低评级筛选').selectOption('3');
-  await page.getByLabel('文件格式筛选').selectOption('jpeg');
-  await page.getByLabel('排序字段').selectOption('filename');
-  await page.getByLabel('排序方向').selectOption('asc');
-  const matching = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
-  await expect.poll(matching).toMatchObject({
-    library_id: local.id,
-    rating: 3,
-    format: 'jpeg',
-    sort_by: 'filename',
-    sort_direction: 'asc',
-    offset: 0,
-    limit: 200,
-  });
-  // The UI must preserve the authoritative service order, even across pages.
-  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
-    'aria-label',
-    'Zulu.jpg，4 星',
-  );
-  await page.getByRole('button', { name: '载入更多（2 / 3）' }).click();
-  await expect.poll(matching).toMatchObject({
-    rating: 3,
-    format: 'jpeg',
-    sort_by: 'filename',
-    sort_direction: 'asc',
-    offset: 2,
-  });
-  await expect(page.locator('.photo-grid .thumbnail').last()).toHaveAttribute(
-    'aria-label',
-    'Page2.jpg，4 星',
-  );
-  await page.getByLabel('排序方向').selectOption('desc');
-  await page.getByLabel('文件格式筛选').selectOption('raw');
-  await expect.poll(matching).toMatchObject({
-    rating: 3,
-    format: 'raw',
-    sort_by: 'filename',
-    sort_direction: 'desc',
-    offset: 0,
-  });
-  await page.setViewportSize({ width: 1024, height: 768 });
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
-    true,
-  );
-});
 
 test('library settings persist pairing, variants replace their representative, and rebinding requires explicit review', async ({
   page,
@@ -272,8 +305,8 @@ test('library settings persist pairing, variants replace their representative, a
   await expect
     .poll(() => calls.find((call) => call.command === 'library.update')?.params)
     .toEqual({ id: local.id, name: '配对照片', pair_raw_jpeg: true });
-  await expect(page.locator('.asset-variants')).toContainText('RAW + JPEG');
-  await expect(page.locator('.collection-heading')).toContainText('2 项 / 3 个文件');
+  await expect(page.locator('.asset-variants').getByRole('button')).toHaveText(['RAW', 'JPEG']);
+  await expect(page.locator('.collection-status')).toContainText('2 / 2 项 · 3 个匹配文件');
   await page.getByRole('button', { name: '打开 Mountain.nef RAW' }).click();
   await expect
     .poll(() => calls.filter((call) => call.command === '$native/open_viewer').at(-1)?.params)
@@ -284,6 +317,7 @@ test('library settings persist pairing, variants replace their representative, a
     .toEqual({ assetId: jpg.id, assetIds: [jpg.id, other.id] });
   await page.getByRole('button', { name: '配对照片 图片库设置' }).click();
   await expect(page.getByLabel('合并显示 RAW + JPEG')).toBeChecked();
+  await page.getByLabel('来源类型').selectOption('remote');
   await page.getByLabel('存储源', { exact: true }).selectOption('nas');
   await page.getByLabel('源内目录（可选）').fill('trips/');
   await page.getByRole('button', { name: '检查位置更改' }).click();
@@ -395,9 +429,13 @@ test('embedded RAW preview is labeled and raw EXIF is disclosed without duplicat
   });
   await page.goto('/?viewer=1');
   await expect(page.locator('.main-photo')).toBeVisible();
-  await expect(page.locator('.preview-source')).toHaveText('相机内嵌预览 · RAW 原始解码不可用');
+  await expect(page.locator('.preview-source')).toHaveCount(0);
   await page.keyboard.press('i');
   await expect(page.locator('.histogram-source')).toHaveText('相机内嵌预览 · RAW 原始解码不可用');
+  await expect(
+    page.getByText('相机内嵌预览 · RAW 原始解码不可用', { exact: true }).filter({ visible: true }),
+  ).toHaveCount(1);
+  await expect(page.locator('.viewer-filename strong')).toHaveCount(0);
   await expect(page.locator('.inspector-file')).toContainText('预览尺寸 960 × 640 px');
   await expect(
     page.getByText('Fixture camera', { exact: true }).filter({ visible: true }),
@@ -587,6 +625,126 @@ test('a late failed-browse status refresh cannot overwrite a newer successful co
   await expect(page.getByRole('alert')).not.toBeVisible();
 });
 
+test('local libraries are created directly from a directory and become import targets without a local storage connection', async ({
+  page,
+}) => {
+  const libraries: Library[] = [remote];
+  const root = 'D:\\New Photos';
+  const legacySource: StorageConfig = {
+    id: 'legacy-local',
+    kind: 'local',
+    name: '旧本地来源',
+    endpoint: 'D:\\Old Photos',
+  };
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list') return libraries;
+    if (call.command === 'storage.list') return [legacySource, nas];
+    if (call.command === '$native/plugin:dialog|open') return root;
+    if (call.command === 'library.add') {
+      const library: Library = {
+        id: 'direct-local',
+        name: String(call.params.name),
+        root: String(call.params.root),
+        storage_id: null,
+        source_kind: 'local',
+        created_at: '2026-10-16',
+        pair_raw_jpeg: Boolean(call.params.pair_raw_jpeg),
+      };
+      libraries.push(library);
+      return library;
+    }
+    if (call.command === 'import.plan')
+      return {
+        id: 'direct-plan',
+        source: call.params.source,
+        destination: call.params.destination,
+        items: [],
+        duplicate_count: 0,
+        total_bytes: 0,
+        warnings: [],
+      };
+  });
+  await page.getByRole('button', { name: '建立图片库', exact: true }).click();
+  await expect(page.getByLabel('来源类型')).toHaveValue('local');
+  await expect(page.getByLabel('存储源', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '建立并扫描', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '选择本地文件夹…', exact: true }).click();
+  await expect(page.getByLabel('本地目录', { exact: true })).toHaveValue(root);
+  await page.getByLabel('图片库名称').fill('直接本地库');
+  await page.getByRole('button', { name: '建立并扫描', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '直接本地库', exact: true })).toBeVisible();
+  expect(calls.find((call) => call.command === 'library.add')?.params).toEqual({
+    name: '直接本地库',
+    root,
+    pair_raw_jpeg: false,
+  });
+  expect(calls.filter((call) => call.command === 'storage.add')).toHaveLength(0);
+  await nav(page, '存储卡').click();
+  await expect(page.getByLabel('目标图片库')).toHaveValue('direct-local');
+  await expect(
+    page.getByLabel('目标图片库').locator('option', { hasText: 'NAS 旅行' }),
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: /CAMERA CARD/ }).click();
+  await page.getByRole('button', { name: '生成导入计划', exact: true }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'import.plan')?.params.destination)
+    .toBe(root);
+  await nav(page, '存储源').click();
+  await expect(page.locator('.source-row').filter({ hasText: '家庭 NAS' })).toHaveCount(1);
+  await expect(page.locator('.source-row').filter({ hasText: '旧本地来源' })).toHaveCount(0);
+  await page.getByRole('button', { name: '添加存储源', exact: true }).click();
+  await expect(
+    page.getByRole('dialog').getByRole('button', { name: '本地文件夹', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('dialog').getByRole('button', { name: 'WebDAV', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('dialog').getByRole('button', { name: 'S3 兼容存储', exact: true }),
+  ).toBeVisible();
+});
+
+test('legacy local library settings retain their binding until an explicitly reviewed directory change', async ({
+  page,
+}) => {
+  let library: Library = { ...local };
+  let picks = 0;
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list') return [library];
+    if (call.command === 'storage.list')
+      return [{ id: 'local', kind: 'local', name: '照片磁盘', endpoint: local.root }, nas];
+    if (call.command === '$native/plugin:dialog|open')
+      return ++picks === 1 ? 'E:\\Cancelled' : 'F:\\Replacement';
+    if (call.command === 'library.update') {
+      library = {
+        ...library,
+        ...call.params,
+        storage_id: null,
+        source_kind: 'local',
+        source_prefix: '',
+      } as Library;
+      return library;
+    }
+  });
+  await page.getByRole('button', { name: '本地摄影 图片库设置' }).click();
+  await expect(page.getByLabel('来源类型')).toHaveValue('local');
+  await expect(page.getByLabel('本地目录', { exact: true })).toHaveValue(local.root);
+  await page.getByRole('button', { name: '选择本地文件夹…', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('旧索引、评级和裁剪配方');
+  await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
+  expect(calls.filter((call) => call.command === 'library.update')).toHaveLength(0);
+  await page.getByRole('button', { name: '本地摄影 图片库设置' }).click();
+  await expect(page.getByLabel('本地目录', { exact: true })).toHaveValue(local.root);
+  await page.getByRole('button', { name: '选择本地文件夹…', exact: true }).click();
+  await page.getByRole('button', { name: '检查位置更改', exact: true }).click();
+  expect(calls.filter((call) => call.command === 'library.update')).toHaveLength(0);
+  await page.getByRole('button', { name: '确认更改位置并清空索引', exact: true }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'library.update')?.params)
+    .toEqual({ id: local.id, name: local.name, pair_raw_jpeg: false, root: 'F:\\Replacement' });
+  expect(calls.filter((call) => call.command === 'storage.add')).toHaveLength(0);
+});
+
 test('card imports target local libraries, retain review across navigation and consume backend indexing results', async ({
   page,
 }) => {
@@ -642,13 +800,13 @@ test('card imports target local libraries, retain review across navigation and c
   await page.getByRole('button', { name: '生成导入计划' }).click();
   await expect(page.getByText('待复制', { exact: true })).toBeVisible();
   await expect(page.getByText('没有拍摄日期，归入 unknown-date')).toBeVisible();
-  await expect(page.getByRole('button', { name: '开始安全导入' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '开始导入' })).toBeDisabled();
   await nav(page, '设置').click();
   await nav(page, '存储卡').click();
   await expect(page.getByText('待复制', { exact: true })).toBeVisible();
   await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
-  await page.getByRole('button', { name: '开始安全导入' }).click();
-  await expect(page.getByText('目标图片库已更新：索引 1 项，跳过 0 项。')).toBeVisible();
+  await page.getByRole('button', { name: '开始导入' }).click();
+  await expect(page.getByText('图片库已更新。', { exact: true })).toBeVisible();
   await expect(
     page.getByText('Destination does not support hard links', { exact: true }),
   ).toBeVisible();
@@ -657,7 +815,11 @@ test('card imports target local libraries, retain review across navigation and c
     library_id: local.id,
   });
   expect(calls.filter((call) => call.command === 'library.scan')).toHaveLength(0);
+  await expect(page.locator('.import-history-item')).toHaveCount(0);
   await page.screenshot({ path: 'test-results/management-import.png' });
+  await page.getByRole('button', { name: '继续导入', exact: true }).click();
+  await expect(page.locator('.import-history-item')).toHaveCount(1);
+  await expect(page.locator('.import-history-item')).toContainText('部分完成');
 });
 
 test('viewer holds navigation during an edit and explicitly refreshing the original invalidates image resources', async ({
@@ -701,7 +863,7 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
     .poll(() => calls.filter((call) => call.command === 'asset.histogram').length)
     .toBeGreaterThan(histogramsBefore);
   await page.keyboard.press('ArrowRight');
-  await expect(page.locator('.viewer-filename strong')).toHaveText('Second.png');
+  await expect(page.locator('.inspector-file h2')).toHaveText('Second.png');
   await expect
     .poll(() =>
       calls

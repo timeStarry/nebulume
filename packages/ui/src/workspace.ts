@@ -127,11 +127,17 @@ export function browserAssetList(
       });
     } else listed.push({ ...item, variants: undefined });
   }
-  const field = options.sort_by || 'modified_at';
+  const field = options.sort_by || 'captured_at';
   const direction = options.sort_direction === 'asc' ? 1 : -1;
   listed.sort((a, b) => {
-    const x = a[field],
-      y = b[field];
+    if (field === 'created_at' || field === 'captured_at') {
+      const aKnown = !!a[field],
+        bKnown = !!b[field];
+      // An unavailable source timestamp belongs last in either direction.
+      if (aKnown !== bKnown) return aKnown ? -1 : 1;
+    }
+    const x = a[field] ?? '',
+      y = b[field] ?? '';
     return (x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0) * direction;
   });
   const offset = options.offset || 0;

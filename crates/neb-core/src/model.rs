@@ -57,6 +57,14 @@ pub struct Asset {
     pub kind: String,
     pub size: u64,
     pub modified_at: String,
+    /// Source filesystem creation/birth time. Empty when the source cannot supply it.
+    #[serde(default)]
+    pub created_at: String,
+    /// Camera-recorded DateTimeOriginal, as local wall-clock time without a guessed zone.
+    #[serde(default)]
+    pub captured_at: String,
+    #[serde(default = "pending_capture_status")]
+    pub capture_status: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub rating: u8,
@@ -64,6 +72,10 @@ pub struct Asset {
     pub crop: Option<Crop>,
     pub availability: String,
     pub source_key: Option<String>,
+}
+
+fn pending_capture_status() -> String {
+    "pending".to_owned()
 }
 
 #[derive(Debug, Serialize)]

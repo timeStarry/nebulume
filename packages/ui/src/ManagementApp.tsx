@@ -19,6 +19,10 @@ import StorageWorkspace from './StorageWorkspace';
 import ImportWorkspace from './ImportWorkspace';
 import Viewer from './Viewer';
 import Icon from './Icon';
+import BrandMark from './BrandMark';
+import ThemeControl from './ThemeControl';
+import CacheSettings from './CacheSettings';
+import CaptureIndexControl from './CaptureIndexControl';
 import {
   errorMessage,
   isTextEntry,
@@ -41,6 +45,8 @@ import {
 type Dialog = 'library' | 'storage' | null;
 export default function ManagementApp() {
   const [section, setSection] = createSignal<WorkspaceSection>('libraries');
+  const [navigationOpen, setNavigationOpen] = createSignal(false);
+  const [compactNavigation, setCompactNavigation] = createSignal(false);
   const [libraries, setLibraries] = createSignal<Library[]>([]);
   const [sources, setSources] = createSignal<StorageConfig[]>([]);
   const [system, setSystem] = createSignal<Record<string, unknown>>();
@@ -59,7 +65,7 @@ export default function ManagementApp() {
   const [query, setQuery] = createSignal('');
   const [rating, setRating] = createSignal(0);
   const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
-  const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('modified_at');
+  const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('captured_at');
   const [direction, setDirection] =
     createSignal<NonNullable<AssetListOptions['sort_direction']>>('desc');
   const [thumbSize, setThumbSize] = createSignal(readThumbSize());
@@ -86,6 +92,8 @@ export default function ManagementApp() {
   const [overlay, setOverlay] = createSignal<{ id: string; ids: string[] }>();
   let fileInput!: HTMLInputElement;
   let searchInput: HTMLInputElement | undefined;
+  let navigationButton: HTMLButtonElement | undefined;
+  let navigationElement: HTMLElement | undefined;
   let collectionScroll: HTMLDivElement | undefined;
   let request = 0;
   const revisions = new Map<string, number>();
@@ -93,6 +101,7 @@ export default function ManagementApp() {
   let updateSequence = 0;
   const pendingUpdates = new Map<string, AssetUpdated>();
   const dirtyLibraries = new Set<string>();
+  const completedCaptureJobs = new Set<string>();
   let drainingUpdates = false;
   let disposed = false;
   let unlisten: (() => void) | undefined;
@@ -227,8 +236,14 @@ export default function ManagementApp() {
     const timeout = setTimeout(() => void loadAssets(), 120);
     onCleanup(() => clearTimeout(timeout));
   });
+  function closeNavigation() {
+    const wasOpen = navigationOpen();
+    setNavigationOpen(false);
+    if (wasOpen && compactNavigation()) navigationButton?.focus();
+  }
   function navigate(next: WorkspaceSection) {
     setSection(next);
+    closeNavigation();
     setError('');
     setNotice('');
     if (next === 'libraries') {
@@ -240,6 +255,7 @@ export default function ManagementApp() {
     }
   }
   function enterLibrary(library: Library) {
+    closeNavigation();
     request++;
     setAssets([]);
     setTotal(0);
@@ -425,6 +441,29 @@ export default function ManagementApp() {
     input.value = '';
   }
   function keyboard(event: KeyboardEvent) {
+    if (navigationOpen() && event.key === 'Escape') {
+      event.preventDefault();
+      closeNavigation();
+      return;
+    }
+    if (navigationOpen() && compactNavigation() && event.key === 'Tab') {
+      const buttons = Array.from(
+        navigationElement?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || [],
+      );
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (!navigationElement?.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+      return;
+    }
     if (dialog() || removing() || overlay() || isTextEntry(event.target) || event.defaultPrevented)
       return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && libraryId()) {
@@ -510,6 +549,13 @@ export default function ManagementApp() {
     void drainAssetUpdates();
   }
   onMount(() => {
+    const navigationMedia = window.matchMedia('(max-width: 959px)');
+    const updateNavigationMode = () => {
+      setCompactNavigation(navigationMedia.matches);
+      if (!navigationMedia.matches) setNavigationOpen(false);
+    };
+    updateNavigationMode();
+    navigationMedia.addEventListener('change', updateNavigationMode);
     void boot();
     window.addEventListener('keydown', keyboard);
     window.addEventListener('focus', focusRefresh);
@@ -519,10 +565,11 @@ export default function ManagementApp() {
       unlisten?.();
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', focusRefresh);
+      navigationMedia.removeEventListener('change', updateNavigationMode);
     });
   });
   return (
-    <div class="workspace-app">
+    <div class="workspace-app" classList={{ 'nav-open': navigationOpen() }}>
       <input
         ref={fileInput}
         class="visually-hidden"
@@ -533,15 +580,31 @@ export default function ManagementApp() {
         onChange={importBrowser}
       />
       <header class="manager-titlebar">
+        <button
+          ref={navigationButton}
+          class="icon-button navigation-toggle"
+          aria-label={navigationOpen() ? '关闭主导航' : '打开主导航'}
+          aria-controls="manager-navigation"
+          aria-expanded={navigationOpen()}
+          onClick={() => {
+            const opening = !navigationOpen();
+            setNavigationOpen(opening);
+            if (opening)
+              requestAnimationFrame(() => {
+                // Wait until the drawer is visible before moving keyboard focus.
+                if (navigationOpen() && document.activeElement === navigationButton)
+                  navigationElement
+                    ?.querySelector<HTMLButtonElement>('button')
+                    ?.focus({ preventScroll: true });
+              });
+          }}
+        >
+          <Icon name={navigationOpen() ? 'close' : 'menu'} />
+        </button>
         <div class="manager-brand">
-          <span class="brand-symbol">
-            <i />
-            <i />
-            <i />
-          </span>
-          <strong>nebulume</strong>
+          <BrandMark size={32} />
+          <strong>Nebulume</strong>
         </div>
-        <span class="manager-window-title">影像管理</span>
         <div>
           <Show when={!desktop}>
             <span class="demo-label">浏览器演示</span>
@@ -552,8 +615,22 @@ export default function ManagementApp() {
           </button>
         </div>
       </header>
-      <nav class="manager-navigation" aria-label="主导航">
-        <div class="navigation-group-title">工作区</div>
+      <Show when={navigationOpen()}>
+        <button
+          class="navigation-scrim"
+          aria-label="关闭主导航遮罩"
+          tabindex="-1"
+          onClick={() => {
+            closeNavigation();
+          }}
+        />
+      </Show>
+      <nav
+        id="manager-navigation"
+        ref={navigationElement}
+        class="manager-navigation"
+        aria-label="主导航"
+      >
         <For
           each={
             [
@@ -567,24 +644,17 @@ export default function ManagementApp() {
           {(item) => (
             <button
               class={`workspace-nav-item ${section() === item.id ? 'active' : ''}`}
+              aria-label={item.id === 'libraries' ? item.label : undefined}
               aria-current={section() === item.id ? 'page' : undefined}
               onClick={() => navigate(item.id)}
             >
               <Icon name={item.icon} size={19} />
               <span>{item.label}</span>
-              <Show when={item.id === 'libraries'}>
-                <small>{visibleLibraries().length}</small>
-              </Show>
             </button>
           )}
         </For>
-        <div class="navigation-footer">
-          <span class="status-dot" />
-          <span>{desktop ? '本地优先 · 原片保留' : '临时文件体验'}</span>
-          <small>0.1 ALPHA</small>
-        </div>
       </nav>
-      <main class="manager-workspace">
+      <main class="manager-workspace" aria-label="影像管理工作区">
         <Show when={syncError()}>
           <div class="workspace-message error app-message" role="alert">
             <span>{syncError()}</span>
@@ -617,23 +687,17 @@ export default function ManagementApp() {
                 <header class="workspace-heading">
                   <div>
                     <h1>图片库</h1>
-                    <p>按项目或目录组织影像。选择图片库开始浏览。</p>
                   </div>
                   <div class="workspace-heading-actions">
-                    <Show when={!desktop}>
-                      <button
-                        class="button"
-                        onClick={() => {
-                          openAfterImport = false;
-                          fileInput.click();
-                        }}
-                      >
-                        载入图片
-                      </button>
-                    </Show>
                     <button
                       class="button primary"
-                      onClick={() => (desktop ? newLibrary() : fileInput.click())}
+                      onClick={() => {
+                        if (desktop) newLibrary();
+                        else {
+                          openAfterImport = false;
+                          fileInput.click();
+                        }
+                      }}
                     >
                       <Icon name="plus" size={15} />
                       {desktop ? '建立图片库' : '选择本地图片'}
@@ -654,9 +718,6 @@ export default function ManagementApp() {
                         <Icon name="folder" size={34} />
                         <h2>建立你的第一个图片库</h2>
                         <p>从本地文件夹或已经连接的存储源选择目录。</p>
-                        <button class="button" onClick={() => newLibrary()}>
-                          建立图片库
-                        </button>
                       </div>
                     }
                   >
@@ -674,16 +735,23 @@ export default function ManagementApp() {
                           </div>
                           <h2>{library.name}</h2>
                           <p title={libraryLocation(library)}>{libraryLocation(library)}</p>
-                          <div class="library-card-footer">
-                            <span>{library.source_name || '本地图片库'}</span>
-                            <small>
-                              {library.pair_raw_jpeg
-                                ? 'RAW + JPEG 合并'
-                                : library.source_kind && library.source_kind !== 'local'
-                                  ? '远程按需读取'
-                                  : '原位管理'}
-                            </small>
-                          </div>
+                          <Show
+                            when={
+                              (library.source_name && library.source_name !== library.name) ||
+                              library.pair_raw_jpeg
+                            }
+                          >
+                            <div class="library-card-footer">
+                              <Show
+                                when={library.source_name && library.source_name !== library.name}
+                              >
+                                <span>{library.source_name}</span>
+                              </Show>
+                              <Show when={library.pair_raw_jpeg}>
+                                <small>RAW + JPEG 合并</small>
+                              </Show>
+                            </div>
+                          </Show>
                         </button>
                         <div class="library-card-actions">
                           <button
@@ -709,9 +777,7 @@ export default function ManagementApp() {
                   </For>
                 </div>
                 <Show when={!desktop}>
-                  <div class="workspace-note">
-                    浏览器只保留当前会话的真实图片，可体验查看、评级、直方图与裁剪导出。远程存储和存储卡导入需要桌面版。
-                  </div>
+                  <div class="workspace-note">关闭页面后，当前会话的图片与编辑记录会清除。</div>
                 </Show>
               </section>
             }
@@ -726,12 +792,6 @@ export default function ManagementApp() {
                     </button>
                     <span>/</span>
                     <h1>{library().name}</h1>
-                    <small>
-                      {total()} 项
-                      {fileTotal() !== undefined && fileTotal() !== total()
-                        ? ` / ${fileTotal()} 个文件`
-                        : ''}
-                    </small>
                   </div>
                   <div>
                     <button
@@ -822,12 +882,21 @@ export default function ManagementApp() {
                   </select>
                   <select
                     value={sort()}
+                    title={
+                      sort() === 'captured_at'
+                        ? '按相机当地记录的拍摄时间排序；待索引或无有效时间的照片置后。'
+                        : sort() === 'created_at'
+                          ? '源文件创建时间；未提供时间的照片置后。旧远端库可扫描更新以补充。'
+                          : undefined
+                    }
                     onChange={(event) =>
                       setSort(event.currentTarget.value as NonNullable<AssetListOptions['sort_by']>)
                     }
                     aria-label="排序字段"
                   >
-                    <option value="modified_at">修改时间</option>
+                    <option value="captured_at">拍摄时间</option>
+                    <option value="created_at">文件创建时间</option>
+                    <option value="modified_at">文件修改时间</option>
                     <option value="filename">文件名</option>
                     <option value="rating">评级</option>
                   </select>
@@ -839,21 +908,37 @@ export default function ManagementApp() {
                     <option value="desc">降序 ↓</option>
                     <option value="asc">升序 ↑</option>
                   </select>
+                  <Show when={desktop && sort() === 'captured_at'}>
+                    <CaptureIndexControl
+                      libraryId={library().id}
+                      onSettled={async (status) => {
+                        const job = status.job;
+                        if (!job || completedCaptureJobs.has(job.id)) return;
+                        completedCaptureJobs.add(job.id);
+                        if (libraryId() === status.library_id) {
+                          await loadAssets(false, true);
+                          if (info()) await refetchDetail();
+                        } else dirtyLibraries.add(status.library_id);
+                      }}
+                    />
+                  </Show>
                   <div class="collection-controls-spacer" />
-                  <span>缩略图</span>
-                  <input
-                    type="range"
-                    min="150"
-                    max="320"
-                    step="10"
-                    value={thumbSize()}
-                    onInput={(event) => {
-                      const value = Number(event.currentTarget.value);
-                      setThumbSize(value);
-                      saveThumbSize(value);
-                    }}
-                    aria-label="缩略图大小"
-                  />
+                  <label class="collection-thumbnail-size">
+                    <span>缩略图</span>
+                    <input
+                      type="range"
+                      min="150"
+                      max="320"
+                      step="10"
+                      value={thumbSize()}
+                      onInput={(event) => {
+                        const value = Number(event.currentTarget.value);
+                        setThumbSize(value);
+                        saveThumbSize(value);
+                      }}
+                      aria-label="缩略图大小"
+                    />
+                  </label>
                 </div>
                 <div class="collection-body">
                   <div class="collection-scroll" ref={collectionScroll}>
@@ -912,7 +997,6 @@ export default function ManagementApp() {
                                   class="asset-variants"
                                   aria-label={`${asset.filename} 配对文件`}
                                 >
-                                  <span>RAW + JPEG</span>
                                   <For each={asset.variants}>
                                     {(variant) => (
                                       <button
@@ -940,10 +1024,11 @@ export default function ManagementApp() {
                         <div class="load-more">
                           <button
                             class="button"
+                            aria-label={`载入更多（${assets().length} / ${total()}）`}
                             disabled={loading()}
                             onClick={() => loadAssets(true)}
                           >
-                            载入更多（{assets().length} / {total()}）
+                            载入更多
                           </button>
                         </div>
                       </Show>
@@ -966,7 +1051,6 @@ export default function ManagementApp() {
                           </div>
                           <div class="compact-empty">
                             <span class="spinner" />
-                            <p>远程照片将按需缓存。</p>
                           </div>
                         </aside>
                       }
@@ -997,9 +1081,8 @@ export default function ManagementApp() {
                   <span>
                     {loading()
                       ? '正在读取索引…'
-                      : `已载入 ${assets().length} / ${total()} 项${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()} 个匹配文件` : ''} · 全库排序`}
+                      : `已载入 ${assets().length} / ${total()} 项${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()} 个匹配文件` : ''}`}
                   </span>
-                  <span>双击或 Enter 独立查看 · I 详情 · 0–5 评级</span>
                 </footer>
               </section>
             )}
@@ -1039,22 +1122,20 @@ export default function ManagementApp() {
           />
         </Show>
       </main>
-      <footer class="manager-status">
-        <span>
-          <Show when={busy()} fallback={<span class="status-dot" />}>
+      <Show when={busy() || !ready()}>
+        <footer class="manager-status" role="status">
+          <span>
             <span class="spinner small" />
-          </Show>
-          {busy() || (!ready() ? '正在读取本机配置…' : '就绪')}
-        </span>
-        <span>{desktop ? '原片保持不变' : '浏览器演示 · 临时会话'}</span>
-      </footer>
+            {busy() || '正在读取本机配置…'}
+          </span>
+        </footer>
+      </Show>
       <Show when={dialog() === 'library'}>
         <LibraryDialog
           sources={sources()}
           initialSource={librarySource()}
           initialPrefix={libraryPrefix()}
           existing={editingLibrary()}
-          onSourceAdded={updateSource}
           onClose={() => setDialog(null)}
           onAdded={(library, bindingChanged) => {
             const wasEditing = !!editingLibrary();
@@ -1156,15 +1237,17 @@ function Settings(props: {
       <header class="workspace-heading">
         <div>
           <h1>设置</h1>
-          <p>显示偏好、运行能力与键盘操作。</p>
         </div>
       </header>
       <section class="settings-panel">
         <h2>浏览显示</h2>
         <div class="settings-row">
+          <ThemeControl />
+        </div>
+        <div class="settings-row">
           <div>
             <strong>缩略图大小</strong>
-            <p>应用于所有图片库，偏好保存在本机。</p>
+            <p>应用于所有图片库。</p>
           </div>
           <input
             type="range"
@@ -1176,14 +1259,8 @@ function Settings(props: {
             aria-label="默认缩略图大小"
           />
         </div>
-        <div class="settings-row">
-          <div>
-            <strong>沉浸查看</strong>
-            <p>双击照片或按 Enter 打开独立窗口；信息面板默认关闭。</p>
-          </div>
-          <Icon name="expand" />
-        </div>
       </section>
+      <CacheSettings />
       <section class="settings-panel">
         <h2>快捷键</h2>
         <div class="settings-shortcuts">
@@ -1209,12 +1286,9 @@ function Settings(props: {
       </section>
       <section class="settings-panel">
         <h2>运行环境</h2>
-        <p>
-          Nebulume 0.1 Alpha · {desktop ? '桌面应用' : '浏览器演示'}
-          。图库记录评级与裁剪，原始文件保持不变。RAW 解码能力以当前运行时为准。
-        </p>
+        <p>Nebulume 0.1 Alpha · {desktop ? '桌面应用' : '浏览器演示'}</p>
         <details>
-          <summary>查看运行时能力与限制</summary>
+          <summary>运行时能力与限制</summary>
           <pre>{JSON.stringify(props.system || { status: '运行信息暂不可用' }, null, 2)}</pre>
         </details>
       </section>

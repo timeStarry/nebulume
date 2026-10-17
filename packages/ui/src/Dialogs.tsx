@@ -17,7 +17,11 @@ export function Modal(props: {
   let previous: HTMLElement | null;
   onMount(() => {
     previous = document.activeElement as HTMLElement;
-    dialog.querySelector<HTMLElement>('input, select, button')?.focus();
+    dialog
+      .querySelector<HTMLElement>(
+        'input:not(:disabled), select:not(:disabled), button:not(:disabled)',
+      )
+      ?.focus();
   });
   onCleanup(() => previous?.focus());
   function keydown(event: KeyboardEvent) {
@@ -55,6 +59,7 @@ export function Modal(props: {
         role="dialog"
         aria-modal="true"
         aria-label={props.title}
+        aria-busy={props.busy || undefined}
         onKeyDown={keydown}
       >
         <header class="modal-header">
@@ -84,7 +89,6 @@ export function LibraryDialog(props: {
   initialSource?: StorageConfig;
   initialPrefix?: string;
   existing?: Library;
-  onSourceAdded: (source: StorageConfig) => void;
   onClose: () => void;
   onAdded: (library: Library, bindingChanged?: boolean) => void;
 }) {
@@ -94,36 +98,55 @@ export function LibraryDialog(props: {
       props.initialSource?.name ||
       '',
   );
+  const remoteSources = () => props.sources.filter((source) => source.kind !== 'local');
+  const existingSource = props.sources.find((source) => source.id === props.existing?.storage_id);
+  const existingIsLocal = props.existing?.source_kind
+    ? props.existing.source_kind === 'local'
+    : !existingSource || existingSource.kind === 'local';
+  const initialIsRemote = props.existing
+    ? !existingIsLocal
+    : !!props.initialSource && props.initialSource.kind !== 'local';
+  const [sourceType, setSourceType] = createSignal<'local' | 'remote'>(
+    initialIsRemote ? 'remote' : 'local',
+  );
+  const [localRoot, setLocalRoot] = createSignal(
+    props.existing && existingIsLocal
+      ? props.existing.root
+      : props.initialSource?.kind === 'local'
+        ? props.initialSource.endpoint
+        : '',
+  );
   const [sourceId, setSourceId] = createSignal(
-    props.existing?.storage_id || props.initialSource?.id || props.sources[0]?.id || '',
+    initialIsRemote
+      ? props.existing?.storage_id || props.initialSource?.id || ''
+      : remoteSources()[0]?.id || '',
   );
   const [prefix, setPrefix] = createSignal(
-    props.existing?.source_prefix || props.initialPrefix || '',
+    initialIsRemote ? props.existing?.source_prefix || props.initialPrefix || '' : '',
   );
   const [pair, setPair] = createSignal(props.existing?.pair_raw_jpeg || false);
   const [confirmBinding, setConfirmBinding] = createSignal(false);
   const bindingChanged = () =>
     !!props.existing &&
     desktop &&
-    (sourceId() !== (props.existing.storage_id || '') ||
-      prefix().trim() !== (props.existing.source_prefix || ''));
+    (sourceType() === 'local'
+      ? !existingIsLocal ||
+        localRoot()
+          .trim()
+          .replace(/[\\/]+$/, '') !== props.existing.root.replace(/[\\/]+$/, '')
+      : existingIsLocal ||
+        sourceId() !== (props.existing.storage_id || '') ||
+        prefix().trim() !== (props.existing.source_prefix || ''));
+  const locationMissing = () => (sourceType() === 'local' ? !localRoot().trim() : !sourceId());
   const [error, setError] = createSignal('');
   const [busy, setBusy] = createSignal(false);
   async function browseLocal() {
     try {
       const path = await chooseDirectory('选择图片库文件夹');
       if (!path) return;
-      setBusy(true);
-      const source = await execute<StorageConfig>('storage.add', {
-        kind: 'local',
-        endpoint: path,
-        name: path.split(/[\\/]/).filter(Boolean).pop() || '本地文件夹',
-      });
-      props.onSourceAdded(source);
-      setSourceId(source.id);
-      setPrefix('');
+      setLocalRoot(path);
       setConfirmBinding(false);
-      if (!name()) setName(source.name);
+      if (!name()) setName(path.split(/[\\/]/).filter(Boolean).pop() || '本地图片库');
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -132,7 +155,7 @@ export function LibraryDialog(props: {
   }
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    if ((!sourceId() && desktop) || (!desktop && !props.existing)) return;
+    if ((locationMissing() && desktop) || (!desktop && !props.existing)) return;
     if (bindingChanged() && !confirmBinding()) {
       setConfirmBinding(true);
       return;
@@ -149,9 +172,13 @@ export function LibraryDialog(props: {
           ...(desktop
             ? props.existing
               ? bindingChanged()
-                ? { storage_id: sourceId(), source_prefix: prefix().trim() }
+                ? sourceType() === 'local'
+                  ? { root: localRoot().trim() }
+                  : { storage_id: sourceId(), source_prefix: prefix().trim() }
                 : {}
-              : { storage_id: sourceId(), prefix: prefix().trim() }
+              : sourceType() === 'local'
+                ? { root: localRoot().trim() }
+                : { storage_id: sourceId(), prefix: prefix().trim() }
             : {}),
         }),
         changed,
@@ -165,11 +192,6 @@ export function LibraryDialog(props: {
   return (
     <Modal
       title={props.existing ? '图片库设置' : '建立图片库'}
-      subtitle={
-        props.existing
-          ? '名称与 RAW / JPEG 合并设置保存在此图片库。'
-          : '选择一个存储位置并建立索引，保留文件原有目录结构。'
-      }
       onClose={props.onClose}
       busy={busy()}
     >
@@ -187,42 +209,91 @@ export function LibraryDialog(props: {
         </label>
         <Show when={desktop}>
           <label>
-            存储源
+            来源类型
             <select
-              value={sourceId()}
-              aria-label="存储源"
-              onChange={(e) => {
-                setSourceId(e.currentTarget.value);
-                setPrefix('');
+              value={sourceType()}
+              disabled={busy()}
+              onChange={(event) => {
+                setSourceType(event.currentTarget.value as 'local' | 'remote');
                 setConfirmBinding(false);
               }}
-              required
-              disabled={busy()}
             >
-              <option value="" disabled>
-                选择已连接的存储位置
-              </option>
-              <For each={props.sources}>
-                {(source) => <option value={source.id}>{source.name}</option>}
-              </For>
+              <option value="local">本地目录</option>
+              <option value="remote">远端存储源</option>
             </select>
           </label>
-          <button class="button" type="button" onClick={browseLocal} disabled={busy() || !desktop}>
-            <Icon name="folder" size={16} />
-            选择本地文件夹…
-          </button>
-          <label class="library-prefix-field">
-            源内目录（可选）
-            <input
-              value={prefix()}
-              onInput={(e) => {
-                setPrefix(e.currentTarget.value);
-                setConfirmBinding(false);
-              }}
-              placeholder="留空使用此存储源的根目录"
-              disabled={busy()}
-            />
-          </label>
+          <Show
+            when={sourceType() === 'local'}
+            fallback={
+              <>
+                <label>
+                  存储源
+                  <select
+                    value={sourceId()}
+                    aria-label="存储源"
+                    onChange={(e) => {
+                      setSourceId(e.currentTarget.value);
+                      setPrefix('');
+                      setConfirmBinding(false);
+                    }}
+                    required
+                    disabled={busy()}
+                  >
+                    <option value="" disabled>
+                      选择已连接的存储位置
+                    </option>
+                    <Show
+                      when={
+                        sourceId() && !remoteSources().some((source) => source.id === sourceId())
+                      }
+                    >
+                      <option value={sourceId()}>
+                        {props.existing?.source_name || existingSource?.name || '当前远端存储源'}
+                      </option>
+                    </Show>
+                    <For each={remoteSources()}>
+                      {(source) => <option value={source.id}>{source.name}</option>}
+                    </For>
+                  </select>
+                </label>
+                <Show when={!remoteSources().length && !sourceId()}>
+                  <p class="field-help">请先在存储源中添加 WebDAV 或 S3 连接。</p>
+                </Show>
+                <label class="library-prefix-field">
+                  源内目录（可选）
+                  <input
+                    value={prefix()}
+                    onInput={(e) => {
+                      setPrefix(e.currentTarget.value);
+                      setConfirmBinding(false);
+                    }}
+                    placeholder="留空使用此存储源的根目录"
+                    disabled={busy()}
+                  />
+                </label>
+              </>
+            }
+          >
+            <label>
+              本地目录
+              <div class="path-field">
+                <input
+                  aria-label="本地目录"
+                  value={localRoot()}
+                  readonly
+                  placeholder="选择图片所在的文件夹"
+                  disabled={busy()}
+                />
+                <button class="button" type="button" onClick={browseLocal} disabled={busy()}>
+                  <Icon name="folder" size={16} />
+                  选择本地文件夹…
+                </button>
+              </div>
+            </label>
+          </Show>
+        </Show>
+        <Show when={!desktop && !props.existing}>
+          <p class="field-help">建立本地或远端图片库需要桌面应用。</p>
         </Show>
         <label class="checkbox-row">
           <input
@@ -234,13 +305,8 @@ export function LibraryDialog(props: {
           合并显示 RAW + JPEG
         </label>
         <p class="field-help">
-          同一目录内名称完全相同、且各有一份的 RAW 与 JPEG
-          合并为一项；保留两份原片，可分别打开，评级与裁剪各自独立。
+          同目录内各有一份的同名 RAW 与 JPEG 合并为一项，评级与裁剪分别保存。
         </p>
-        <div class="note">
-          <Icon name="info" />
-          <p>扫描建立影像索引。远程图片在查看时按需缓存，不会先下载整个图片库。</p>
-        </div>
         <Show when={bindingChanged()}>
           <div class="workspace-message error" role="alert">
             <span>
@@ -252,8 +318,10 @@ export function LibraryDialog(props: {
           <div class="note binding-confirmation">
             <p>
               请确认将“{props.existing?.name}”改为{' '}
-              {props.sources.find((source) => source.id === sourceId())?.name} /{' '}
-              {prefix() || '根目录'}。点击下方确认按钮后才会清空旧索引及编辑信息。
+              {sourceType() === 'local'
+                ? localRoot()
+                : `${remoteSources().find((source) => source.id === sourceId())?.name || props.existing?.source_name || '远端存储源'} / ${prefix() || '根目录'}`}
+              。
             </p>
           </div>
         </Show>
@@ -267,8 +335,8 @@ export function LibraryDialog(props: {
             取消
           </button>
           <button
-            class="button primary"
-            disabled={busy() || (desktop ? !sourceId() : !props.existing)}
+            class={`button ${bindingChanged() && confirmBinding() ? 'danger' : 'primary'}`}
+            disabled={busy() || (desktop ? locationMissing() : !props.existing)}
           >
             {busy()
               ? '正在保存…'
@@ -292,6 +360,8 @@ export function ConfirmDialog(props: {
   onClose: () => void;
   onConfirm: () => Promise<void>;
   blocked?: boolean;
+  confirmLabel?: string;
+  busyLabel?: string;
 }) {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal('');
@@ -326,7 +396,7 @@ export function ConfirmDialog(props: {
             取消
           </button>
           <button class="button danger" disabled={busy() || props.blocked} onClick={confirm}>
-            {busy() ? '正在移除…' : '确认移除'}
+            {busy() ? props.busyLabel || '正在移除…' : props.confirmLabel || '确认移除'}
           </button>
         </footer>
       </div>
@@ -400,11 +470,6 @@ export function StorageDialog(props: {
   return (
     <Modal
       title={props.existing ? '连接设置 / 重连' : '添加存储源'}
-      subtitle={
-        props.existing
-          ? '调整连接与证书策略。密码或密钥留空可保留现有凭据。'
-          : '按需浏览和下载，在本地图库中管理影像。'
-      }
       onClose={props.onClose}
       busy={busy()}
     >
@@ -416,15 +481,8 @@ export function StorageDialog(props: {
         </Show>
         <div class="segmented storage-type">
           <button
-            classList={{ active: kind() === 'local' }}
-            onClick={() => setKind('local')}
-            type="button"
-            disabled={busy()}
-          >
-            本地文件夹
-          </button>
-          <button
             classList={{ active: kind() === 'webdav' }}
+            aria-pressed={kind() === 'webdav'}
             onClick={() => setKind('webdav')}
             type="button"
             disabled={busy()}
@@ -433,6 +491,7 @@ export function StorageDialog(props: {
           </button>
           <button
             classList={{ active: kind() === 's3' }}
+            aria-pressed={kind() === 's3'}
             onClick={() => setKind('s3')}
             type="button"
             disabled={busy()}
@@ -558,13 +617,15 @@ export function StorageDialog(props: {
             />
             将凭据保存到系统安全存储
           </label>
-          <p class="credential-explanation">
-            {remember()
-              ? '密码与密钥保存在操作系统安全存储中，连接配置不包含秘密。'
-              : '仅在当前会话保留凭据；关闭应用后需重新输入。'}
-            {props.existing && !remember() ? ' 此连接此前保存的系统凭据将被移除。' : ''}
-            {props.existing ? ' 密码或密钥留空将保留已有凭据。' : ''}
-          </p>
+          <Show when={!remember() || (props.existing && !locationChanged())}>
+            <p class="credential-explanation">
+              {!remember() ? '关闭应用后需重新输入凭据。' : ''}
+              {props.existing && !locationChanged() && !remember()
+                ? ' 已保存的系统凭据将被移除。'
+                : ''}
+              {props.existing && !locationChanged() ? ' 密码或密钥留空将保留已有凭据。' : ''}
+            </p>
+          </Show>
         </Show>
         <label>
           {kind() === 'webdav' ? '根目录' : '对象前缀'}（可选）
@@ -574,10 +635,6 @@ export function StorageDialog(props: {
             placeholder="photos/"
           />
         </label>
-        <div class="note">
-          <Icon name="info" />
-          <p>保存连接后可测试访问并浏览目录。仅在实际连接成功后显示已验证状态。</p>
-        </div>
         <Show when={locationChanged()}>
           <p class="connection-location-note">
             地址、类型、根目录或存储桶已改变，将保存为新连接；原连接仍保留。

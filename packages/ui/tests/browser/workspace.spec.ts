@@ -49,7 +49,7 @@ test('real browser files support review, crop invalidation, reset and JPEG expor
   await page.getByLabel('宽度').fill('50');
   await page.getByRole('button', { name: '保存裁剪' }).click();
   await expect(page.locator('.main-photo')).toHaveJSProperty('naturalWidth', 400);
-  await expect(viewer.getByText('浏览器真实裁剪 · 显示 RGB')).toBeVisible();
+  await expect(viewer.locator('.histogram-source')).toHaveCount(0);
   await page.screenshot({ path: 'test-results/workspace-cropped.png' });
   await viewer.getByRole('button', { name: '裁剪（C）', exact: true }).click();
   await expect(page.locator('.main-photo')).toHaveJSProperty('naturalWidth', 800);
@@ -66,7 +66,7 @@ test('real browser files support review, crop invalidation, reset and JPEG expor
   expect(data.length).toBeGreaterThan(500);
   await viewer.getByRole('button', { name: '重置', exact: true }).click();
   await expect(page.locator('.main-photo')).toHaveJSProperty('naturalWidth', 800);
-  await expect(viewer.getByText('浏览器解码原图 · 显示 RGB')).toBeVisible();
+  await expect(viewer.locator('.histogram-source')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(viewer).not.toBeVisible();
   await expect(page.getByRole('button', { name: 'review-fixture.png，4 星' })).toBeVisible();

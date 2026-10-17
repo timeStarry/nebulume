@@ -30,7 +30,8 @@ export default function StorageWorkspace(props: {
   const [notice, setNotice] = createSignal('');
   const [checks, setChecks] = createSignal<Record<string, { ok: boolean; message: string }>>({});
   let request = 0;
-  const source = () => props.sources.find((item) => item.id === selected());
+  const remoteSources = () => props.sources.filter((item) => item.kind !== 'local');
+  const source = () => remoteSources().find((item) => item.id === selected());
   async function check(item: StorageConfig) {
     setErrorSourceId(item.id);
     setBusy(item.id);
@@ -46,7 +47,6 @@ export default function StorageWorkspace(props: {
         credential_status: result.credential_status,
       });
       if (!status.ok) setError(status.message);
-      else setNotice(`${item.name}：${status.message}`);
     } catch (e) {
       const message = errorMessage(e);
       setError(message);
@@ -122,7 +122,6 @@ export default function StorageWorkspace(props: {
       <header class="workspace-heading">
         <div>
           <h1>存储源</h1>
-          <p>管理连接、验证访问，并从目录建立图片库。</p>
         </div>
         <div class="workspace-heading-actions">
           <button class="button" onClick={props.onRefresh} disabled={!!busy()}>
@@ -166,12 +165,12 @@ export default function StorageWorkspace(props: {
           <span>操作</span>
         </div>
         <For
-          each={props.sources}
+          each={remoteSources()}
           fallback={
             <div class="workspace-empty">
               <Icon name="cloud" size={30} />
-              <h2>还没有存储源</h2>
-              <p>添加本地文件夹、WebDAV 或 S3，再选择需要管理的图片目录。</p>
+              <h2>还没有远端连接</h2>
+              <p>连接 WebDAV 或 S3 后浏览远端图片。本地目录可直接建立图片库。</p>
               <button class="button" onClick={props.onAdd}>
                 添加第一个存储源
               </button>
@@ -193,7 +192,7 @@ export default function StorageWorkspace(props: {
                   </p>
                 </div>
               </div>
-              <span class={`source-status ${item.connected ? 'verified' : ''}`}>
+              <span class={`source-status ${item.connected ? 'verified' : ''}`} role="status">
                 {busy() === item.id
                   ? '正在验证…'
                   : item.connected
@@ -250,13 +249,6 @@ export default function StorageWorkspace(props: {
               </div>
               <div>
                 <button
-                  class="button small"
-                  onClick={() => props.onEdit(current())}
-                  disabled={!!busy()}
-                >
-                  连接设置 / 重连
-                </button>
-                <button
                   class="button primary small"
                   disabled={!!busy()}
                   onClick={() => props.onCreateLibrary(current(), prefix())}
@@ -286,10 +278,12 @@ export default function StorageWorkspace(props: {
                 上一级
               </button>
               <button class="path-root" onClick={() => browse(current(), '')} disabled={!!busy()}>
-                {current().name}
+                根目录
               </button>
-              <span>/</span>
-              <code>{prefix() || '根目录'}</code>
+              <Show when={prefix()}>
+                <span>/</span>
+                <code>{prefix()}</code>
+              </Show>
               <button
                 class="icon-button"
                 aria-label="刷新目录"

@@ -84,6 +84,9 @@ export async function addBrowserFiles(
         extension: file.name.split('.').pop()?.toLowerCase() || '',
         kind: 'raster',
         size: file.size,
+        created_at: '',
+        captured_at: '',
+        capture_status: 'pending',
         modified_at: new Date(file.lastModified).toISOString(),
         width: canvas.width,
         height: canvas.height,
@@ -107,7 +110,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
   switch (command) {
     case 'system.info':
       result = {
-        version: '0.1.0-alpha.1',
+        version: '0.1.0',
         mode: 'browser',
         limits: ['浏览器演示：临时文件会话，EXIF / RAW / 远程存储 / SD 卡导入需桌面端。'],
       };

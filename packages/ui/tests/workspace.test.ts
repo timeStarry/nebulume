@@ -30,9 +30,10 @@ describe('workspace boundaries', () => {
         local,
         remote,
         { ...local, id: 'legacy', source_kind: undefined },
+        { ...local, id: 'direct', storage_id: null },
         { ...local, id: 'hidden', hidden: true },
       ]).map((item) => item.id),
-    ).toEqual(['local', 'legacy']);
+    ).toEqual(['local', 'legacy', 'direct']);
   });
   it('shows actual remote source locations instead of implementation cache paths', () => {
     expect(libraryLocation(remote)).toBe('https://nas.local/dav / trips/2026/');

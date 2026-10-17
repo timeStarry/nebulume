@@ -179,6 +179,8 @@ try {
             if (cmd === 'plugin:dialog|save') return exportPath;
             if (cmd === 'plugin:dialog|open') return null;
             if (cmd === 'plugin:window|set_title') return null;
+            if (cmd === 'plugin:window|set_theme') return null;
+            if (cmd === 'plugin:window|theme') return 'dark';
             if (cmd !== 'execute') throw new Error('Unexpected test IPC ' + cmd);
             const response = await fetch('/__neb_rpc', {
               method: 'POST',

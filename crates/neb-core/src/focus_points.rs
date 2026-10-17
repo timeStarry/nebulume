@@ -514,6 +514,10 @@ fn parse<R: Read + Seek>(input: R, length: u64) -> FocusInfo {
         .unwrap_or_else(|error| FocusInfo::unavailable("unsupported", error.0, 1, None))
 }
 
+pub fn read_from<R: Read + Seek>(input: R, length: u64) -> FocusInfo {
+    parse(input, length)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

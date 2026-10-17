@@ -72,4 +72,18 @@ describe('verified focus-to-preview mapping', () => {
     expect(cropFocusRegion({ x: 0, y: 0, width: 1.1, height: 1 }, fullCrop)).toBeNull();
     expect(focusPresentation({ ...info, regions: [] }, mapping).regions).toEqual([]);
   });
+  it('omits only the known point-number implementation suffix from missing-coordinate help', () => {
+    for (const status of ['missing', 'unsupported'] as const)
+      expect(
+        focusPresentation({
+          ...info,
+          status,
+          reason: '此照片未记录可用的对焦区域坐标；不会由点位编号推测位置。',
+        }).message,
+      ).toBe('此照片未记录可用的对焦区域坐标。');
+    expect(
+      focusPresentation({ ...info, status: 'missing', reason: '相机 MakerNote 校验失败：0x10' })
+        .message,
+    ).toBe('相机 MakerNote 校验失败：0x10');
+  });
 });

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { Asset, AssetListOptions } from '../../src/model';
+import type { Asset, AssetListOptions, CaptureIndexStatus } from '../../src/model';
 import { browserAssetList } from '../../src/workspace';
 
 type Call = { command: string; params: Record<string, unknown> };
@@ -11,6 +11,7 @@ async function fixture(
   listenerFailures = 0,
   paired = false,
   browserMode = false,
+  capturePending = false,
 ) {
   const calls: Call[] = [];
   let failedReads = 0;
@@ -44,8 +45,18 @@ async function fixture(
     rating: 0,
     metadata: { Camera: 'Fixture' },
     availability: 'available',
+    captured_at: capturePending ? '' : `2026-10-${String(25 - (i % 20)).padStart(2, '0')}T00:00:00`,
+    capture_status: capturePending ? 'pending' : 'available',
     modified_at: `2026-10-${String(25 - (i % 20)).padStart(2, '0')}`,
   }));
+  const capture: CaptureIndexStatus = {
+    library_id: 'library',
+    total: count,
+    known: capturePending ? 0 : count,
+    missing: 0,
+    pending: capturePending ? count : 0,
+    job: null,
+  };
   if (paired)
     assets[1] = {
       ...assets[1],
@@ -90,8 +101,38 @@ async function fixture(
       case 'asset.list':
         result = browserAssetList(assets, call.params as AssetListOptions, paired);
         break;
+      case 'library.capture_index.status':
+        result = capture;
+        break;
+      case 'library.capture_index.start':
+        capture.job = {
+          id: 'capture-job',
+          library_id: 'library',
+          status: 'running',
+          total: capture.pending,
+          processed: 0,
+          found: 0,
+          missing: 0,
+          failed: 0,
+        };
+        result = capture;
+        break;
+      case 'library.capture_index.cancel':
+        capture.job!.status = 'stopping';
+        result = capture;
+        break;
       case 'asset.get':
         result = assets.find((a) => a.id === call.params.id);
+        break;
+      case 'asset.focus':
+        result = {
+          status: 'missing',
+          reason: '此照片未记录对焦区域',
+          source: null,
+          coordinate_space: 'oriented_full_image',
+          orientation: 1,
+          regions: [],
+        };
         break;
       case 'asset.rate': {
         const asset = assets.find((a) => a.id === call.params.id)!;
@@ -142,8 +183,11 @@ async function fixture(
           unregisterCallback: (id: number) => callbacks.delete(id),
           metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
           invoke: async (command: string, params: Record<string, unknown>) => {
+            if (command === 'plugin:window|set_theme') return null;
+            if (command === 'plugin:window|theme') return 'dark';
             if (command === 'plugin:event|listen') {
-              if (listenerFailures-- > 0) throw new Error('Synthetic listener unavailable');
+              if (params.event === 'asset-updated' && listenerFailures-- > 0)
+                throw new Error('Synthetic listener unavailable');
               listeners.set(String(params.event), Number(params.handler));
               return 1;
             }
@@ -169,7 +213,7 @@ async function fixture(
   await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(
     Math.min(count - (paired ? 1 : 0), 200),
   );
-  return { calls, assets, failRead: () => failedReads++, failList: () => failedLists++ };
+  return { calls, assets, capture, failRead: () => failedReads++, failList: () => failedLists++ };
 }
 async function emit(
   page: Page,
@@ -347,6 +391,203 @@ test('legacy id event precisely reads one asset and a rating filter can change a
       .map((c) => c.params.id),
   ).toEqual(['photo-0']);
   expect(calls.slice(before).filter((c) => c.command === 'asset.list')).toHaveLength(1);
+});
+test('a creation time refresh reconciles the whole loaded catalog in the selected direction', async ({
+  page,
+}) => {
+  const { calls, assets } = await fixture(page, 4);
+  assets.forEach((asset, index) => {
+    asset.created_at = `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00Z`;
+  });
+  await page.getByLabel('排序字段').selectOption('created_at');
+  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+    'aria-label',
+    'Photo-003.jpg，0 星',
+  );
+  await page.getByLabel('排序方向').selectOption('asc');
+  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+    'aria-label',
+    'Photo-000.jpg，0 星',
+  );
+  await settle(page, calls);
+  const before = calls.length;
+  assets[3].created_at = '2020-01-01T00:00:00Z';
+  // Older viewers attach the updated asset without classifying the change.
+  await emit(page, assets[3]);
+  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+    'aria-label',
+    'Photo-003.jpg，0 星',
+  );
+  const queries = calls.slice(before).filter((call) => call.command === 'asset.list');
+  expect(queries).toHaveLength(1);
+  expect(queries[0].params).toMatchObject({
+    sort_by: 'created_at',
+    sort_direction: 'asc',
+    offset: 0,
+  });
+});
+test('capture metadata updates reorder the authoritative catalog without decoding thumbnails or histograms again', async ({
+  page,
+}) => {
+  const { calls, assets } = await fixture(page, 8);
+  await expect(page.getByLabel('排序字段')).toHaveValue('captured_at');
+  await page.getByRole('button', { name: '影像详情（I）' }).click();
+  await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
+  await settle(page, calls);
+  await rememberNodes(page);
+  const before = calls.length;
+  assets[0].captured_at = '2020-01-01T08:30:00';
+  assets[0].metadata.Captured = '2020:01:01 08:30:00';
+  await emit(page, assets[0]);
+  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+    'aria-label',
+    'Photo-001.jpg，0 星',
+  );
+  await expect(page.locator('.thumbnail.selected')).toHaveAttribute(
+    'aria-label',
+    'Photo-000.jpg，0 星',
+  );
+  await settle(page, calls);
+  expect(calls.slice(before).filter((call) => call.command === 'asset.list')).toHaveLength(1);
+  expect(
+    calls
+      .slice(before)
+      .filter((call) => ['asset.preview', 'asset.histogram'].includes(call.command)),
+  ).toEqual([]);
+  expect(await nodesUnchanged(page)).toBe(true);
+});
+test('capture indexing starts explicitly, remains independent of navigation, and cancellation preserves results with one catalog reconciliation', async ({
+  page,
+}) => {
+  const { calls, assets, capture } = await fixture(page, 8, 0, false, false, true);
+  await expect(page.getByRole('button', { name: '索引拍摄时间', exact: true })).toBeVisible();
+  expect(calls.filter((call) => call.command === 'library.capture_index.start')).toEqual([]);
+  await page.getByRole('button', { name: '索引拍摄时间', exact: true }).click();
+  await expect(page.getByRole('progressbar', { name: '拍摄时间索引进度' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '扫描更新', exact: true })).toBeEnabled();
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  await nav.getByRole('button', { name: '设置', exact: true }).click();
+  expect(calls.filter((call) => call.command === 'library.capture_index.cancel')).toEqual([]);
+  await nav.getByRole('button', { name: '图片库', exact: true }).click();
+  await page.getByRole('button', { name: '打开图片库 同步图库' }).click();
+  await expect(page.getByRole('progressbar', { name: '拍摄时间索引进度' })).toBeVisible();
+  // The task status mounts before the debounced catalog query. Establish the
+  // baseline from this gallery's loaded images, not the previous visit's RPCs.
+  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(8);
+  await expect(page.locator('.photo-grid .thumbnail img')).toHaveCount(8);
+  await expect
+    .poll(() =>
+      page.locator('.photo-grid .thumbnail img').evaluateAll((images) =>
+        images.every(
+          (image) =>
+            (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0,
+        ),
+      ),
+    )
+    .toBe(true);
+  await settle(page, calls);
+  await page.evaluate(() =>
+    Object.assign(window, {
+      __captureImages: [...document.querySelectorAll('.photo-grid .thumbnail img')],
+    }),
+  );
+  await rememberNodes(page);
+  const selected = await page.locator('.thumbnail.selected').getAttribute('aria-label');
+  const before = calls.length;
+  await page.getByRole('button', { name: '停止拍摄时间索引' }).click();
+  await expect(page.getByRole('button', { name: '停止拍摄时间索引' })).toBeDisabled();
+  expect(
+    calls.filter((call) => call.command === 'library.capture_index.cancel').at(-1)?.params,
+  ).toEqual({ library_id: 'library', job_id: 'capture-job' });
+  assets[0].captured_at = '2026-10-17T08:30:00';
+  assets[0].capture_status = 'available';
+  capture.known = 1;
+  capture.pending = 7;
+  Object.assign(capture.job!, { status: 'cancelled', processed: 1, found: 1 });
+  await expect(page.getByText('已停止，已读取的结果已保留。')).toBeVisible();
+  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+    'aria-label',
+    'Photo-000.jpg，0 星',
+  );
+  await settle(page, calls);
+  expect(calls.slice(before).filter((call) => call.command === 'asset.list')).toHaveLength(1);
+  expect(
+    calls.slice(before).filter((call) => ['asset.preview', 'asset.histogram'].includes(call.command)),
+  ).toEqual([]);
+  await expect(page.locator('.thumbnail.selected')).toHaveAttribute('aria-label', selected!);
+  expect(await nodesUnchanged(page)).toBe(true);
+  expect(
+    await page.evaluate(() => {
+      const current = [...document.querySelectorAll('.photo-grid .thumbnail img')];
+      return (window as unknown as { __captureImages: Element[] }).__captureImages.every((image) =>
+        current.includes(image),
+      );
+    }),
+  ).toBe(true);
+  await expect(page.getByRole('button', { name: '索引拍摄时间', exact: true })).toBeVisible();
+  const finished = calls.length;
+  await page.waitForTimeout(1200);
+  expect(calls.slice(finished)).toEqual([]);
+});
+test('capture index failure leaves unread photos pending and exposes retry without claiming missing EXIF', async ({
+  page,
+}) => {
+  const { calls, capture } = await fixture(page, 4, 0, false, false, true);
+  await page.getByRole('button', { name: '索引拍摄时间', exact: true }).click();
+  Object.assign(capture.job!, {
+    status: 'failed',
+    processed: 1,
+    failed: 1,
+    error: '此远端不支持有界元信息读取。',
+  });
+  await expect(page.getByRole('alert')).toContainText('此远端不支持有界元信息读取。');
+  const retry = page.getByRole('button', { name: '重试拍摄时间索引', exact: true });
+  await expect(retry).toBeVisible();
+  await expect(retry).toHaveAttribute('title', /未获得 0 · 待索引 4/);
+  await retry.click();
+  await expect(page.getByRole('progressbar', { name: '拍摄时间索引进度' })).toBeVisible();
+  expect(calls.filter((call) => call.command === 'library.capture_index.start')).toHaveLength(2);
+});
+test('capture indexing completes with known and missing counts, reconciles once and does not repeat work on return', async ({
+  page,
+}, testInfo) => {
+  const { calls, assets, capture } = await fixture(page, 4, 0, false, false, true);
+  await page.getByRole('button', { name: '索引拍摄时间', exact: true }).click();
+  await expect(page.getByRole('progressbar', { name: '拍摄时间索引进度' })).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 768 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({ path: testInfo.outputPath('capture-index-running.png') });
+  await settle(page, calls);
+  const before = calls.length;
+  assets[0].captured_at = '2026-10-17T08:30:00';
+  assets[0].capture_status = 'available';
+  assets.slice(1).forEach((asset) => (asset.capture_status = 'missing'));
+  Object.assign(capture, { known: 1, missing: 3, pending: 0 });
+  Object.assign(capture.job!, { status: 'completed', processed: 4, found: 1, missing: 3 });
+  await expect(page.getByText('拍摄时间索引完成。')).toBeVisible();
+  await settle(page, calls);
+  expect(calls.slice(before).filter((call) => call.command === 'asset.list')).toHaveLength(1);
+  await expect(page.getByRole('button', { name: '索引拍摄时间', exact: true })).toHaveCount(0);
+  await expect(page.getByText('拍摄时间索引完成。')).toHaveAttribute(
+    'title',
+    /已知 1 · 未获得 3 · 待索引 0/,
+  );
+  await page.screenshot({ path: testInfo.outputPath('capture-index-completed.png') });
+  await page.getByLabel('排序字段').selectOption('filename');
+  await expect
+    .poll(() => calls.filter((call) => call.command === 'asset.list').at(-1)?.params.sort_by)
+    .toBe('filename');
+  await settle(page, calls);
+  const reenter = calls.length;
+  await page.getByLabel('排序字段').selectOption('captured_at');
+  await expect
+    .poll(() => calls.slice(reenter).filter((call) => call.command === 'asset.list').length)
+    .toBe(1);
+  await page.waitForTimeout(250);
+  expect(calls.slice(reenter).filter((call) => call.command === 'asset.list')).toHaveLength(1);
+  expect(calls.filter((call) => call.command === 'library.capture_index.start')).toHaveLength(1);
 });
 test('failed listener registration is visible and retryable without a full focus refresh', async ({
   page,

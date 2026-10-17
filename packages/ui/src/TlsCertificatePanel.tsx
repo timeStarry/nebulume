@@ -103,18 +103,13 @@ export default function TlsCertificatePanel(props: {
           </label>
           <Show when={trust().mode === 'pinned'}>
             <div class="certificate-review">
-              <p>
-                适用于局域网自签证书。以此证书的指纹识别服务器，允许自签或名称不匹配；证书变化后须重新确认。
-              </p>
+              <p>允许自签或名称不匹配，仅信任当前证书；证书更换后需重新确认。</p>
               <Show when={props.savedFingerprint}>
                 <div class="saved-fingerprint">
-                  <span>已保存的 SHA-256</span>
+                  <span>
+                    {trust().retainedFingerprint ? '已信任的 SHA-256' : '上次保存的 SHA-256'}
+                  </span>
                   <code>{displayFingerprint(props.savedFingerprint!)}</code>
-                  <Show when={trust().retainedFingerprint}>
-                    <span>
-                      继续使用此地址已信任的证书。重新读取或修改校验方式后，需要再次核对。
-                    </span>
-                  </Show>
                 </div>
               </Show>
               <button
@@ -129,9 +124,6 @@ export default function TlsCertificatePanel(props: {
                     ? '重新读取证书'
                     : '读取设备证书'}
               </button>
-              <p class="certificate-inspect-note">
-                读取证书不发送用户名、密码或密钥，也不会保存信任。
-              </p>
               <Show when={trust().error}>
                 <div class="form-error" role="alert">
                   <StorageError error={trust().error} />

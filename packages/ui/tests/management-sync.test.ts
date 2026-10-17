@@ -30,6 +30,15 @@ describe('management change classification', () => {
     ).toBe('crop');
     expect(changedAssetFields(asset, { ...asset, preview_revision: 42 })).toBe('refresh');
     expect(changedAssetFields(asset, { ...asset, size: 101 })).toBe('refresh');
+    expect(changedAssetFields(asset, { ...asset, created_at: '2026-10-01' })).toBe('metadata');
+    expect(
+      changedAssetFields(asset, {
+        ...asset,
+        captured_at: '2026-10-01T10:00:00',
+        capture_status: 'available',
+        metadata: { ...asset.metadata, Captured: '2026:10:01 10:00:00' },
+      }),
+    ).toBe('metadata');
   });
   it('only reconciles changes that may affect result membership or ordering', () => {
     const rated = { ...asset, rating: 5 };
@@ -50,8 +59,27 @@ describe('management change classification', () => {
     expect(needsCatalogReconcile({}, 'refresh', asset, { ...asset, preview_revision: 42 })).toBe(
       false,
     );
-    expect(needsCatalogReconcile({}, 'refresh', asset, { ...asset, modified_at: 'later' })).toBe(
-      true,
+    expect(
+      needsCatalogReconcile({ sort_by: 'modified_at' }, 'refresh', asset, {
+        ...asset,
+        modified_at: 'later',
+      }),
+    ).toBe(true);
+    const created = { ...asset, created_at: '2026-10-01' };
+    expect(needsCatalogReconcile({ sort_by: 'created_at' }, 'refresh', asset, created)).toBe(true);
+    expect(needsCatalogReconcile({ sort_by: 'modified_at' }, 'refresh', asset, created)).toBe(
+      false,
+    );
+    expect(
+      needsCatalogReconcile({ sort_by: 'created_at' }, 'refresh', created, {
+        ...created,
+        modified_at: 'later',
+      }),
+    ).toBe(false);
+    const captured = { ...asset, captured_at: '2026-10-01T10:00:00' };
+    expect(needsCatalogReconcile({}, 'metadata', asset, captured)).toBe(true);
+    expect(needsCatalogReconcile({ sort_by: 'modified_at' }, 'metadata', asset, captured)).toBe(
+      false,
     );
     expect(
       needsCatalogReconcile({ query: 'Camera' }, 'refresh', asset, {

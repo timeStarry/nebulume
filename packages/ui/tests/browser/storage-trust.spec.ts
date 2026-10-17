@@ -87,6 +87,10 @@ async function nativeFixture(
     const runtime = window as unknown as {
       isTauri: boolean;
       __TAURI_INTERNALS__: {
+        metadata: {
+          currentWindow: { label: string };
+          currentWebview: { label: string };
+        };
         transformCallback: (callback: (event: unknown) => void) => number;
         unregisterCallback: (id: number) => void;
         invoke: (command: string, params: Record<string, unknown>) => Promise<unknown>;
@@ -106,6 +110,10 @@ async function nativeFixture(
       },
     };
     runtime.__TAURI_INTERNALS__ = {
+      metadata: {
+        currentWindow: { label: 'storage-test' },
+        currentWebview: { label: 'storage-test' },
+      },
       transformCallback: (callback) => {
         callbacks.set(++nextCallback, callback);
         return nextCallback;
@@ -114,6 +122,8 @@ async function nativeFixture(
         callbacks.delete(id);
       },
       invoke: async (command, params) => {
+        if (command === 'plugin:window|set_theme') return null;
+        if (command === 'plugin:window|theme') return 'dark';
         if (command === 'plugin:event|listen') {
           const handler = Number(params.handler);
           if (!callbacks.has(handler)) throw new Error('Unregistered fixture event callback');
@@ -219,7 +229,10 @@ test('device trust requires fingerprint review, sends no credentials during insp
     fixture.requests.find((request) => request.command === 'storage.add')!.params
       .tls_certificate_sha256,
   ).toBe(fingerprintA);
-  await page.getByRole('button', { name: '连接设置 / 重连', exact: true }).click();
+  await page
+    .locator('.source-row')
+    .getByRole('button', { name: /连接设置$/ })
+    .click();
   await expect(page.getByLabel('服务端地址')).toHaveValue(endpointA);
   await expect(page.getByRole('radio', { name: '信任此设备证书' })).toBeChecked();
   await expect(page.getByRole('button', { name: '保存并重连' })).toBeEnabled();
@@ -231,7 +244,10 @@ test('device trust requires fingerprint review, sends no credentials during insp
   expect(retained.tls_certificate_sha256).toBe(fingerprintA);
   expect(retained).not.toHaveProperty('password');
   expect(retained).not.toHaveProperty('username');
-  await page.getByRole('button', { name: '连接设置 / 重连', exact: true }).click();
+  await page
+    .locator('.source-row')
+    .getByRole('button', { name: /连接设置$/ })
+    .click();
   await page.getByRole('radio', { name: '标准校验 默认' }).check();
   await page.getByRole('button', { name: '保存并重连' }).click();
   await expect(page.getByText('HTTPS · 标准校验')).toBeVisible();

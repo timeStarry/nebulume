@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -15,6 +15,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
+    capture_time::{self, CaptureStatus, CaptureTime},
     imaging,
     model::{ScanError, ScanReport},
     Asset, Crop, Library,
@@ -27,7 +28,7 @@ pub struct Core {
     previews: Mutex<VecDeque<(String, Value)>>,
 }
 
-const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key";
+const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked";
 const LIBRARY_COLUMNS: &str =
     "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg";
 // Bump when inspection semantics change. This lives only in the private cache
@@ -45,7 +46,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 3,
+            version <= 5,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -66,6 +67,45 @@ impl Core {
                 "ALTER TABLE libraries ADD COLUMN pair_raw_jpeg INTEGER NOT NULL DEFAULT 0 CHECK(pair_raw_jpeg IN (0,1));
                  PRAGMA user_version=3;",
             )?;
+        }
+        if version < 4 {
+            migration.execute_batch(
+                "ALTER TABLE assets ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE assets ADD COLUMN created_at_checked INTEGER NOT NULL DEFAULT 0 CHECK(created_at_checked IN (0,1));
+                 CREATE INDEX assets_library_created ON assets(library_id,created_at);
+                 PRAGMA user_version=4;",
+            )?;
+        }
+        if version < 5 {
+            migration.execute_batch(
+                "ALTER TABLE assets ADD COLUMN captured_at TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE assets ADD COLUMN captured_at_checked INTEGER NOT NULL DEFAULT 0 CHECK(captured_at_checked IN (0,1));
+                 CREATE INDEX assets_library_captured ON assets(library_id,captured_at);
+                 PRAGMA user_version=5;",
+            )?;
+            // Index only metadata already in the catalog. Opening an existing
+            // library must not read originals, decode pixels or contact sources.
+            let metadata = {
+                let mut statement = migration.prepare("SELECT id,metadata_json FROM assets")?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let mut update = migration
+                .prepare("UPDATE assets SET captured_at=?1,captured_at_checked=?2 WHERE id=?3")?;
+            for (id, encoded) in metadata {
+                let fields: BTreeMap<String, String> =
+                    serde_json::from_str(&encoded).unwrap_or_default();
+                let capture = capture_time::from_metadata(&fields);
+                let checked = matches!(
+                    capture.status,
+                    CaptureStatus::Available | CaptureStatus::Invalid
+                );
+                update.execute(params![capture.captured_at, checked, id])?;
+            }
         }
         migration.commit()?;
         Ok(Self {
@@ -348,6 +388,31 @@ impl Core {
         pair_raw_jpeg: Option<bool>,
         binding: Option<(&Path, &str, &str)>,
     ) -> Result<Library> {
+        self.update_library_binding(
+            id,
+            name,
+            pair_raw_jpeg,
+            binding.map(|(root, source, prefix)| (root, Some(source), prefix)),
+        )
+    }
+
+    pub fn update_local_library(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        pair_raw_jpeg: Option<bool>,
+        root: &Path,
+    ) -> Result<Library> {
+        self.update_library_binding(id, name, pair_raw_jpeg, Some((root, None, "")))
+    }
+
+    fn update_library_binding(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        pair_raw_jpeg: Option<bool>,
+        binding: Option<(&Path, Option<&str>, &str)>,
+    ) -> Result<Library> {
         let mut db = self.db()?;
         let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut library = transaction
@@ -371,7 +436,10 @@ impl Core {
         }
         let mut changed_binding = false;
         if let Some((root, source, prefix)) = binding {
-            ensure!(!source.is_empty(), "E_INVALID: Storage source is required");
+            ensure!(
+                source.is_none_or(|source| !source.is_empty()),
+                "E_INVALID: Storage source is required"
+            );
             let root =
                 dunce::canonicalize(root).context("E_NOT_FOUND: Library root is unavailable")?;
             ensure!(root.is_dir(), "E_INVALID: Library root must be a directory");
@@ -388,11 +456,15 @@ impl Core {
                 !conflict,
                 "E_CONFLICT: Another library already uses this directory"
             );
-            changed_binding = library.storage_id.as_deref() != Some(source)
-                || library.source_prefix != prefix
-                || path_key(&library.root) != path_key(&root);
+            let was_remote: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM assets WHERE library_id=?1 AND source_key IS NOT NULL)", [id], |row| row.get(0))?;
+            changed_binding = path_key(&library.root) != path_key(&root)
+                || if source.is_none() {
+                    was_remote
+                } else {
+                    library.storage_id.as_deref() != source || library.source_prefix != prefix
+                };
             library.root = root;
-            library.storage_id = Some(source.into());
+            library.storage_id = source.map(str::to_owned);
             library.source_prefix = prefix.into();
         }
         if changed_binding {
@@ -504,6 +576,218 @@ impl Core {
         Ok(())
     }
 
+    /// Partial remote inspection must preserve identity, edits and the remote size.
+    pub fn record_remote_inspection(&self, id: &str, inspection: &Value) -> Result<()> {
+        let asset = self.asset(id)?;
+        ensure!(
+            asset.source_key.is_some(),
+            "E_INVALID: Remote inspection requires a remote asset"
+        );
+        let width = inspection["width"]
+            .as_u64()
+            .context("E_INVALID: Missing preview width")?;
+        let height = inspection["height"]
+            .as_u64()
+            .context("E_INVALID: Missing preview height")?;
+        let mut metadata: BTreeMap<String, String> =
+            serde_json::from_value(inspection["metadata"].clone())?;
+        let capture = capture_time::from_metadata(&metadata);
+        let supplied_original =
+            metadata.contains_key("Captured") || metadata.contains_key("EXIF DateTimeOriginal");
+        let mut database = self.db()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (previous_metadata, previous_capture, previous_checked): (String,String,bool) = transaction.query_row(
+            "SELECT metadata_json,captured_at,captured_at_checked FROM assets WHERE id=?1 AND source_key IS NOT NULL",
+            [id], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        )?;
+        let (captured_at, checked) = if supplied_original && !previous_checked {
+            (capture.captured_at, true)
+        } else {
+            // Preview EXIF is optional and older readers may silently omit it.
+            // An absent tag in that partial response proves nothing about the
+            // source. A completed index is authoritative for this revision;
+            // partial previews cannot drop its subseconds or offset either.
+            let previous: BTreeMap<String, String> = serde_json::from_str(&previous_metadata)?;
+            let indexed = capture_time::from_metadata(&previous);
+            for key in [
+                "Captured",
+                "EXIF DateTimeOriginal",
+                "Capture Subsecond",
+                "EXIF SubSecTimeOriginal",
+                "Capture Time Zone",
+                "EXIF OffsetTimeOriginal",
+            ] {
+                metadata.remove(key);
+            }
+            for key in ["Captured", "Capture Subsecond", "Capture Time Zone"] {
+                if let Some(value) = indexed.metadata.get(key) {
+                    metadata.insert(key.to_owned(), value.clone());
+                }
+            }
+            (previous_capture, previous_checked)
+        };
+        transaction.execute(
+            "UPDATE assets SET width=?1,height=?2,metadata_json=?3,captured_at=?4,captured_at_checked=?5 WHERE id=?6",
+            params![width, height, serde_json::to_string(&metadata)?, captured_at, checked, id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Existing metadata is indexed during migration; these are only originals
+    /// whose capture tags have not yet been checked. Listing never performs IO.
+    pub fn capture_index_candidates(&self, library_id: &str) -> Result<Vec<Asset>> {
+        self.library(library_id)?;
+        let database = self.db()?;
+        let mut statement = database.prepare(&format!(
+            "SELECT {ASSET_COLUMNS} FROM assets WHERE library_id=?1 AND captured_at_checked=0 ORDER BY path,id"
+        ))?;
+        let assets = statement
+            .query_map([library_id], asset_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(assets)
+    }
+
+    pub fn capture_index_stats(&self, library_id: &str) -> Result<Value> {
+        self.library(library_id)?;
+        let (total, known, missing, pending) = self.db()?.query_row(
+            "SELECT COUNT(*),COALESCE(SUM(captured_at<>''),0),
+             COALESCE(SUM(captured_at='' AND captured_at_checked=1),0),
+             COALESCE(SUM(captured_at='' AND captured_at_checked=0),0)
+             FROM assets WHERE library_id=?1",
+            [library_id],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            },
+        )?;
+        Ok(json!({"total":total,"known":known,"missing":missing,"pending":pending}))
+    }
+
+    pub fn read_local_capture_time(&self, id: &str) -> Result<CaptureTime> {
+        let asset = self.asset(id)?;
+        ensure!(
+            asset.source_key.is_none(),
+            "E_INVALID: Local capture indexing requires a local asset"
+        );
+        let path = self.checked_asset_path(&asset)?;
+        capture_time::read_path(&path)
+    }
+
+    /// Publish one bounded EXIF read only if it still describes the captured
+    /// revision and no newer inspection has already indexed its capture tags.
+    pub fn record_capture_time(
+        &self,
+        id: &str,
+        expected_fingerprint: &str,
+        capture: &CaptureTime,
+    ) -> Result<bool> {
+        let mut database = self.db()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let old: Option<String> = transaction.query_row(
+            "SELECT metadata_json FROM assets WHERE id=?1 AND modified_stamp=?2 AND captured_at_checked=0",
+            params![id, expected_fingerprint],
+            |row| row.get(0),
+        ).optional()?;
+        let Some(old) = old else {
+            return Ok(false);
+        };
+        let mut metadata: BTreeMap<String, String> = serde_json::from_str(&old)?;
+        // Replace just DateTimeOriginal/SubSecTimeOriginal/OffsetTimeOriginal
+        // aliases. Arbitrary fields from a worker result cannot erase or replace
+        // existing camera data, ratings, crop recipes or dimensions.
+        for key in [
+            "Captured",
+            "EXIF DateTimeOriginal",
+            "Capture Subsecond",
+            "EXIF SubSecTimeOriginal",
+            "Capture Time Zone",
+            "EXIF OffsetTimeOriginal",
+        ] {
+            metadata.remove(key);
+        }
+        for key in ["Captured", "Capture Subsecond", "Capture Time Zone"] {
+            if let Some(value) = capture.metadata.get(key) {
+                metadata.insert(key.to_owned(), value.clone());
+            }
+        }
+        let changed = transaction.execute(
+            "UPDATE assets SET metadata_json=?1,captured_at=?2,captured_at_checked=1
+             WHERE id=?3 AND modified_stamp=?4 AND captured_at_checked=0",
+            params![
+                serde_json::to_string(&metadata)?,
+                capture.captured_at,
+                id,
+                expected_fingerprint
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+
+    pub fn remote_assets(&self) -> Result<Vec<Asset>> {
+        let database = self.db()?;
+        let mut statement = database.prepare(&format!(
+            "SELECT {ASSET_COLUMNS} FROM assets WHERE source_key IS NOT NULL"
+        ))?;
+        let rows = statement
+            .query_map([], asset_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn asset_fingerprint(&self, id: &str) -> Result<String> {
+        self.db()?
+            .query_row(
+                "SELECT modified_stamp FROM assets WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .context("E_NOT_FOUND: Asset does not exist")
+    }
+
+    pub fn bind_original_revision(&self, id: &str) -> Result<()> {
+        let fingerprint = self.asset_fingerprint(id)?;
+        self.db()?.execute("INSERT INTO cache_asset_revisions(asset_id,fingerprint) VALUES(?1,?2) ON CONFLICT(asset_id) DO UPDATE SET fingerprint=excluded.fingerprint", params![id,fingerprint])?;
+        Ok(())
+    }
+
+    pub fn original_revision_current(&self, id: &str) -> Result<bool> {
+        let fingerprint = self.asset_fingerprint(id)?;
+        Ok(self
+            .db()?
+            .query_row(
+                "SELECT fingerprint FROM cache_asset_revisions WHERE asset_id=?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some_and(|version| version == fingerprint))
+    }
+
+    pub fn save_original_snapshot(&self, id: &str) -> Result<()> {
+        let mut value = serde_json::to_value(self.asset(id)?)?;
+        value["_cache_fingerprint"] = json!(self.asset_fingerprint(id)?);
+        self.db()?.execute("INSERT INTO cache_asset_snapshots(asset_id,snapshot_json) VALUES(?1,?2) ON CONFLICT(asset_id) DO UPDATE SET snapshot_json=excluded.snapshot_json", params![id,serde_json::to_string(&value)?])?;
+        Ok(())
+    }
+
+    pub fn original_snapshot(&self, id: &str) -> Result<Option<Value>> {
+        self.db()?
+            .query_row(
+                "SELECT snapshot_json FROM cache_asset_snapshots WHERE asset_id=?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .transpose()
+    }
+
     pub fn use_refreshed_cache(&self, id: &str, filename: &str) -> Result<()> {
         ensure!(
             Path::new(filename).components().count() == 1
@@ -584,10 +868,38 @@ impl Core {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         self.db()?.execute(
             "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,availability,source_key)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'','remote','remote',?9)
-             ON CONFLICT(id) DO UPDATE SET path=excluded.path,path_key=excluded.path_key,filename=excluded.filename,size=excluded.size,width=NULL,height=NULL,metadata_json='{}',availability='remote'",
-             params![id,library_id,path,path_key(&path),filename,extension,kind,size,source_key])?;
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'',?10,'remote',?9)
+             ON CONFLICT(id) DO UPDATE SET path=excluded.path,path_key=excluded.path_key,filename=excluded.filename,size=excluded.size,modified_stamp=excluded.modified_stamp,width=NULL,height=NULL,metadata_json='{}',captured_at='',captured_at_checked=0,availability='remote'",
+             params![id,library_id,path,path_key(&path),filename,extension,kind,size,source_key,format!("remote:{}",Uuid::new_v4())])?;
         self.asset(&id)
+    }
+
+    /// Record the source's creation time, never the downloaded cache file's birth time.
+    /// An absent source property remains unknown; neither scan time nor EXIF is a fallback.
+    pub fn set_remote_created_at(&self, id: &str, created_at: Option<&str>) -> Result<()> {
+        let created_at = match created_at.filter(|value| !value.is_empty()) {
+            Some(value) => DateTime::parse_from_rfc3339(value)
+                .context("E_INVALID: Source creation time must be RFC3339")?
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::Nanos, true),
+            None => String::new(),
+        };
+        let database = self.db()?;
+        let source_key: Option<String> = database
+            .query_row("SELECT source_key FROM assets WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .context("E_NOT_FOUND: Asset does not exist")?;
+        ensure!(
+            source_key.is_some(),
+            "E_INVALID: Source creation time requires a remote asset"
+        );
+        database.execute(
+            "UPDATE assets SET created_at=?1,created_at_checked=1 WHERE id=?2 AND (created_at<>?1 OR created_at_checked=0)",
+            params![created_at, id],
+        )?;
+        Ok(())
     }
 
     pub fn finish_remote_scan(&self, library_id: &str, keys: &[String]) -> Result<()> {
@@ -625,6 +937,11 @@ impl Core {
     }
 
     fn checked_asset_path(&self, asset: &Asset) -> Result<PathBuf> {
+        if asset.source_key.is_some() {
+            if let Some(path) = crate::cache::resolve_asset_path(&*self.db()?, &asset.id)? {
+                return Ok(path);
+            }
+        }
         let library = self.library(&asset.library_id)?;
         let path = dunce::canonicalize(&asset.path)
             .context("E_OFFLINE: Original is missing or storage is disconnected")?;
@@ -739,7 +1056,19 @@ impl Core {
     ) -> Result<(bool, Option<String>)> {
         let path = dunce::canonicalize(path)?;
         ensure!(
-            path_is_within(&path, Path::new(&library.root)),
+            path_is_within(&path, Path::new(&library.root))
+                || registered_asset
+                    .filter(|asset| asset.source_key.is_some())
+                    .is_some_and(|asset| {
+                        self.db()
+                            .ok()
+                            .and_then(|database| {
+                                crate::cache::resolve_asset_path(&database, &asset.id)
+                                    .ok()
+                                    .flatten()
+                            })
+                            .is_some_and(|managed| managed == path)
+                    }),
             "E_PATH: File resolves outside the library root"
         );
         let info = fs::metadata(&path)?;
@@ -762,23 +1091,40 @@ impl Core {
                 .to_owned(),
         };
         let key = path_key(&path_string);
-        let old: Option<(String, u64, String, String)> = if let Some(asset) = registered_remote {
+        let old: Option<(String, u64, String, String, bool)> = if let Some(asset) =
+            registered_remote
+        {
             Some(self.db()?.query_row(
-                "SELECT id,size,modified_stamp,availability FROM assets WHERE id=?1 AND library_id=?2 AND path=?3 AND source_key=?4",
+                "SELECT id,size,modified_stamp,availability,captured_at_checked FROM assets WHERE id=?1 AND library_id=?2 AND path=?3 AND source_key=?4",
                 params![asset.id, library.id, path_string, asset.source_key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             ).optional()?.context("E_CONFLICT: Remote cache changed while reading; retry the image")?)
         } else {
             self.db()?.query_row(
-                "SELECT id,size,modified_stamp,availability FROM assets WHERE library_id=?1 AND path_key=?2",
-                params![library.id, key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                "SELECT id,size,modified_stamp,availability,captured_at_checked FROM assets WHERE library_id=?1 AND path_key=?2",
+                params![library.id, key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             ).optional()?
         };
-        if let Some((_, size, old_stamp, availability)) = &old {
+        if let Some((old_id, size, old_stamp, availability, capture_checked)) = &old {
             if *size == info.len()
                 && *old_stamp == stamp
                 && matches!(availability.as_str(), "available" | "unsupported")
             {
+                if registered_remote.is_none() {
+                    let created_at = file_created_at(&info);
+                    self.db()?.execute(
+                        "UPDATE assets SET created_at=?1,created_at_checked=1 WHERE id=?2 AND source_key IS NULL AND (created_at<>?1 OR created_at_checked=0)",
+                        params![created_at, old_id],
+                    )?;
+                }
+                if !capture_checked {
+                    // Upgrade old unchanged inspections with a bounded EXIF-only
+                    // read outside the DB mutex. An IO/limit failure stays pending
+                    // and does not prevent normal viewing or refresh.
+                    if let Ok(capture) = capture_time::read_path(&path) {
+                        self.record_capture_time(old_id, old_stamp, &capture)?;
+                    }
+                }
                 return Ok((false, None));
             }
         }
@@ -807,6 +1153,24 @@ impl Core {
         if let Some(error) = &error {
             metadata.insert("Decode Status".into(), error.clone());
         }
+        let inspected_capture = capture_time::from_metadata(&metadata);
+        let capture = if matches!(inspected_capture.status, CaptureStatus::Missing) {
+            // General inspection can omit EXIF when pixels are unsupported or
+            // its optional EXIF reader fails. Independently check only capture
+            // tags before claiming that an original has no shooting date.
+            capture_time::read_path(&path).ok()
+        } else {
+            Some(inspected_capture)
+        };
+        let capture_checked = capture.is_some();
+        if let Some(capture) = &capture {
+            for key in ["Captured", "Capture Subsecond", "Capture Time Zone"] {
+                if let Some(value) = capture.metadata.get(key) {
+                    metadata.insert(key.to_owned(), value.clone());
+                }
+            }
+        }
+        let captured_at = capture.map(|value| value.captured_at).unwrap_or_default();
         let filename = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -818,9 +1182,9 @@ impl Core {
             // row or attach the old file's metadata to a newer cache revision.
             let source_key = asset.source_key.as_deref().expect("remote asset has a key");
             let changed = self.db()?.execute(
-                "UPDATE assets SET filename=?1,extension=?2,kind=?3,size=?4,modified_at='',modified_stamp=?5,width=?6,height=?7,metadata_json=?8,availability=?9
+                "UPDATE assets SET filename=?1,extension=?2,kind=?3,size=?4,modified_at='',modified_stamp=?5,width=?6,height=?7,metadata_json=?8,availability=?9,captured_at=?14,captured_at_checked=?15
                  WHERE id=?10 AND library_id=?11 AND path=?12 AND source_key=?13",
-                params![source_key.rsplit('/').next().unwrap_or(source_key), extension, kind, info.len(), stamp, width, height, serde_json::to_string(&metadata)?, availability, asset.id, library.id, path_string, source_key],
+                params![source_key.rsplit('/').next().unwrap_or(source_key), extension, kind, info.len(), stamp, width, height, serde_json::to_string(&metadata)?, availability, asset.id, library.id, path_string, source_key, captured_at, capture_checked],
             )?;
             ensure!(
                 changed == 1,
@@ -829,14 +1193,79 @@ impl Core {
             return Ok((true, error));
         }
         self.db()?.execute(
-            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17)
              ON CONFLICT(library_id,path_key) DO UPDATE SET path=excluded.path,filename=excluded.filename,extension=excluded.extension,
              kind=excluded.kind,size=excluded.size,modified_at=excluded.modified_at,modified_stamp=excluded.modified_stamp,
-             width=excluded.width,height=excluded.height,metadata_json=excluded.metadata_json,availability=excluded.availability",
-            params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability],
+             width=excluded.width,height=excluded.height,metadata_json=excluded.metadata_json,availability=excluded.availability,
+             captured_at=excluded.captured_at,captured_at_checked=excluded.captured_at_checked,
+             created_at=CASE WHEN assets.source_key IS NULL THEN excluded.created_at ELSE assets.created_at END,
+             created_at_checked=CASE WHEN assets.source_key IS NULL THEN 1 ELSE assets.created_at_checked END",
+            params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability, file_created_at(&info), captured_at, capture_checked],
         )?;
         Ok((true, error))
+    }
+
+    fn backfill_created_at(&self, library_id: Option<&str>) -> Result<()> {
+        // Read only thin candidates under the DB mutex. Filesystems (including
+        // disconnected local volumes) must never hold up unrelated DB access.
+        let candidates = {
+            let database = self.db()?;
+            let mut statement = database.prepare(
+                "SELECT a.id,a.library_id,a.path,l.root,l.storage_id,l.source_prefix
+                 FROM assets a JOIN libraries l ON l.id=a.library_id
+                 WHERE a.source_key IS NULL AND a.created_at_checked=0
+                 AND (?1 IS NULL OR a.library_id=?1) AND (?1 IS NOT NULL OR l.hidden=0)",
+            )?;
+            let rows = statement
+                .query_map([library_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        // A failed/unsupported metadata read also completes this one-time
+        // migration. Explicit refresh or scan will retry the actual source.
+        let values: Vec<_> = candidates
+            .into_iter()
+            .map(|candidate| {
+                let created_at = dunce::canonicalize(&candidate.2)
+                    .ok()
+                    .filter(|path| path_is_within(path, Path::new(&candidate.3)))
+                    .and_then(|path| fs::metadata(path).ok())
+                    .filter(fs::Metadata::is_file)
+                    .map(|info| file_created_at(&info))
+                    .unwrap_or_default();
+                (candidate, created_at)
+            })
+            .collect();
+        if values.is_empty() {
+            return Ok(());
+        }
+        let mut database = self.db()?;
+        let transaction = database.transaction()?;
+        {
+            let mut statement = transaction.prepare(
+                "UPDATE assets SET created_at=?1,created_at_checked=1
+                 WHERE id=?2 AND library_id=?3 AND path=?4 AND source_key IS NULL AND created_at_checked=0
+                 AND EXISTS(SELECT 1 FROM libraries l WHERE l.id=assets.library_id
+                     AND l.root=?5 AND l.storage_id IS ?6 AND l.source_prefix=?7)",
+            )?;
+            for ((id, library_id, path, root, storage_id, prefix), created_at) in values {
+                statement.execute(params![
+                    created_at, id, library_id, path, root, storage_id, prefix
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     fn list_assets(&self, args: AssetQuery) -> Result<Value> {
@@ -859,8 +1288,10 @@ impl Core {
             ["all", "raw", "jpeg"].contains(&format),
             "E_INVALID: Unknown image format filter"
         );
-        let sort = match args.sort_by.as_deref().unwrap_or("modified_at") {
+        let sort = match args.sort_by.as_deref().unwrap_or("captured_at") {
+            "captured_at" => "captured_at",
             "modified_at" => "modified_at",
+            "created_at" => "created_at",
             "filename" => "filename",
             "rating" => "rating",
             _ => bail!("E_INVALID: Unknown asset sort field"),
@@ -869,6 +1300,14 @@ impl Core {
             "asc" => "ASC",
             "desc" => "DESC",
             _ => bail!("E_INVALID: Unknown asset sort direction"),
+        };
+        if sort == "created_at" {
+            self.backfill_created_at(args.library_id.as_deref())?;
+        }
+        let order = if matches!(sort, "created_at" | "captured_at") {
+            format!("({sort}='') ASC,{sort} {direction},path ASC,id ASC")
+        } else {
+            format!("{sort} {direction},path ASC,id ASC")
         };
         // Quote all user terms: FTS operators cannot escape into the expression.
         let search = query
@@ -924,7 +1363,7 @@ impl Core {
             pairs.insert(pair[1].id.clone(), pair);
         }
         let mut statement = db.prepare(&format!(
-            "SELECT id FROM assets WHERE {where_sql} ORDER BY {sort} {direction},path ASC,id ASC"
+            "SELECT id FROM assets WHERE {where_sql} ORDER BY {order}"
         ))?;
         let ids = statement
             .query_map(
@@ -1075,6 +1514,14 @@ fn path_key(path: &str) -> String {
     }
 }
 
+fn file_created_at(metadata: &fs::Metadata) -> String {
+    metadata
+        .created()
+        .ok()
+        .map(|created| DateTime::<Utc>::from(created).to_rfc3339_opts(SecondsFormat::Nanos, true))
+        .unwrap_or_default()
+}
+
 // Inputs are canonical paths, or roots recorded from canonicalization. Do not
 // simplify the I/O path: long Windows paths still need their verbatim prefix.
 // Only the drive/UNC prefix representation is equivalent; all remaining path
@@ -1135,6 +1582,16 @@ fn json_column<T: serde::de::DeserializeOwned>(row: &Row<'_>, index: usize) -> r
 }
 
 fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
+    let captured_at: String = row.get(16)?;
+    let capture_checked: bool = row.get(17)?;
+    let capture_status = if !captured_at.is_empty() {
+        "available"
+    } else if capture_checked {
+        "missing"
+    } else {
+        "pending"
+    }
+    .to_owned();
     let crop: Option<String> = row.get(12)?;
     let crop = crop
         .map(|value| {
@@ -1163,6 +1620,9 @@ fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
         crop,
         availability: row.get(13)?,
         source_key: row.get(14)?,
+        created_at: row.get(15)?,
+        captured_at,
+        capture_status,
     })
 }
 

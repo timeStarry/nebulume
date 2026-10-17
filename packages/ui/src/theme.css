@@ -1,0 +1,38 @@
+/* Shared application tokens. */
+@import './tokens.css';
+
+.brand-mark {
+  display: block;
+  flex: none;
+  object-fit: contain;
+}
+
+.theme-control {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 230px);
+  align-items: center;
+  gap: var(--nl-space-2) var(--nl-space-4);
+  width: 100%;
+}
+
+.theme-control > label {
+  font-weight: var(--nl-weight-medium);
+  color: var(--nl-text);
+}
+
+.theme-control > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+}
+
+.theme-control > .theme-notice {
+  color: var(--nl-warning);
+}
+
+@media (max-width: 719px) {
+  .theme-control {
+    grid-template-columns: 1fr;
+  }
+}

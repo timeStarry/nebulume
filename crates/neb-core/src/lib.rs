@@ -3,14 +3,19 @@
 //! Originals are read-only. Editing stores normalized recipes in SQLite; only
 //! explicit exports create a new file. A catalog remains usable offline.
 
+pub mod cache;
+pub mod capture_time;
 mod catalog;
 mod embedded_preview;
 mod focus_points;
 mod imaging;
 mod model;
 
+pub use cache::{CacheLease, CacheManager, Reservation};
 pub use catalog::Core;
+pub use focus_points::read_from as remote_focus;
 pub use focus_points::{FocusInfo, FocusRegion};
+pub use imaging::remote_preview;
 pub use model::{Asset, Crop, Library};
 
 pub fn image_kind(extension: &str) -> Option<&'static str> {

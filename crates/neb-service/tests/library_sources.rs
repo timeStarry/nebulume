@@ -160,13 +160,16 @@ fn webdav_library_roundtrip(
     drop(svc);
     let svc = Service::open(data).unwrap();
     svc.execute("storage.add",json!({"name":"测试DAV","kind":"webdav","endpoint":endpoint,"username":"test-user","password":"synthetic-fixture","remember_credentials":false})).unwrap();
-    // Focus inspection is itself an explicit original read. It must materialize
-    // a remote file even when no image/EXIF panel has been opened yet.
+    // Pure metadata and an unsupported focus format must not download originals.
     let focus = svc
         .execute("asset.focus", json!({"id":asset["id"]}))
         .unwrap();
     assert_eq!(focus["status"], "unsupported"); // PPM has no MakerNote.
     assert_eq!(focus["regions"], json!([]));
+    let metadata = svc.execute("asset.get", json!({"id":asset["id"]})).unwrap();
+    assert!(metadata["width"].is_null());
+    svc.execute("asset.preview", json!({"id":asset["id"],"max_size":32}))
+        .unwrap();
     let opened = svc.execute("asset.get", json!({"id":asset["id"]})).unwrap();
     assert_eq!(opened["id"], asset["id"]);
     assert_eq!(opened["path"], asset["path"]);
@@ -193,12 +196,17 @@ fn webdav_library_roundtrip(
     assert_eq!(refreshed["height"], 2);
     assert_eq!(refreshed["rating"], 3);
     assert_eq!(refreshed["crop"], cropped["crop"]);
-    assert_ne!(refreshed["path"], opened["path"]);
-    assert_eq!(
-        fs::read(refreshed["path"].as_str().unwrap()).unwrap(),
-        CHANGED_PHOTO
-    );
-    assert_eq!(fs::read(opened["path"].as_str().unwrap()).unwrap(), PHOTO);
+    // A cache revision changes its managed physical object, never catalog identity.
+    assert_eq!(refreshed["path"], opened["path"]);
+    let originals = data.join("remote-cache/objects/original");
+    let bytes: Vec<_> = fs::read_dir(originals)
+        .unwrap()
+        .map(|entry| fs::read(entry.unwrap().path()).unwrap())
+        .collect();
+    assert!(bytes.iter().any(|bytes| bytes == CHANGED_PHOTO));
+    if already_published {
+        assert_eq!(fs::read(opened["path"].as_str().unwrap()).unwrap(), PHOTO);
+    }
     server.join().unwrap();
     drop(svc);
     let svc = Service::open(data).unwrap();

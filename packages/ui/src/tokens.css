@@ -1,0 +1,149 @@
+/* Shared application typography, spacing, color, and motion tokens. */
+:root {
+  --nl-font-ui: 'DM Sans', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --nl-font-mono: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  --nl-text-xs: 12px;
+  --nl-text-sm: 13px;
+  --nl-text-base: 14px;
+  --nl-text-lg: 18px;
+  --nl-text-xl: 24px;
+  --nl-line-height-ui: 1.5;
+  --nl-line-height-body: 1.65;
+  --nl-weight-normal: 400;
+  --nl-weight-medium: 500;
+  --nl-weight-semibold: 600;
+  --nl-space-1: 4px;
+  --nl-space-2: 8px;
+  --nl-space-3: 12px;
+  --nl-space-4: 16px;
+  --nl-space-5: 20px;
+  --nl-space-6: 24px;
+  --nl-space-7: 32px;
+  --nl-space-8: 48px;
+  --nl-radius-sm: 4px;
+  --nl-radius-md: 8px;
+  --nl-radius-lg: 12px;
+  --nl-control-height: 36px;
+  --nl-control-height-compact: 32px;
+  --nl-touch-target: 44px;
+  --nl-icon-size: 18px;
+  --nl-icon-stroke: 1.5px;
+  --nl-sidebar-width: 220px;
+  --nl-inspector-width: 300px;
+  --nl-toolbar-height: 56px;
+  --nl-grid-gap: 12px;
+  --nl-focus-width: 2px;
+  --nl-focus-offset: 2px;
+  --nl-duration-fast: 120ms;
+  --nl-duration-normal: 180ms;
+  --nl-duration-slow: 240ms;
+  --nl-ease-standard: cubic-bezier(.2, 0, 0, 1);
+}
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --nl-canvas: #242933;
+  --nl-surface: #2E3440;
+  --nl-surface-raised: #3B4252;
+  --nl-surface-hover: #434C5E;
+  --nl-surface-active: #4C566A;
+  --nl-text: #ECEFF4;
+  --nl-text-secondary: #D8DEE9;
+  --nl-text-muted: #C3CCDB;
+  --nl-text-disabled: #8290A5;
+  --nl-border: #4C566A;
+  --nl-control-border: #A1AEC2;
+  --nl-control-bg: #242933;
+  --nl-control-hover: #3B4252;
+  --nl-control-active: #434C5E;
+  --nl-interactive: #88C0D0;
+  --nl-interactive-hover: #9BCEDD;
+  --nl-interactive-active: #93B3D0;
+  --nl-on-interactive: #242933;
+  --nl-selected-bg: #494557;
+  --nl-selected-text: #ECEFF4;
+  --nl-selected-border: #C7B8D1;
+  --nl-focus: #CFBFDC;
+  --nl-focus-gap: #2E3440;
+  --nl-success: #A3BE8C;
+  --nl-success-bg: #344439;
+  --nl-warning: #EBCB8B;
+  --nl-warning-bg: #4B4132;
+  --nl-danger: #E6A0A7;
+  --nl-danger-bg: #4B303A;
+  --nl-info: #88C0D0;
+  --nl-info-bg: #30444F;
+  --nl-photo-canvas: #181818;
+  --nl-photo-text: #ECEFF4;
+  --nl-photo-panel: #242424;
+  --nl-photo-muted: #C6C6C6;
+  --nl-photo-control-border: #929292;
+  --nl-photo-focus: #D9D0E8;
+  --nl-photo-focus-gap: #181818;
+  --nl-disabled-bg: #303743;
+  --nl-disabled-border: #536074;
+  --nl-scrollbar: #A1AEC2;
+  --nl-skeleton: #434C5E;
+  --nl-scrim: #101318B8;
+  --nl-photo-overlay: #181818E8;
+  --nl-shadow-popover: 0 8px 24px #00000040;
+  --nl-shadow-dialog: 0 20px 64px #00000066;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --nl-canvas: #ECEFF4;
+  --nl-surface: #E5E9F0;
+  --nl-surface-raised: #FFFFFF;
+  --nl-surface-hover: #D8DEE9;
+  --nl-surface-active: #CCD4E0;
+  --nl-text: #2E3440;
+  --nl-text-secondary: #3B4252;
+  --nl-text-muted: #4C566A;
+  --nl-text-disabled: #7C8798;
+  --nl-border: #C0C9D7;
+  --nl-control-border: #65748A;
+  --nl-control-bg: #FFFFFF;
+  --nl-control-hover: #ECEFF4;
+  --nl-control-active: #D8DEE9;
+  --nl-interactive: #365E7A;
+  --nl-interactive-hover: #2B506A;
+  --nl-interactive-active: #23465D;
+  --nl-on-interactive: #FFFFFF;
+  --nl-selected-bg: #E5DFEA;
+  --nl-selected-text: #554461;
+  --nl-selected-border: #7E638B;
+  --nl-focus: #745B83;
+  --nl-focus-gap: #E5E9F0;
+  --nl-success: #42612F;
+  --nl-success-bg: #E3EBDD;
+  --nl-warning: #735619;
+  --nl-warning-bg: #F4E8CE;
+  --nl-danger: #9E3F4B;
+  --nl-danger-bg: #F4E2E5;
+  --nl-info: #365E7A;
+  --nl-info-bg: #DDEBF0;
+  --nl-photo-canvas: #181818;
+  --nl-photo-text: #ECEFF4;
+  --nl-photo-panel: #242424;
+  --nl-photo-muted: #C6C6C6;
+  --nl-photo-control-border: #929292;
+  --nl-photo-focus: #D9D0E8;
+  --nl-photo-focus-gap: #181818;
+  --nl-disabled-bg: #DDE2EA;
+  --nl-disabled-border: #ADB8C7;
+  --nl-scrollbar: #6C7B91;
+  --nl-skeleton: #D8DEE9;
+  --nl-scrim: #10131880;
+  --nl-photo-overlay: #181818E8;
+  --nl-shadow-popover: 0 8px 24px #2E34401F;
+  --nl-shadow-dialog: 0 20px 64px #2E344033;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root, [data-theme] {
+    --nl-duration-fast: 0ms;
+    --nl-duration-normal: 0ms;
+    --nl-duration-slow: 0ms;
+  }
+}

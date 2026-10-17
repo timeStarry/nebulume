@@ -13,8 +13,9 @@ export function focusPresentation(
   mapping?: Preview['coordinate_mapping'],
 ): FocusPresentation {
   const empty = (message: string): FocusPresentation => ({ regions: [], message });
-  if (info.status === 'missing') return empty(info.reason || '相机未记录可显示的对焦信息。');
-  if (info.status !== 'available') return empty(info.reason || '暂不支持此文件的对焦信息。');
+  const reason = info.reason?.replace('；不会由点位编号推测位置。', '。');
+  if (info.status === 'missing') return empty(reason || '相机未记录可显示的对焦信息。');
+  if (info.status !== 'available') return empty(reason || '暂不支持此文件的对焦信息。');
   if (!mapping) return empty('无法确认对焦坐标与当前预览的对应关系，暂不显示。');
   if (
     info.coordinate_space !== 'oriented_full_image' ||

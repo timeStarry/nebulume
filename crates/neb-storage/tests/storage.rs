@@ -49,6 +49,15 @@ fn local_listing_is_paginated_and_credentials_are_never_saved() {
         .unwrap();
     let page = registry.browse(&config.id, "", 1, None).unwrap();
     assert_eq!(page.entries[0].key, "a.jpg");
+    let expected_created = fs::metadata(source.path().join("a.jpg"))
+        .unwrap()
+        .created()
+        .ok()
+        .map(|created| {
+            chrono::DateTime::<chrono::Utc>::from(created)
+                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+        });
+    assert_eq!(page.entries[0].created_at, expected_created);
     let page = registry
         .browse(&config.id, "", 1, page.next_cursor.as_deref())
         .unwrap();
@@ -93,6 +102,20 @@ fn server(
                 break;
             }
         }
+        let header_end = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let content_length = String::from_utf8_lossy(&request[..header_end])
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while request.len() < header_end + content_length {
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0, "request body ended before Content-Length");
+            request.extend_from_slice(&buffer[..count]);
+        }
         inspect(String::from_utf8(request).unwrap());
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/xml\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
@@ -134,6 +157,110 @@ fn browse_webdav_xml(body: String) -> anyhow::Result<Vec<neb_storage::StorageEnt
     let result = registry.browse(&config.id, "", 50, None);
     thread.join().unwrap();
     result.map(|page| page.entries)
+}
+
+#[test]
+fn storage_entry_creation_time_is_optional_on_existing_wire_values() {
+    let entry: neb_storage::StorageEntry =
+        serde_json::from_value(serde_json::json!({"key":"photo.jpg","size":27,"is_dir":false}))
+            .unwrap();
+    assert!(entry.created_at.is_none());
+    assert!(serde_json::to_value(entry)
+        .unwrap()
+        .get("created_at")
+        .is_none());
+}
+
+#[test]
+fn webdav_creation_dates_are_requested_normalized_and_unknown_values_remain_optional() {
+    let (endpoint, thread) = server("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/photo.jpg</d:href><d:propstat><d:prop><d:creationdate>2026-10-16T15:20:30+08:00</d:creationdate></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>", |headers| {
+        assert!(headers.contains("<d:creationdate/>"));
+    });
+    let data = tempfile::tempdir().unwrap();
+    let mut registry = StorageRegistry::open(data.path()).unwrap();
+    let config = registry.add(request("webdav", &endpoint)).unwrap();
+    let page = registry.browse(&config.id, "", 50, None).unwrap();
+    assert_eq!(
+        page.entries[0].created_at.as_deref(),
+        Some("2026-10-16T07:20:30Z")
+    );
+    thread.join().unwrap();
+
+    let properties = [
+        (
+            "valid.jpg",
+            "<d:creationdate> 2021-03-04T11:06:07.125+08:00 </d:creationdate>",
+            Some("2021-03-04T03:06:07.125Z"),
+        ),
+        (
+            "utc.jpg",
+            "<d:creationdate>2020-01-02T03:04:05Z</d:creationdate>",
+            Some("2020-01-02T03:04:05Z"),
+        ),
+        ("empty.jpg", "<d:creationdate/>", None),
+        ("blank.jpg", "<d:creationdate> </d:creationdate>", None),
+        (
+            "invalid.jpg",
+            "<d:creationdate>yesterday</d:creationdate>",
+            None,
+        ),
+        (
+            "date-only.jpg",
+            "<d:creationdate>2020-01-02</d:creationdate>",
+            None,
+        ),
+        (
+            "modified.jpg",
+            "<d:getlastmodified>Thu, 02 Jan 2020 03:04:05 GMT</d:getlastmodified>",
+            None,
+        ),
+        ("missing.jpg", "", None),
+        (
+            "structured.jpg",
+            "<d:creationdate><d:value>2020-01-02T03:04:05Z</d:value></d:creationdate>",
+            None,
+        ),
+    ];
+    let mut xml = String::from("<d:multistatus xmlns:d=\"DAV:\">");
+    for (name, creation_date, _) in properties {
+        xml.push_str(&format!("<d:response><d:href>/album/{name}</d:href><d:propstat><d:prop><d:getcontentlength>27</d:getcontentlength>{creation_date}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"));
+    }
+    xml.push_str("</d:multistatus>");
+    let entries = browse_webdav_xml(xml).unwrap();
+    for (name, _, expected) in properties {
+        let entry = entries.iter().find(|entry| entry.key == name).unwrap();
+        assert_eq!(entry.created_at.as_deref(), expected, "{name}");
+        assert_eq!(entry.size, 27, "{name}");
+    }
+}
+
+#[test]
+fn webdav_creation_dates_require_dav_namespace_and_successful_propstat() {
+    for failed_first in [false, true] {
+        let success = "<d:propstat><d:prop><d:getcontentlength>27</d:getcontentlength><d:creationdate>2020-01-02T03:04:05Z</d:creationdate></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>";
+        for failed_value in ["not-a-date", "2026-10-16T03:04:05Z"] {
+            let failed = format!("<d:propstat><d:prop><d:creationdate>{failed_value}</d:creationdate></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>");
+            let properties = if failed_first {
+                format!("{failed}{success}")
+            } else {
+                format!("{success}{failed}")
+            };
+            let entries = browse_webdav_xml(format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/album/photo.jpg</d:href>{properties}</d:response></d:multistatus>")).unwrap();
+            assert_eq!(
+                entries[0].created_at.as_deref(),
+                Some("2020-01-02T03:04:05Z")
+            );
+        }
+    }
+    for (creation_date, expected) in [
+        ("<x:creationdate xmlns:x=\"urn:custom\">2020-01-02T03:04:05Z</x:creationdate>", None),
+        ("<creationdate>2020-01-02T03:04:05Z</creationdate>", None),
+        ("<creationdate xmlns=\"DAV:\">2020-01-02T03:04:05Z</creationdate>", Some("2020-01-02T03:04:05Z")),
+        ("<creationdate xmlns=\"DAV:\">2020-01-02T03:04:05Z</creationdate><creationdate>2026-01-02T03:04:05Z</creationdate>", Some("2020-01-02T03:04:05Z")),
+    ] {
+        let entries = browse_webdav_xml(format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/album/photo.jpg</d:href><d:propstat><d:prop>{creation_date}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>")).unwrap();
+        assert_eq!(entries[0].created_at.as_deref(), expected);
+    }
 }
 
 #[test]
@@ -276,7 +403,7 @@ fn webdav_successful_file_lengths_reject_nonempty_invalid_negative_and_overflow_
 
 #[test]
 fn s3_signs_paginated_list_and_reconnect_is_required_after_restart() {
-    let (endpoint, thread) = server("<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next token</NextContinuationToken><Contents><Key>album/photo.jpg</Key><Size>42</Size></Contents></ListBucketResult>", |request| {
+    let (endpoint, thread) = server("<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next token</NextContinuationToken><Contents><Key>album/photo.jpg</Key><Size>42</Size><LastModified>2026-10-16T03:04:05Z</LastModified></Contents></ListBucketResult>", |request| {
         assert!(request.starts_with("GET /bucket?")); assert!(request.contains("prefix=album%2F"));
         assert!(request.to_lowercase().contains("authorization: aws4-hmac-sha256 credential=fixture-key/"));
         assert!(request.contains("/us-east-1/s3/aws4_request")); assert!(!request.contains("fixture-secret"));
@@ -288,6 +415,10 @@ fn s3_signs_paginated_list_and_reconnect_is_required_after_restart() {
     let config = registry.add(input).unwrap();
     let page = registry.browse(&config.id, "", 50, None).unwrap();
     assert_eq!(page.entries[0].key, "photo.jpg");
+    assert!(
+        page.entries[0].created_at.is_none(),
+        "S3 LastModified is not a creation time"
+    );
     assert_eq!(page.next_cursor.as_deref(), Some("next token"));
     thread.join().unwrap();
     let registry = StorageRegistry::open(data.path()).unwrap();

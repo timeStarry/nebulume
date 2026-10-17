@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{BufReader, Cursor},
+    io::{BufReader, Cursor, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -64,11 +64,15 @@ fn extension(path: &Path) -> String {
 }
 
 pub fn read_exif(path: &Path) -> BTreeMap<String, String> {
-    let mut metadata = BTreeMap::new();
     let Ok(file) = File::open(path) else {
-        return metadata;
+        return BTreeMap::new();
     };
-    let Ok(exif) = exif::Reader::new().read_from_container(&mut BufReader::new(file)) else {
+    read_exif_from(file)
+}
+
+fn read_exif_from<R: Read + Seek>(input: R) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    let Ok(exif) = exif::Reader::new().read_from_container(&mut BufReader::new(input)) else {
         return metadata;
     };
     for (tag, label) in [
@@ -81,6 +85,7 @@ pub fn read_exif(path: &Path) -> BTreeMap<String, String> {
         (Tag::FocalLength, "Focal Length"),
         (Tag::FocalLengthIn35mmFilm, "Focal Length (35 mm)"),
         (Tag::DateTimeOriginal, "Captured"),
+        (Tag::SubSecTimeOriginal, "Capture Subsecond"),
         (Tag::OffsetTimeOriginal, "Capture Time Zone"),
         (Tag::Orientation, "Orientation"),
         (Tag::ExposureBiasValue, "Exposure Bias"),
@@ -281,7 +286,7 @@ struct RenderedFrame {
 
 fn render_frame(path: &Path, crop: Option<Crop>, max_side: Option<u32>) -> Result<RenderedFrame> {
     check_file(path)?;
-    let (mut image, source, orientation) = if kind(&extension(path)) == Some("raw") {
+    let (image, source, orientation) = if kind(&extension(path)) == Some("raw") {
         // Keep enough full-frame pixels that a small saved crop can still fill
         // the requested preview. Exports pass None and render all sensor pixels.
         let raw_limit = max_side.map(|limit| {
@@ -316,6 +321,15 @@ fn render_frame(path: &Path, crop: Option<Crop>, max_side: Option<u32>) -> Resul
         image.apply_orientation(orientation);
         (image, "raster", orientation.to_exif())
     };
+    finish_frame(image, source, orientation, crop)
+}
+
+fn finish_frame(
+    mut image: DynamicImage,
+    source: &'static str,
+    orientation: u8,
+    crop: Option<Crop>,
+) -> Result<RenderedFrame> {
     let mut coordinate_mapping = CoordinateMapping {
         orientation,
         full_width: image.width(),
@@ -513,6 +527,10 @@ pub fn preview(path: &Path, crop: Option<Crop>, max_size: u32) -> Result<Value> 
         "E_INVALID: Preview max_size must be between 32 and 4096"
     );
     let frame = render_frame(path, crop, Some(max_size))?;
+    encode_preview(frame, max_size)
+}
+
+fn encode_preview(frame: RenderedFrame, max_size: u32) -> Result<Value> {
     let image = downsample(frame.image, max_size);
     let mut bytes = Cursor::new(Vec::new());
     JpegEncoder::new_with_quality(&mut bytes, 88).encode_image(&image.to_rgb8())?;
@@ -523,6 +541,10 @@ pub fn preview(path: &Path, crop: Option<Crop>, max_size: u32) -> Result<Value> 
 
 pub fn histogram(path: &Path, crop: Option<Crop>) -> Result<Value> {
     let (image, source) = render(path, crop, Some(2048))?;
+    histogram_image(image, source)
+}
+
+fn histogram_image(image: DynamicImage, source: &str) -> Result<Value> {
     let image = downsample(image, 2048).to_rgb8();
     let mut red = vec![0_u64; 256];
     let mut green = vec![0_u64; 256];
@@ -541,6 +563,35 @@ pub fn histogram(path: &Path, crop: Option<Crop>) -> Result<Value> {
         json!({"red": red, "green": green, "blue": blue, "luminance": luminance,
         "pixels": u64::from(image.width()) * u64::from(image.height()), "source": source}),
     )
+}
+
+/// Uses a caller-owned bounded seekable reader. No full-file fallback occurs here.
+pub fn remote_preview<R: Read + Seek>(
+    input: &mut R,
+    length: u64,
+    crop: Option<Crop>,
+    max_size: u32,
+) -> Result<Value> {
+    ensure!(
+        (32..=4096).contains(&max_size),
+        "E_INVALID: Preview max_size must be between 32 and 4096"
+    );
+    input.seek(SeekFrom::Start(0))?;
+    let (image, orientation) = crate::embedded_preview::read_from(&mut *input, length)?;
+    // Decode first: an EXIF parser's optional failure must never swallow a broken
+    // transport or cause a malformed range response to become a full download.
+    input.seek(SeekFrom::Start(0))?;
+    let mut metadata = read_exif_from(&mut *input);
+    metadata.insert("Preview Source".into(), "remote_embedded_jpeg".into());
+    metadata.insert("Decoder".into(), "相机内嵌预览".into());
+    let width = image.width();
+    let height = image.height();
+    let frame = finish_frame(image, "remote_embedded_jpeg", orientation, crop)?;
+    let histogram = histogram_image(frame.image.clone(), frame.source)?;
+    let mut value = encode_preview(frame, max_size)?;
+    value["inspection"] = json!({"width":width,"height":height,"metadata":metadata});
+    value["histogram"] = histogram;
+    Ok(value)
 }
 
 fn downsample(image: DynamicImage, max_side: u32) -> DynamicImage {

@@ -9,18 +9,17 @@ import {
   Show,
 } from 'solid-js';
 import { execute } from './api';
+import { isQueueAbort } from './concurrency';
 import {
   cropFromPoints,
   errorMessage,
   imageRequestKey,
-  renderSourceLabel,
   type Asset,
   type Crop,
   type Preview,
-  type FocusInfo,
+  type FocusRegion,
 } from './model';
 import Icon from './Icon';
-import { focusPresentation } from './viewer-focus';
 
 export function Thumbnail(props: {
   asset: Asset;
@@ -31,24 +30,65 @@ export function Thumbnail(props: {
 }) {
   let element!: HTMLButtonElement;
   const [visible, setVisible] = createSignal(false);
-  const [preview] = createResource(
-    () => visible() && imageRequestKey(props.asset),
-    async (key) => {
-      const { id } = JSON.parse(key);
-      try {
-        return await execute<Preview>('asset.preview', { id, max_size: 420 });
-      } catch {
-        return null;
-      }
-    },
-  );
+  const [preview, setPreview] = createSignal<Preview | null>(null);
+  const [previewLoading, setPreviewLoading] = createSignal(false);
+  let loadedKey = '';
+  let displayedKey = '';
+  let disposed = false;
+  let pending: { key: string; controller: AbortController } | undefined;
+  function syncPreview() {
+    if (disposed) return;
+    const key = imageRequestKey(props.asset);
+    if (displayedKey !== key) {
+      displayedKey = key;
+      loadedKey = '';
+      setPreview(null);
+    }
+    if (!visible()) {
+      pending?.controller.abort();
+      return;
+    }
+    if (loadedKey === key || pending?.key === key) return;
+    pending?.controller.abort();
+    const current = { key, controller: new AbortController() };
+    pending = current;
+    setPreviewLoading(true);
+    let cancelled = false;
+    void execute<Preview>(
+      'asset.preview',
+      { id: props.asset.id, max_size: 420 },
+      {
+        source: props.asset.source_key ? 'remote' : 'local',
+        priority: 'thumbnail',
+        signal: current.controller.signal,
+      },
+    )
+      .then((result) => {
+        if (!disposed && imageRequestKey(props.asset) === key) {
+          loadedKey = key;
+          setPreview(result);
+        }
+      })
+      .catch((error) => {
+        cancelled = isQueueAbort(error);
+      })
+      .finally(() => {
+        if (disposed || pending !== current) return;
+        pending = undefined;
+        setPreviewLoading(false);
+        // An item can re-enter the viewport before cancellation has settled.
+        if (cancelled && visible()) syncPreview();
+      });
+  }
+  createEffect(syncPreview);
+  onCleanup(() => {
+    disposed = true;
+    pending?.controller.abort();
+  });
   onMount(() => {
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setVisible(true);
-          observer.disconnect();
-        }
+        for (const entry of entries) if (entry.target === element) setVisible(entry.isIntersecting);
       },
       { rootMargin: '200px' },
     );
@@ -79,7 +119,7 @@ export function Thumbnail(props: {
             <div class="thumbnail-fallback">
               <Icon name="photo" size={26} />
               <span>
-                {preview.loading ? '载入中' : props.asset.kind === 'raw' ? 'RAW' : '无预览'}
+                {previewLoading() ? '载入中' : props.asset.kind === 'raw' ? 'RAW' : '无预览'}
               </span>
             </div>
           }
@@ -113,9 +153,14 @@ export default function PhotoView(props: {
   hasPrevious: boolean;
   hasNext: boolean;
   focusEnabled?: boolean;
-  focusData?: FocusInfo;
-  focusLoading?: boolean;
-  focusError?: string;
+  focusRegions?: FocusRegion[];
+  onPreviewStateChange?: (state: {
+    key: string;
+    loading: boolean;
+    failed: boolean;
+    mapping?: Preview['coordinate_mapping'];
+    asset?: Asset;
+  }) => void;
 }) {
   let stage!: HTMLDivElement;
   let wrap!: HTMLDivElement;
@@ -123,21 +168,61 @@ export default function PhotoView(props: {
   const [zoom, setZoom] = createSignal(1);
   const [pan, setPan] = createSignal({ x: 0, y: 0 });
   const [dragging, setDragging] = createSignal(false);
+  const [fetching, setFetching] = createSignal(false);
+  const [fetchError, setFetchError] = createSignal('');
+  let disposed = false;
+  let previewController: AbortController | undefined;
+  onCleanup(() => {
+    disposed = true;
+    previewController?.abort();
+  });
   let drag: { x: number; y: number; px: number; py: number; crop: boolean } | undefined;
-  const [preview] = createResource(
+  const [preview, { refetch }] = createResource(
     () => imageRequestKey(props.asset, props.cropMode),
     async (key) => {
       const { id, uncropped } = JSON.parse(key);
+      previewController?.abort();
+      previewController = new AbortController();
       try {
         return {
-          data: await execute<Preview>('asset.preview', { id, max_size: 2400, uncropped }),
+          data: await execute<Preview>(
+            'asset.preview',
+            { id, max_size: 2400, uncropped },
+            {
+              source: props.asset.source_key ? 'remote' : 'local',
+              priority: 'viewer',
+              signal: previewController.signal,
+            },
+          ),
           error: '',
         };
       } catch (error) {
-        return { data: null, error: errorMessage(error) };
+        return { data: null, error: isQueueAbort(error) ? '' : errorMessage(error) };
       }
     },
   );
+  createEffect(() =>
+    props.onPreviewStateChange?.({
+      key: imageRequestKey(props.asset, props.cropMode),
+      loading: preview.loading,
+      failed: !!preview()?.error,
+      mapping: preview()?.data?.coordinate_mapping,
+      asset: preview()?.data?.asset,
+    }),
+  );
+  async function fetchOriginal() {
+    const id = props.asset.id;
+    setFetching(true);
+    setFetchError('');
+    try {
+      await execute('asset.fetch_original', { id });
+      if (!disposed && id === props.asset.id) await refetch();
+    } catch (error) {
+      if (!disposed && id === props.asset.id) setFetchError(errorMessage(error));
+    } finally {
+      setFetching(false);
+    }
+  }
   const fitScale = createMemo(() => {
     const p = preview()?.data;
     if (!p) return 1;
@@ -150,16 +235,6 @@ export default function PhotoView(props: {
     width: (preview()?.data?.width || 0) * fitScale() * zoom(),
     height: (preview()?.data?.height || 0) * fitScale() * zoom(),
   }));
-  const focus = createMemo(() => {
-    if (!props.focusEnabled) return { regions: [], message: '' };
-    if (props.cropMode)
-      return { regions: [], message: '裁剪模式中暂不显示对焦点；退出裁剪后恢复。' };
-    if (props.focusLoading) return { regions: [], message: '正在读取相机对焦信息…' };
-    if (props.focusError) return { regions: [], message: `对焦信息未能读取：${props.focusError}` };
-    if (preview.loading || !props.focusData)
-      return { regions: [], message: '正在等待预览与对焦信息…' };
-    return focusPresentation(props.focusData, preview()?.data?.coordinate_mapping);
-  });
   function fit() {
     setZoom(1);
     setPan({ x: 0, y: 0 });
@@ -225,7 +300,7 @@ export default function PhotoView(props: {
         <Show
           when={!preview.loading}
           fallback={
-            <div class="viewer-message">
+            <div class="viewer-message" role="status" aria-live="polite">
               <span class="spinner" />
               正在解析影像…
             </div>
@@ -234,11 +309,18 @@ export default function PhotoView(props: {
           <Show
             when={preview()?.data}
             fallback={
-              <div class="viewer-message error">
+              <div class="viewer-message error" role="status">
                 <Icon name="photo" size={36} />
                 <strong>暂时无法预览</strong>
                 <p>{preview()?.error}</p>
-                <small>原始文件仍保留在图库中。</small>
+                <Show when={preview()?.error?.includes('E_DOWNLOAD_REQUIRED')}>
+                  <button class="button primary" disabled={fetching()} onClick={fetchOriginal}>
+                    {fetching() ? '正在下载…' : '下载原图并预览'}
+                  </button>
+                  <Show when={fetchError()}>
+                    <p role="alert">{fetchError()}</p>
+                  </Show>
+                </Show>
               </div>
             }
           >
@@ -278,13 +360,20 @@ export default function PhotoView(props: {
                     <span class="crop-corner bottom-right" />
                   </div>
                 </Show>
-                <Show when={focus().regions.length}>
+                <Show
+                  when={
+                    props.focusEnabled &&
+                    !props.cropMode &&
+                    !preview.loading &&
+                    props.focusRegions?.length
+                  }
+                >
                   <div
                     class="focus-overlay"
                     role="img"
-                    aria-label={`相机记录的 ${focus().regions.length} 处对焦区域`}
+                    aria-label={`相机记录的 ${props.focusRegions!.length} 处对焦区域`}
                   >
-                    <For each={focus().regions}>
+                    <For each={props.focusRegions}>
                       {(region) => (
                         <div
                           class={`focus-region ${region.kind}`}
@@ -302,11 +391,6 @@ export default function PhotoView(props: {
               </div>
             )}
           </Show>
-        </Show>
-        <Show when={props.focusEnabled}>
-          <div class="viewer-focus-status" role="status" aria-live="polite">
-            {focus().message}
-          </div>
         </Show>
         <Show when={!props.cropMode}>
           <button
@@ -326,16 +410,12 @@ export default function PhotoView(props: {
             <Icon name="right" size={22} />
           </button>
         </Show>
-        <Show when={props.cropMode}>
-          <div class="crop-hint">在图像上拖动以定义裁剪区域 · 原片保持不变</div>
-        </Show>
       </div>
       <div class="viewer-controls">
-        <span class="preview-source">
-          {renderSourceLabel(preview()?.data?.source) || '影像预览'}
-        </span>
         <div class="zoom-controls">
-          <button onClick={fit}>适合窗口</button>
+          <button onClick={fit} title="适合窗口 · 滚轮缩放，拖动平移">
+            适合窗口
+          </button>
           <button
             title="预览像素 1:1（大图预览最长边 2400 px）"
             onClick={() => {

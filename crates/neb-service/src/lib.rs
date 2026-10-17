@@ -1,26 +1,94 @@
 //! Shared application commands for the native desktop and headless CLI.
 use anyhow::{anyhow, ensure, Context, Result};
-use neb_core::{Asset, Core, Library};
+use neb_core::{CacheManager, Core, Library};
 use neb_ingest::IngestService;
 use neb_storage::{AddStorageRequest, StorageConfig, StorageRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashSet, VecDeque},
-    fs,
+    collections::{HashMap, HashSet, VecDeque},
+    fs::{self, File, OpenOptions},
     io::Read,
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Condvar, Mutex, RwLock,
+    },
 };
 
+mod capture_index;
+mod remote_cache;
+
+type AssetOperations = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
+
+// Independent handles are intentional: duplicated handles can share a lock's
+// ownership on some platforms. Entry points acquire library, catalog, asset/cache
+// in that order, so waiting for a busy library never holds the whole catalog.
+struct ProcessCatalogGuard(File);
+impl Drop for ProcessCatalogGuard {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+fn process_catalog_lock(data_dir: &Path, exclusive: bool) -> Result<ProcessCatalogGuard> {
+    fs::create_dir_all(data_dir.join("catalog"))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data_dir.join("catalog/service.lock"))?;
+    if exclusive {
+        file.lock()?;
+    } else {
+        file.lock_shared()?;
+    }
+    Ok(ProcessCatalogGuard(file))
+}
+
+fn process_library_lock(data_dir: &Path, id: &str, exclusive: bool) -> Result<ProcessCatalogGuard> {
+    process_scoped_lock(data_dir, "library-locks", id, exclusive)
+}
+
+fn process_scoped_lock(
+    data_dir: &Path,
+    scope: &str,
+    id: &str,
+    exclusive: bool,
+) -> Result<ProcessCatalogGuard> {
+    let directory = data_dir.join("catalog").join(scope);
+    fs::create_dir_all(&directory)?;
+    let path = directory.join(format!(
+        "{}.lock",
+        hex::encode(Sha256::digest(id.as_bytes()))
+    ));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    if exclusive {
+        file.lock()?;
+    } else {
+        file.lock_shared()?;
+    }
+    Ok(ProcessCatalogGuard(file))
+}
+
 pub struct Service {
-    core: Core,
-    storage: Mutex<StorageRegistry>,
+    core: Arc<Core>,
+    storage: Arc<Mutex<StorageRegistry>>,
     ingest: Mutex<IngestService>,
     cache_root: PathBuf,
-    cache_operations: Mutex<()>,
+    cache: Arc<CacheManager>,
+    asset_operations: AssetOperations,
+    downloads: (Mutex<usize>, Condvar),
+    preview_writes: Arc<AtomicUsize>,
+    data_dir: PathBuf,
     catalog_operations: RwLock<()>,
+    capture_index: capture_index::CaptureIndexController,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,26 +128,37 @@ impl Service {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
         let data_dir = data_dir.as_ref();
         std::fs::create_dir_all(data_dir).context("Create application data directory")?;
+        let _process_catalog = process_catalog_lock(data_dir, true)?;
         let service = Self {
-            core: Core::open(data_dir.join("catalog"))?,
-            storage: Mutex::new(StorageRegistry::open(data_dir.join("storage"))?),
+            core: Arc::new(Core::open(data_dir.join("catalog"))?),
+            storage: Arc::new(Mutex::new(StorageRegistry::open(data_dir.join("storage"))?)),
             ingest: Mutex::new(IngestService::open(data_dir.join("ingest"))?),
             cache_root: data_dir.join("remote-cache"),
-            cache_operations: Mutex::new(()),
+            cache: Arc::new(CacheManager::open(
+                data_dir.join("catalog/catalog.sqlite3"),
+                data_dir.join("remote-cache"),
+            )?),
+            asset_operations: Arc::new(Mutex::new(HashMap::new())),
+            downloads: (Mutex::new(0), Condvar::new()),
+            preview_writes: Arc::new(AtomicUsize::new(0)),
+            data_dir: data_dir.to_path_buf(),
             catalog_operations: RwLock::new(()),
+            capture_index: capture_index::CaptureIndexController::default(),
         };
-        // Associate legacy local libraries without making unavailable volumes prevent startup.
-        for library in service.core.libraries()? {
-            if library.storage_id.is_none() && Path::new(&library.root).is_dir() {
-                let request: AddStorageRequest = serde_json::from_value(
-                    json!({"name":library.name,"kind":"local","endpoint":library.root,"remember_credentials":false}),
-                )?;
-                let source = service
-                    .storage
-                    .lock()
-                    .map_err(|_| anyhow!("Storage state unavailable"))?
-                    .add(request)?;
-                service.core.bind_storage(&library.id, &source.id, "")?;
+        service.adopt_legacy_cache()?;
+        if let Err(error) = service.cache.maintain() {
+            // Metadata/settings remain available when a removable cache is
+            // offline or protected/unmanaged content already fills the budget.
+            if ![
+                "E_CACHE_OFFLINE:",
+                "E_CACHE_BUDGET:",
+                "E_CACHE_BUSY:",
+                "E_CACHE_SPACE:",
+            ]
+            .iter()
+            .any(|code| error.to_string().starts_with(code))
+            {
+                return Err(error);
             }
         }
         Ok(service)
@@ -92,13 +171,46 @@ impl Service {
                 message: "params must be a JSON object".into(),
             });
         }
+        let structural_write =
+            matches!(command, "library.add" | "library.update" | "library.remove")
+                || matches!(command, "storage.add" | "storage.remove" | "file.open");
+        // Long operations hold only their own library lease. A slow remote file
+        // or scan cannot monopolize the catalog for unrelated local libraries.
+        let _process_library = if matches!(command, "library.update" | "library.remove") {
+            Some(
+                process_library_lock(
+                    &self.data_dir,
+                    string(&params, "id").map_err(CommandError::from)?,
+                    true,
+                )
+                .map_err(CommandError::from)?,
+            )
+        } else if command.starts_with("asset.") && command != "asset.list" {
+            let asset = self
+                .core
+                .asset(string(&params, "id").map_err(CommandError::from)?);
+            match asset {
+                Ok(asset) => Some(
+                    process_library_lock(&self.data_dir, &asset.library_id, false)
+                        .map_err(CommandError::from)?,
+                ),
+                Err(_) if command == "asset.offline.set" && params["pinned"] == false => None,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            None
+        };
+        let _process_catalog = if structural_write || command == "asset.list" {
+            Some(
+                process_catalog_lock(&self.data_dir, structural_write)
+                    .map_err(CommandError::from)?,
+            )
+        } else {
+            None
+        };
         // Entry-point lock only: private helpers may call each other without
         // recursively acquiring it. Always acquire catalog before storage/cache.
-        let _catalog_write = if command.starts_with("library.")
-            || matches!(
-                command,
-                "storage.add" | "storage.remove" | "file.open" | "import.execute"
-            ) {
+        let _catalog_write = if structural_write {
             Some(self.catalog_operations.write().map_err(|_| CommandError {
                 code: "E_OPERATION",
                 message: "Catalog operation state is unavailable".into(),
@@ -106,10 +218,9 @@ impl Service {
         } else {
             None
         };
-        // Keep a captured library binding alive through materialization and the
-        // complete asset operation. Readers can run together, but cannot write
-        // stale local inspection results after a rebind or library removal.
-        let _catalog_read = if command.starts_with("asset.") {
+        // Lists need a coherent catalog snapshot. Long asset I/O uses the
+        // per-library lease above without occupying this global lock.
+        let _catalog_read = if command == "asset.list" {
             Some(self.catalog_operations.read().map_err(|_| CommandError {
                 code: "E_OPERATION",
                 message: "Catalog operation state is unavailable".into(),
@@ -177,18 +288,15 @@ impl Service {
             })
             .transpose()?
             .unwrap_or(false);
-        let source = if let Some(id) = params.get("storage_id").and_then(Value::as_str) {
-            self.source(id)?
-        } else {
+        if params.get("storage_id").and_then(Value::as_str).is_none() {
             let root = string(params, "root")?;
-            let request: AddStorageRequest = serde_json::from_value(
-                json!({"name":name,"kind":"local","endpoint":root,"remember_credentials":false}),
-            )?;
-            self.storage
-                .lock()
-                .map_err(|_| anyhow!("Storage state unavailable"))?
-                .add(request)?
-        };
+            return self.library_value(&self.core.add_library_with_options(
+                name,
+                Path::new(root),
+                pair,
+            )?);
+        }
+        let source = self.source(string(params, "storage_id")?)?;
         let prefix = params
             .get("prefix")
             .and_then(Value::as_str)
@@ -230,10 +338,23 @@ impl Service {
             pair_raw_jpeg: Option<bool>,
             storage_id: Option<String>,
             source_prefix: Option<String>,
+            root: Option<String>,
         }
         let update: Update =
             serde_json::from_value(params).context("E_INVALID: Invalid library update")?;
         let previous = self.core.library(&update.id)?;
+        if let Some(root) = update.root {
+            ensure!(
+                update.storage_id.is_none(),
+                "E_INVALID: Choose a local directory or a remote storage source"
+            );
+            return self.library_value(&self.core.update_local_library(
+                &update.id,
+                update.name.as_deref(),
+                update.pair_raw_jpeg,
+                Path::new(&root),
+            )?);
+        }
         let source_id = update
             .storage_id
             .as_deref()
@@ -285,26 +406,43 @@ impl Service {
         Ok(serde_json::to_value(removed)?)
     }
 
+    fn check_scan_binding(&self, expected: &Library) -> Result<()> {
+        let current = self.core.library(&expected.id)?;
+        ensure!(
+            current.root == expected.root
+                && current.storage_id == expected.storage_id
+                && current.source_prefix == expected.source_prefix,
+            "E_CONFLICT: Library location changed during scanning; retry the scan"
+        );
+        Ok(())
+    }
+
     fn scan_library(&self, id: &str) -> Result<Value> {
+        // Two paginated scans must not mark each other missing. This lease is
+        // separate from asset/rebind leases, which are free during network I/O.
+        let _scan = process_scoped_lock(&self.data_dir, "scan-locks", id, true)?;
         let library = self.core.library(id)?;
-        let Some(source_id) = library.storage_id.as_deref() else {
-            return self.core.dispatch("library.scan", json!({"library_id":id}));
-        };
-        let source = self.source(source_id)?;
-        if source.kind == "local" {
+        let source = library
+            .storage_id
+            .as_deref()
+            .map(|id| self.source(id))
+            .transpose()?;
+        if source.as_ref().is_none_or(|source| source.kind == "local") {
+            let _library = process_library_lock(&self.data_dir, id, true)?;
+            self.check_scan_binding(&library)?;
             return self.core.dispatch("library.scan", json!({"library_id":id}));
         }
-        let storage = self
+        let source = source.expect("remote source checked above");
+        let browser = self
             .storage
             .lock()
-            .map_err(|_| anyhow!("Storage state unavailable"))?;
+            .map_err(|_| anyhow!("Storage state unavailable"))?
+            .open_browser(&source.id)?;
         let mut pending = VecDeque::from([library.source_prefix.clone()]);
         let mut seen = HashSet::new();
         let mut keys = Vec::new();
-        let mut indexed = 0usize;
-        let mut skipped = 0usize;
-        let mut entries_seen = 0usize;
-        let mut pages_seen = 0usize;
+        let (mut indexed, mut skipped, mut entries_seen, mut pages_seen) =
+            (0usize, 0usize, 0usize, 0usize);
         let mut errors = Vec::new();
         while let Some(prefix) = pending.pop_front() {
             if !seen.insert(prefix.clone()) {
@@ -319,7 +457,9 @@ impl Service {
             loop {
                 pages_seen += 1;
                 ensure!(pages_seen<=4096,"E_LIMIT: Remote scan exceeds 4096 pages; partial index retained, missing state unchanged");
-                let page = match storage.browse(source_id, &prefix, 1000, cursor.as_deref()) {
+                // Network enumeration owns a snapshot, never the storage registry
+                // or catalog/library locks needed by unrelated local browsing.
+                let page = match browser.browse(&prefix, 1000, cursor.as_deref()) {
                     Ok(page) => page,
                     Err(error) if indexed > 0 => {
                         errors.push(json!({"path":prefix,"message":format!("{error:#}")}));
@@ -329,47 +469,56 @@ impl Service {
                     }
                     Err(error) => return Err(error),
                 };
-                for entry in page.entries {
-                    entries_seen += 1;
-                    ensure!(entries_seen<=50_000,"E_LIMIT: Remote scan exceeds 50000 entries; choose a smaller library folder");
-                    neb_storage::validate_key(&entry.key, false)?;
-                    ensure!(
-                        library.source_prefix.is_empty()
-                            || entry
-                                .key
-                                .starts_with(&format!("{}/", library.source_prefix)),
-                        "E_PATH: Remote entry escaped the library folder"
-                    );
-                    if entry.is_dir {
-                        pending.push_back(entry.key);
-                        continue;
-                    }
-                    let extension = Path::new(&entry.key)
-                        .extension()
-                        .and_then(|v| v.to_str())
-                        .unwrap_or_default()
-                        .to_ascii_lowercase();
-                    if neb_core::image_kind(&extension).is_none() {
-                        skipped += 1;
-                        continue;
-                    }
-                    let cache_name = format!(
-                        "{}.{}",
-                        hex::encode(Sha256::digest(
-                            format!("{}:{}", entry.key, entry.size).as_bytes()
-                        )),
-                        extension
-                    );
-                    match self
-                        .core
-                        .register_remote_asset(id, &entry.key, &cache_name, entry.size)
-                    {
-                        Ok(_) => {
-                            indexed += 1;
-                            keys.push(entry.key);
+                {
+                    let _library = process_library_lock(&self.data_dir, id, true)?;
+                    self.check_scan_binding(&library)?;
+                    for entry in page.entries {
+                        entries_seen += 1;
+                        ensure!(entries_seen<=50_000,"E_LIMIT: Remote scan exceeds 50000 entries; choose a smaller library folder");
+                        neb_storage::validate_key(&entry.key, false)?;
+                        ensure!(
+                            library.source_prefix.is_empty()
+                                || entry
+                                    .key
+                                    .starts_with(&format!("{}/", library.source_prefix)),
+                            "E_PATH: Remote entry escaped the library folder"
+                        );
+                        if entry.is_dir {
+                            pending.push_back(entry.key);
+                            continue;
                         }
-                        Err(error) => {
-                            errors.push(json!({"path":entry.key,"message":format!("{error:#}")}))
+                        let extension = Path::new(&entry.key)
+                            .extension()
+                            .and_then(|v| v.to_str())
+                            .unwrap_or_default()
+                            .to_ascii_lowercase();
+                        if neb_core::image_kind(&extension).is_none() {
+                            skipped += 1;
+                            continue;
+                        }
+                        let cache_name = format!(
+                            "{}.{}",
+                            hex::encode(Sha256::digest(
+                                format!("{}:{}", entry.key, entry.size).as_bytes()
+                            )),
+                            extension
+                        );
+                        match self
+                            .core
+                            .register_remote_asset(id, &entry.key, &cache_name, entry.size)
+                            .and_then(|asset| {
+                                self.core.set_remote_created_at(
+                                    &asset.id,
+                                    entry.created_at.as_deref(),
+                                )?;
+                                Ok(asset)
+                            }) {
+                            Ok(_) => {
+                                indexed += 1;
+                                keys.push(entry.key);
+                            }
+                            Err(error) => errors
+                                .push(json!({"path":entry.key,"message":format!("{error:#}")})),
                         }
                     }
                 }
@@ -383,8 +532,9 @@ impl Service {
                 cursor = Some(next);
             }
         }
-        // Only a fully completed enumeration can mark remote entries missing.
         if errors.is_empty() {
+            let _library = process_library_lock(&self.data_dir, id, true)?;
+            self.check_scan_binding(&library)?;
             self.core.finish_remote_scan(id, &keys)?;
         }
         Ok(
@@ -392,97 +542,15 @@ impl Service {
         )
     }
 
-    fn materialize_asset(&self, id: &str, force: bool) -> Result<Asset> {
-        let _cache = self
-            .cache_operations
-            .lock()
-            .map_err(|_| anyhow!("Cache state unavailable"))?;
-        let asset = self.core.asset(id)?;
-        let Some(key) = asset.source_key.as_deref() else {
-            if force {
-                self.core.invalidate_asset(id)?;
-            }
-            return if force || Path::new(&asset.path).is_file() {
-                // Inspection versions and changed originals update on access.
-                // Missing local files can still expose their stored metadata;
-                // rendering retains the core's canonical path/offline guards.
-                self.core.refresh_asset(id)
-            } else {
-                Ok(asset)
-            };
-        };
-        let library = self.core.library(&asset.library_id)?;
-        let source_id = library
-            .storage_id
-            .as_deref()
-            .context("E_NOT_FOUND: Remote library has no storage source")?;
-        let cache_name = Path::new(&asset.path)
-            .file_name()
-            .and_then(|v| v.to_str())
-            .context("E_PATH: Invalid cache path")?;
-        let cache_path = neb_storage::safe_join(Path::new(&library.root), cache_name, false)?;
-        ensure!(
-            Path::new(&asset.path).parent() == Some(Path::new(&library.root)),
-            "E_PATH: Image cache escaped its library"
-        );
-        if force || !cache_path.exists() {
-            ensure!(
-                asset.size <= 512 * 1024 * 1024,
-                "E_LIMIT: Remote image exceeds the 512 MiB limit"
-            );
-            let storage = self
-                .storage
-                .lock()
-                .map_err(|_| anyhow!("Storage state unavailable"))?;
-            let reader = storage.reader(source_id, key)?;
-            // Fail publication on overflow rather than storing a truncated original.
-            let mut reader = BoundedImageReader {
-                inner: reader,
-                remaining: 512 * 1024 * 1024,
-            };
-            let destination =
-                neb_storage::PreparedDestination::new(Path::new(&library.root))?.materialize()?;
-            let refreshed_name = if force {
-                let stamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_nanos();
-                format!(
-                    "{}.{}",
-                    hex::encode(Sha256::digest(
-                        format!("{key}:{stamp}:{}", std::process::id()).as_bytes()
-                    )),
-                    asset.extension
-                )
-            } else {
-                cache_name.to_string()
-            };
-            destination.publish(&mut reader, &refreshed_name, None)?;
-            if force {
-                self.core.use_refreshed_cache(id, &refreshed_name)?;
-            }
-        }
-        self.core.refresh_asset(id)
-    }
-
     fn dispatch(&self, command: &str, params: Value) -> Result<Value> {
-        if command == "asset.refresh" {
-            return Ok(serde_json::to_value(
-                self.materialize_asset(string(&params, "id")?, true)?,
-            )?);
+        if command.starts_with("asset.") && command != "asset.list" {
+            return self.asset_dispatch(command, params);
         }
-        if [
-            "asset.get",
-            "asset.preview",
-            "asset.histogram",
-            "asset.focus",
-            "asset.export",
-        ]
-        .contains(&command)
-        {
-            self.materialize_asset(string(&params, "id")?, false)?;
-        }
-        if command.starts_with("asset.") || command == "file.open" {
+        if command == "asset.list" || command == "file.open" {
             return self.core.dispatch(command, params);
+        }
+        if command.starts_with("cache.") {
+            return self.cache_dispatch(command, params);
         }
         match command {
             "library.list" => self.library_list(),
@@ -493,6 +561,14 @@ impl Service {
                 Ok(json!({"id":id,"removed_assets":self.core.remove_library(id)?}))
             }
             "library.scan" => self.scan_library(string(&params, "library_id")?),
+            "library.capture_index.status" => {
+                self.capture_index_status(string(&params, "library_id")?)
+            }
+            "library.capture_index.start" => {
+                self.start_capture_index(string(&params, "library_id")?)
+            }
+            "library.capture_index.cancel" => self
+                .cancel_capture_index(string(&params, "library_id")?, string(&params, "job_id")?),
             "system.info" => Ok(json!({
                 "name": "Nebulume", "version": env!("CARGO_PKG_VERSION"), "api_version": 1,
                 "platform": std::env::consts::OS,
@@ -501,7 +577,7 @@ impl Service {
                 "originals_read_only": true,
                 "credentials": "system_keyring_or_explicit_session",
                 "imaging": neb_core::capabilities(),
-                "limits": ["Remote libraries index metadata and cache originals on demand; 50k entries / 2048 directories per scan", "Remote caches have no automatic quota or sync", "No source deletion", "Basic RAW rendering; not a color-managed developing suite"]
+                "limits": ["Remote libraries index metadata and cache originals on demand; 50k entries / 2048 directories per scan", "Managed remote cache with shared disk quota, protected offline originals and version-locked bounded previews", "No source deletion", "Basic RAW rendering; not a color-managed developing suite"]
             })),
             "storage.list" => {
                 let storage = self
@@ -521,44 +597,60 @@ impl Service {
             }
             "storage.remove" => self.remove_storage(string(&params, "id")?),
             "storage.check" => {
-                let storage = self
-                    .storage
-                    .lock()
-                    .map_err(|_| anyhow!("Storage state unavailable"))?;
-                Ok(serde_json::to_value(
-                    storage.check(string(&params, "id")?)?,
-                )?)
+                let id = string(&params, "id")?;
+                let (snapshot, config) = {
+                    let storage = self
+                        .storage
+                        .lock()
+                        .map_err(|_| anyhow!("Storage state unavailable"))?;
+                    let snapshot = storage.open_browser(id);
+                    let config = storage
+                        .list()
+                        .into_iter()
+                        .find(|source| source.id == id)
+                        .context("E_NOT_FOUND: Storage source does not exist")?;
+                    (snapshot, config)
+                };
+                match snapshot {
+                    Ok(browser) => Ok(serde_json::to_value(browser.check()?)?),
+                    Err(error) => Ok(
+                        json!({"id":id,"connected":false,"credential_status":config.credential_status,"checked_at":chrono::Utc::now().to_rfc3339(),"error":format!("{error:#}")}),
+                    ),
+                }
             }
             "storage.inspect_tls" => Ok(serde_json::to_value(neb_storage::inspect_tls(string(
                 &params, "endpoint",
             )?)?)?),
             "storage.browse" => {
-                let storage = self
+                let browser = self
                     .storage
                     .lock()
-                    .map_err(|_| anyhow!("Storage state unavailable"))?;
+                    .map_err(|_| anyhow!("Storage state unavailable"))?
+                    .open_browser(string(&params, "id")?)?;
                 let limit = params
                     .get("limit")
                     .and_then(Value::as_u64)
                     .unwrap_or(200)
                     .clamp(1, 1000) as usize;
-                Ok(serde_json::to_value(storage.browse(
-                    string(&params, "id")?,
+                Ok(serde_json::to_value(browser.browse(
                     params.get("prefix").and_then(Value::as_str).unwrap_or(""),
                     limit,
                     params.get("cursor").and_then(Value::as_str),
                 )?)?)
             }
             "storage.fetch" => {
-                let storage = self
+                let mut reader = self
                     .storage
                     .lock()
-                    .map_err(|_| anyhow!("Storage state unavailable"))?;
-                Ok(serde_json::to_value(storage.fetch(
-                    string(&params, "id")?,
-                    string(&params, "key")?,
-                    string(&params, "destination")?,
-                )?)?)
+                    .map_err(|_| anyhow!("Storage state unavailable"))?
+                    .open_reader(string(&params, "id")?, string(&params, "key")?)?;
+                let destination = Path::new(string(&params, "destination")?);
+                let (size, sha256) = neb_storage::publish_reader(&mut reader, destination, None)?;
+                Ok(serde_json::to_value(neb_storage::FetchResult {
+                    path: destination.to_string_lossy().into_owned(),
+                    size,
+                    sha256,
+                })?)
             }
             "import.plan" => {
                 let mut ingest = self
@@ -723,17 +815,31 @@ mod tests {
             .clone();
         // Stall refresh inside materialize, after execute has captured its read
         // lease. A binding change must wait for this complete operation.
-        let cache = svc.cache_operations.lock().unwrap();
+        let asset_lock = Arc::new(Mutex::new(()));
+        svc.asset_operations.lock().unwrap().insert(
+            asset["id"].as_str().unwrap().to_owned(),
+            Arc::clone(&asset_lock),
+        );
+        let cache = asset_lock.lock().unwrap();
         let refreshing = {
             let svc = Arc::clone(&svc);
             let id = asset["id"].clone();
             std::thread::spawn(move || svc.execute("asset.refresh", json!({"id":id})))
         };
         let deadline = Instant::now() + Duration::from_secs(5);
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(svc.data_dir.join("catalog/library-locks").join(format!(
+                "{}.lock",
+                hex::encode(Sha256::digest(library["id"].as_str().unwrap().as_bytes()))
+            )))
+            .unwrap();
         loop {
-            if svc.catalog_operations.try_write().is_err() {
+            if probe.try_lock().is_err() {
                 break;
             }
+            probe.unlock().unwrap();
             assert!(
                 Instant::now() < deadline,
                 "Refresh did not acquire its library lease"

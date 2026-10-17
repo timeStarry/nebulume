@@ -300,9 +300,17 @@ pub(crate) fn read_with_orientation(path: &Path) -> Result<(DynamicImage, u8)> {
         info.is_file() && info.len() <= super::imaging::MAX_FILE_BYTES,
         "E_LIMIT: Invalid or oversized RAW preview source"
     );
+    read_from(file, info.len())
+}
+
+pub(crate) fn read_from<R: Read + Seek>(input: R, length: u64) -> Result<(DynamicImage, u8)> {
+    ensure!(
+        length <= super::imaging::MAX_FILE_BYTES,
+        "E_LIMIT: Oversized RAW preview source"
+    );
     decode_with_orientation(TiffReader {
-        input: file,
-        length: info.len(),
+        input,
+        length,
         little: true,
         read_bytes: 0,
         metadata_bytes: 0,
