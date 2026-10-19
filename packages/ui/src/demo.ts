@@ -110,7 +110,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
   switch (command) {
     case 'system.info':
       result = {
-        version: '0.1.0',
+        version: '0.1.1',
         mode: 'browser',
         limits: ['浏览器演示：临时文件会话，EXIF / RAW / 远程存储 / SD 卡导入需桌面端。'],
       };

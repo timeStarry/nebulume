@@ -1,6 +1,7 @@
 //! Application cache policy and remote rendering. Catalog identity never follows
 //! the physical cache root; a lease protects every original used by a renderer.
 use super::*;
+use anyhow::bail;
 use neb_core::{Asset, CacheLease};
 use neb_storage::RangeReadError;
 use std::{fs::OpenOptions, io::Write};
@@ -353,6 +354,16 @@ impl Service {
                     let _lease = self.original(asset, false)?;
                     self.core.dispatch("asset.preview", params.clone())?
                 }
+                Err(error)
+                    if matches!(
+                        Self::range_read_error(&error),
+                        Some(RangeReadError::BudgetExceeded)
+                    ) =>
+                {
+                    // A bounded attempt must not silently become a much larger
+                    // transfer. Let the existing explicit-download action recover.
+                    bail!("E_DOWNLOAD_REQUIRED: 此图片的内嵌预览超出分段读取上限，可下载原图后再尝试预览。")
+                }
                 Err(error) => return Err(error),
             }
         } else {
@@ -411,17 +422,19 @@ impl Service {
         result
     }
 
+    fn range_read_error(error: &anyhow::Error) -> Option<&RangeReadError> {
+        error.chain().find_map(|cause| {
+            cause.downcast_ref::<RangeReadError>().or_else(|| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(RangeReadError::from_io)
+            })
+        })
+    }
+
     pub(super) fn may_fallback(error: &anyhow::Error) -> bool {
-        for cause in error.chain() {
-            if let Some(error) = cause.downcast_ref::<RangeReadError>() {
-                return error.is_fallback_allowed();
-            }
-            if let Some(error) = cause
-                .downcast_ref::<std::io::Error>()
-                .and_then(RangeReadError::from_io)
-            {
-                return error.is_fallback_allowed();
-            }
+        if let Some(error) = Self::range_read_error(error) {
+            return error.is_fallback_allowed();
         }
         // A well-formed version-locked file may lack a standard embedded JPEG.
         error.to_string().starts_with("E_DECODE")

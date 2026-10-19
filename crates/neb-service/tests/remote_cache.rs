@@ -20,6 +20,7 @@ const CHANGED_PHOTO: &[u8] = b"P6\n1 3\n255\n\x00\x00\xff\xff\x00\x00\x00\xff\x0
 struct Request {
     method: String,
     ranged: bool,
+    range_bytes: usize,
 }
 #[derive(Default)]
 struct DownloadGate {
@@ -106,6 +107,7 @@ impl Server {
                 recorded.lock().unwrap().push(Request {
                     method: method.clone(),
                     ranged,
+                    range_bytes: range.map_or(0, |(start, end)| end - start + 1),
                 });
                 let photo = served_photo.lock().unwrap().clone();
                 let filename = served_filename.lock().unwrap().clone();
@@ -807,8 +809,7 @@ fn disconnected_cache_does_not_prevent_viewing_a_local_original_or_create_a_fall
     assert_eq!(fs::read(file).unwrap(), PHOTO);
 }
 
-#[test]
-fn range_embedded_preview_remains_viewable_in_memory_while_cache_is_disconnected() {
+fn synthetic_preview_jpeg() -> Vec<u8> {
     let fixture_data = tempfile::tempdir().unwrap();
     let local_file = fixture_data.path().join("synthetic.ppm");
     fs::write(&local_file, PHOTO).unwrap();
@@ -835,6 +836,12 @@ fn range_embedded_preview_remains_viewable_in_memory_while_cache_is_disconnected
             jpeg.push((accumulator >> bits) as u8);
         }
     }
+    jpeg
+}
+
+#[test]
+fn range_embedded_preview_remains_viewable_in_memory_while_cache_is_disconnected() {
+    let jpeg = synthetic_preview_jpeg();
     let mut tiff = b"II\x2a\x00\x08\x00\x00\x00".to_vec();
     tiff.extend(3_u16.to_le_bytes());
     for (tag, kind, value) in [
@@ -873,4 +880,125 @@ fn range_embedded_preview_remains_viewable_in_memory_while_cache_is_disconnected
     assert_eq!(stats(&service)["usage"]["previews_bytes"], 0);
     assert_eq!(stats(&service)["location"]["state"], "offline");
     assert!(!cache_root.exists());
+}
+
+fn large_raw_with_preview(jpeg_padding: usize) -> Vec<u8> {
+    fn ifd(entries: &[(u16, u16, u32, u32)]) -> Vec<u8> {
+        let mut bytes = (entries.len() as u16).to_le_bytes().to_vec();
+        for (tag, kind, count, value) in entries {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(0_u32.to_le_bytes());
+        bytes
+    }
+    let mut jpeg = synthetic_preview_jpeg();
+    jpeg.resize(jpeg.len() + jpeg_padding, 0);
+    let exif_offset = 8 * 1024 * 1024_u32;
+    let mut raw = vec![0; 30 * 1024 * 1024];
+    raw[..8].copy_from_slice(b"II\x2a\x00\x08\x00\x00\x00");
+    let primary = ifd(&[
+        (271, 2, 10, 128),
+        (272, 2, 12, 160),
+        (274, 3, 1, 6),
+        (513, 4, 1, 512),
+        (514, 4, 1, jpeg.len() as u32),
+        (34665, 4, 1, exif_offset),
+    ]);
+    raw[8..8 + primary.len()].copy_from_slice(&primary);
+    raw[128..138].copy_from_slice(b"Synthetic\0");
+    raw[160..172].copy_from_slice(b"RangeCamera\0");
+    raw[512..512 + jpeg.len()].copy_from_slice(&jpeg);
+    let exif = ifd(&[
+        (33434, 5, 1, exif_offset + 160),
+        (36867, 2, 20, exif_offset + 128),
+    ]);
+    let exif_offset = exif_offset as usize;
+    raw[exif_offset..exif_offset + exif.len()].copy_from_slice(&exif);
+    raw[exif_offset + 128..exif_offset + 148].copy_from_slice(b"2026:10:19 12:34:56\0");
+    raw[exif_offset + 160..exif_offset + 164].copy_from_slice(&1_u32.to_le_bytes());
+    raw[exif_offset + 164..exif_offset + 168].copy_from_slice(&125_u32.to_le_bytes());
+    raw
+}
+
+#[test]
+fn large_remote_raw_keeps_small_range_preview_and_far_exif_without_downloading_original() {
+    let data = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    *server.filename.lock().unwrap() = "photo.nef".into();
+    *server.photo.lock().unwrap() = large_raw_with_preview(0);
+    server.ranges.store(true, Ordering::SeqCst);
+    let service = Service::open(data.path()).unwrap();
+    service
+        .execute("cache.policy.set", json!({"preview_policy":"manual"}))
+        .unwrap();
+    let (_library, asset) = remote_library(&service, &server);
+    let rendered = preview(&service, &asset["id"]);
+    assert_eq!(rendered["source"], "remote_embedded_jpeg");
+    assert_eq!(
+        (rendered["width"].as_u64(), rendered["height"].as_u64()),
+        (Some(1), Some(2))
+    );
+    assert_eq!(rendered["coordinate_mapping"]["orientation"], 6);
+    assert_eq!(rendered["asset"]["metadata"]["Make"], "Synthetic");
+    assert_eq!(rendered["asset"]["metadata"]["Camera"], "RangeCamera");
+    assert_eq!(
+        rendered["asset"]["metadata"]["Captured"],
+        "2026:10:19 12:34:56"
+    );
+    assert!(rendered["asset"]["metadata"]["Exposure"]
+        .as_str()
+        .unwrap()
+        .contains("1/125"));
+    assert_eq!(rendered["histogram"]["pixels"], 2);
+    assert_eq!(server.full_gets(), 0);
+    let requests = server.requests.lock().unwrap();
+    let range_bytes: usize = requests.iter().map(|request| request.range_bytes).sum();
+    assert!(
+        range_bytes < 2 * 1024 * 1024,
+        "30 MiB RAW fetched {range_bytes} bytes"
+    );
+    assert!(requests.len() < 16);
+    drop(requests);
+    assert_eq!(stats(&service)["usage"]["originals_bytes"], 0);
+    assert!(stats(&service)["usage"]["previews_bytes"].as_u64().unwrap() > 0);
+    let count = server.count();
+    assert_eq!(preview(&service, &asset["id"])["width"], 1);
+    assert_eq!(
+        server.count(),
+        count,
+        "persisted preview must avoid another remote read"
+    );
+}
+
+#[test]
+fn genuine_range_budget_exhaustion_requires_explicit_original_download() {
+    let data = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    *server.filename.lock().unwrap() = "photo.nef".into();
+    *server.photo.lock().unwrap() = large_raw_with_preview(17 * 1024 * 1024);
+    server.ranges.store(true, Ordering::SeqCst);
+    let service = Service::open(data.path()).unwrap();
+    let (_library, asset) = remote_library(&service, &server);
+    let error = service
+        .execute("asset.preview", json!({"id":asset["id"],"max_size":420}))
+        .unwrap_err();
+    assert_eq!(error.code, "E_DOWNLOAD_REQUIRED");
+    assert!(error.message.contains("超出分段读取上限"));
+    assert!(!error.message.contains("E_RANGE_LIMIT"));
+    assert_eq!(
+        server.full_gets(),
+        0,
+        "budget limit must not start an automatic full GET"
+    );
+    assert_eq!(stats(&service)["usage"]["originals_bytes"], 0);
+    service
+        .execute("asset.fetch_original", json!({"id":asset["id"]}))
+        .unwrap();
+    assert_eq!(server.full_gets(), 1);
+    let rendered = preview(&service, &asset["id"]);
+    assert_eq!(rendered["source"], "embedded_jpeg");
+    assert_eq!(rendered["width"], 1);
 }

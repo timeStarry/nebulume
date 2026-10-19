@@ -71,10 +71,14 @@ pub fn read_exif(path: &Path) -> BTreeMap<String, String> {
 }
 
 fn read_exif_from<R: Read + Seek>(input: R) -> BTreeMap<String, String> {
-    let mut metadata = BTreeMap::new();
     let Ok(exif) = exif::Reader::new().read_from_container(&mut BufReader::new(input)) else {
-        return metadata;
+        return BTreeMap::new();
     };
+    exif_metadata(&exif)
+}
+
+fn exif_metadata(exif: &exif::Exif) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
     for (tag, label) in [
         (Tag::Make, "Make"),
         (Tag::Model, "Camera"),
@@ -99,7 +103,7 @@ fn read_exif_from<R: Read + Seek>(input: R) -> BTreeMap<String, String> {
         (Tag::Software, "Software"),
     ] {
         if let Some(field) = exif.get_field(tag, In::PRIMARY) {
-            if let Some(value) = format_exif_field(field, &exif, 2048) {
+            if let Some(value) = format_exif_field(field, exif, 2048) {
                 metadata.insert(label.to_owned(), value);
             }
         }
@@ -111,7 +115,7 @@ fn read_exif_from<R: Read + Seek>(input: R) -> BTreeMap<String, String> {
             continue;
         }
         let name = format!("EXIF {}", field.tag);
-        if let Some(value) = format_exif_field(field, &exif, 512) {
+        if let Some(value) = format_exif_field(field, exif, 512) {
             metadata.entry(name).or_insert(value);
         }
     }
@@ -580,8 +584,9 @@ pub fn remote_preview<R: Read + Seek>(
     let (image, orientation) = crate::embedded_preview::read_from(&mut *input, length)?;
     // Decode first: an EXIF parser's optional failure must never swallow a broken
     // transport or cause a malformed range response to become a full download.
-    input.seek(SeekFrom::Start(0))?;
-    let mut metadata = read_exif_from(&mut *input);
+    let mut metadata = crate::remote_exif::read(input, length)?
+        .map(|exif| exif_metadata(&exif))
+        .unwrap_or_default();
     metadata.insert("Preview Source".into(), "remote_embedded_jpeg".into());
     metadata.insert("Decoder".into(), "相机内嵌预览".into());
     let width = image.width();
@@ -660,5 +665,215 @@ mod coordinate_tests {
         assert_eq!(uncropped["coordinate_mapping"]["full_width"], 70);
         assert_eq!(uncropped["coordinate_mapping"]["crop"]["width"], 1.0);
         assert_eq!(uncropped["width"], 32);
+    }
+}
+
+#[cfg(test)]
+mod remote_metadata_tests {
+    use super::*;
+    use std::io;
+
+    struct BudgetReader {
+        input: Cursor<Vec<u8>>,
+        bytes: usize,
+        exceeded: bool,
+        fail_at: Option<u64>,
+        reads: Vec<(u64, usize)>,
+    }
+
+    impl BudgetReader {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                input: Cursor::new(bytes),
+                bytes: 0,
+                exceeded: false,
+                fail_at: None,
+                reads: Vec::new(),
+            }
+        }
+    }
+
+    impl Read for BudgetReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let position = self.input.position();
+            if self.fail_at == Some(position) {
+                return Err(io::Error::other("synthetic remote transport failure"));
+            }
+            if self.bytes + buffer.len() > 64 * 1024 {
+                self.exceeded = true;
+                return Err(io::Error::other("synthetic remote read budget exceeded"));
+            }
+            let count = self.input.read(buffer)?;
+            self.bytes += count;
+            self.reads.push((position, count));
+            Ok(count)
+        }
+    }
+
+    impl Seek for BudgetReader {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.input.seek(position)
+        }
+    }
+
+    fn put16(bytes: &mut [u8], offset: usize, value: u16, little: bool) {
+        bytes[offset..offset + 2].copy_from_slice(&if little {
+            value.to_le_bytes()
+        } else {
+            value.to_be_bytes()
+        });
+    }
+
+    fn put32(bytes: &mut [u8], offset: usize, value: u32, little: bool) {
+        bytes[offset..offset + 4].copy_from_slice(&if little {
+            value.to_le_bytes()
+        } else {
+            value.to_be_bytes()
+        });
+    }
+
+    fn directory(bytes: &mut [u8], offset: usize, entries: &[(u16, u16, u32, u32)], little: bool) {
+        put16(bytes, offset, entries.len() as u16, little);
+        for (index, &(tag, kind, count, value)) in entries.iter().enumerate() {
+            let start = offset + 2 + index * 12;
+            put16(bytes, start, tag, little);
+            put16(bytes, start + 2, kind, little);
+            put32(bytes, start + 4, count, little);
+            if kind == 3 && count == 1 {
+                put16(bytes, start + 8, value as u16, little);
+            } else {
+                put32(bytes, start + 8, value, little);
+            }
+        }
+    }
+
+    fn padded_raw(little: bool) -> Vec<u8> {
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .encode_image(&RgbImage::from_pixel(12, 8, Rgb([200, 60, 20])))
+            .unwrap();
+        let mut bytes = vec![0; 30 * 1024 * 1024];
+        bytes[..2].copy_from_slice(if little { b"II" } else { b"MM" });
+        put16(&mut bytes, 2, 42, little);
+        put32(&mut bytes, 4, 8, little);
+        let exif_offset = 20 * 1024 * 1024;
+        let lens_offset = 24 * 1024 * 1024;
+        directory(
+            &mut bytes,
+            8,
+            &[
+                (0x010f, 2, 6, 256),
+                (0x0110, 2, 10, 272),
+                (0x0112, 3, 1, 6),
+                (0x0201, 4, 1, 512),
+                (0x0202, 4, 1, jpeg.len() as u32),
+                (0x8769, 4, 1, exif_offset as u32),
+                // The remote metadata reader must not follow GPS or MakerNotes.
+                (0x8825, 4, 1, 28 * 1024 * 1024),
+            ],
+            little,
+        );
+        directory(
+            &mut bytes,
+            exif_offset,
+            &[
+                (0x829a, 5, 1, 304),
+                (0x8827, 3, 1, 200),
+                (0x9003, 2, 20, 320),
+                (0x9011, 2, 7, 352),
+                (0x927c, 7, 2 * 1024 * 1024, 26 * 1024 * 1024),
+                (0x9291, 2, 4, if little { 0x00333231 } else { 0x31323300 }),
+                (0xa434, 2, 14, lens_offset as u32),
+                (0x9286, 7, 2 * 1024 * 1024, 26 * 1024 * 1024),
+            ],
+            little,
+        );
+        bytes[256..262].copy_from_slice(b"NIKON\0");
+        bytes[272..282].copy_from_slice(b"NIKON Z30\0");
+        put32(&mut bytes, 304, 1, little);
+        put32(&mut bytes, 308, 125, little);
+        bytes[320..340].copy_from_slice(b"2026:10:19 12:34:56\0");
+        bytes[352..359].copy_from_slice(b"+08:00\0");
+        bytes[lens_offset..lens_offset + 14].copy_from_slice(b"NIKKOR 16-50\0\0");
+        bytes[512..512 + jpeg.len()].copy_from_slice(&jpeg);
+        bytes
+    }
+
+    #[test]
+    fn remote_preview_reads_sparse_raw_metadata_without_reading_the_container() {
+        for little in [true, false] {
+            let bytes = padded_raw(little);
+            let length = bytes.len() as u64;
+            let mut reader = BudgetReader::new(bytes);
+            let value = remote_preview(&mut reader, length, None, 64).unwrap();
+            assert!(!reader.exceeded, "optional EXIF attempted a full RAW read");
+            assert!(reader.bytes < 8 * 1024, "reads: {}", reader.bytes);
+            assert!(reader
+                .reads
+                .iter()
+                .all(|(offset, _)| *offset < 26 * 1024 * 1024));
+            let metadata = &value["inspection"]["metadata"];
+            assert_eq!(metadata["Make"], "NIKON");
+            assert_eq!(metadata["Camera"], "NIKON Z30");
+            assert_eq!(metadata["Lens"], "NIKKOR 16-50");
+            assert_eq!(metadata["Exposure"], "1/125 s");
+            assert_eq!(metadata["ISO"], "200");
+            assert_eq!(metadata["Captured"], "2026:10:19 12:34:56");
+            assert_eq!(metadata["Capture Subsecond"], "123");
+            assert_eq!(metadata["Capture Time Zone"], "+08:00");
+            assert_eq!(value["coordinate_mapping"]["orientation"], 6);
+            assert_eq!(value["width"], 8);
+            assert_eq!(value["height"], 12);
+            assert_eq!(value["histogram"]["pixels"], 96);
+            assert_eq!(
+                value["histogram"]["red"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap())
+                    .sum::<u64>(),
+                96
+            );
+            assert!(metadata
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|name| !name.contains("MakerNote")
+                    && !name.contains("UserComment")
+                    && !name.contains("GPS")));
+        }
+    }
+
+    #[test]
+    fn remote_preview_preserves_transport_failure_from_optional_exif_reads() {
+        let bytes = padded_raw(true);
+        let length = bytes.len() as u64;
+        let mut reader = BudgetReader::new(bytes);
+        reader.fail_at = Some(24 * 1024 * 1024);
+        let error = remote_preview(&mut reader, length, None, 64).unwrap_err();
+        assert!(format!("{error:#}").contains("synthetic remote transport failure"));
+        assert!(!reader.exceeded);
+    }
+
+    #[test]
+    fn remote_preview_omits_oversized_or_malformed_optional_metadata() {
+        for malformed_directory in [false, true] {
+            let mut bytes = padded_raw(true);
+            if malformed_directory {
+                put16(&mut bytes, 20 * 1024 * 1024, 513, true);
+            } else {
+                // The lens value is validly located but too large for remote metadata.
+                put32(&mut bytes, 20 * 1024 * 1024 + 2 + 6 * 12 + 4, 5000, true);
+            }
+            let length = bytes.len() as u64;
+            let mut reader = BudgetReader::new(bytes);
+            let value = remote_preview(&mut reader, length, None, 64).unwrap();
+            let metadata = &value["inspection"]["metadata"];
+            assert_eq!(metadata["Camera"], "NIKON Z30");
+            assert!(metadata.get("Lens").is_none());
+            assert_eq!(value["histogram"]["pixels"], 96);
+            assert!(!reader.exceeded);
+            assert!(reader.bytes < 8 * 1024);
+        }
     }
 }

@@ -506,3 +506,96 @@ fn chunked_ranges_require_exact_body_length_and_unambiguous_framing() {
     });
     assert!(reader(&server, options()).read(&mut [0]).is_err());
 }
+
+#[test]
+fn chunked_ranges_can_fill_the_body_budget_exactly() {
+    for max_bytes in [4, 8] {
+        let server = Server::new(|request| {
+            let mut response = normal(request, "\"v1\"");
+            if request.method != "HEAD" {
+                response = response.header("Transfer-Encoding", "chunked");
+                response.headers.retain(|(key, _)| key != "Content-Length");
+                response.body = format!(
+                    "{:x}\r\n{}\r\n0\r\n\r\n",
+                    response.body.len(),
+                    String::from_utf8(response.body).unwrap()
+                )
+                .into_bytes();
+            }
+            response
+        });
+        let mut reader = reader(
+            &server,
+            RangeReadOptions {
+                max_bytes,
+                ..options()
+            },
+        );
+        let mut bytes = vec![0; max_bytes as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, DATA[..max_bytes as usize]);
+        assert_eq!(reader.stats().body_bytes, max_bytes);
+        assert_eq!(reader.stats().cached_bytes, max_bytes as usize);
+        assert_eq!(reader.stats().requests, 1 + max_bytes as u32 / 4);
+
+        // Budget exhaustion must not prevent reading already validated cache.
+        reader.rewind().unwrap();
+        reader.read_exact(&mut bytes).unwrap();
+        let calls = server.calls().len();
+        assert_eq!(error(&mut reader), RangeReadError::BudgetExceeded);
+        assert_eq!(server.calls().len(), calls);
+    }
+}
+
+#[test]
+fn chunked_overflow_at_the_body_budget_reads_only_one_sentinel_and_poisons_cache() {
+    for (max_bytes, overflow) in [(4, 1), (8, 1), (8, 18)] {
+        let server = Server::new(move |request| {
+            let mut response = normal(request, "\"v1\"");
+            if request.method != "HEAD" {
+                response = response.header("Transfer-Encoding", "chunked");
+                response.headers.retain(|(key, _)| key != "Content-Length");
+                if request.headers["range"] == format!("bytes={}-{}", max_bytes - 4, max_bytes - 1)
+                {
+                    response
+                        .body
+                        .extend_from_slice(&b"unexpected overflow"[..overflow]);
+                }
+                response.body = format!(
+                    "{:x}\r\n{}\r\n0\r\n\r\n",
+                    response.body.len(),
+                    String::from_utf8(response.body).unwrap()
+                )
+                .into_bytes();
+            }
+            response
+        });
+        let mut reader = reader(
+            &server,
+            RangeReadOptions {
+                max_bytes,
+                ..options()
+            },
+        );
+        let failure = reader
+            .read_exact(&mut vec![0; max_bytes as usize])
+            .unwrap_err();
+        assert_eq!(
+            RangeReadError::from_io(&failure),
+            Some(&RangeReadError::InvalidResponse(
+                "Range response body exceeds its declared range"
+            ))
+        );
+        assert_eq!(reader.stats().body_bytes, max_bytes + 1);
+        assert_eq!(reader.stats().cached_bytes, 0);
+        assert_eq!(reader.stats().requests, 1 + max_bytes as u32 / 4);
+        let calls = server.calls().len();
+        assert!(reader.rewind().is_err());
+        assert!(matches!(
+            error(&mut reader),
+            RangeReadError::InvalidResponse(_)
+        ));
+        assert_eq!(server.calls().len(), calls);
+    }
+    assert!(!RangeReadError::BudgetExceeded.is_fallback_allowed());
+}

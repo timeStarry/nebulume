@@ -18,6 +18,7 @@
 - `asset.offline.set {id,pinned:boolean}` → `{asset_id,pinned,stats}`；固定前先取得完整原图，固定当前快照并计入总限额。远端重扫发现更新后不自动替换该快照；`asset.get` 附 `cache_update_available=true`，由用户执行 refresh 更新。解除固定允许作用于已移除库留下的孤立固定项。
 - `file.open {path}` → `Asset`；只索引指定文件，独立查看不隐式扫描同目录或新增可见图片库。
 - `asset.preview {id,max_size?,uncropped?}` → `{data_url,width,height,source,coordinate_mapping?,asset?}`（默认应用配方；编辑裁剪时以 uncropped=true 请求方向校正后的全图）。桌面响应的 `coordinate_mapping={orientation,full_width,full_height,crop}` 记录实际渲染采用的EXIF方向、裁剪前方向校正后的帧尺寸及实际像素取整后的归一化裁剪；用于可靠的画面叠加，不修改图像。
+- 远端预览因获取策略需要手动下载，或内嵌预览实际超出分段读取预算时，返回 `E_DOWNLOAD_REQUIRED`；前端可调用 `asset.fetch_original` 后重新预览。预算耗尽不自动升级为完整下载，即使当前为自动获取策略。
 - `asset.focus {id}` → `FocusInfo`；独立读取相机对焦元数据；远端优先有界分段读取，缺少可靠Range能力时返回不可用，不为自动能力检测下载整份原图。与RAW传感器解码是否成功无关。查看器在当前 `asset.get` 成功后自动检测可用性，不预取其他照片；显示开关只控制覆盖层。
 - `asset.histogram {id}` → `{red:number[],green:number[],blue:number[],luminance:number[],pixels:number,source:string,asset?}` (256 bins, display-rendered values)
 - `asset.crop {id,x,y,width,height}` → `Asset` (normalized 0..1, oriented coordinates)
@@ -101,7 +102,9 @@ RAW 传感器解码失败时，查看与直方图可回退到标准 TIFF IFD / I
 
 预览热路径使用SQLite容量账和按id查找，不遍历整个缓存目录；新写入仍检查预约与磁盘可用空间。启动、stats、显式维护、改容量和清理会对账磁盘的外部增删/未知内容。旧缓存全库接管只执行一次；之后可对当前访问的单资产恢复旧进程留下且数据库可证明归属的文件。
 
-远端经典TIFF/RAW的内嵌JPEG读取采用强ETag或S3 versionId锁定；不以弱ETag、mtime、大小代替可靠版本。严格校验206、Content-Range、正文长度与版本，每次reader最多16MiB/128请求，单块256KiB、8块内存LRU。服务器忽略Range、无版本或无标准内嵌图时按策略回退完整GET；版本改变、协议错误或预算耗尽直接报错，不拼接混用。`source=remote_embedded_jpeg` 表示主动使用相机预览，未断言RAW传感器解码失败；导出仍须完整原始解码。
+远端经典TIFF/RAW的内嵌JPEG读取采用强ETag或S3 versionId锁定；不以弱ETag、mtime、大小代替可靠版本。严格校验206、Content-Range、正文长度与版本，每次reader最多16MiB/128请求，单块256KiB、8块内存LRU。无Content-Length的响应在有效正文结束后最多额外读取1字节以确认EOF；超长正文返回协议错误，不进入缓存。服务器忽略Range、无版本或无标准内嵌图时按策略回退完整GET；版本改变、协议错误及传输失败直接报错，不拼接混用。预览预算耗尽返回 `E_DOWNLOAD_REQUIRED`，由用户明确下载原图后重试；对焦检测和拍摄索引不会因此下载原图。`source=remote_embedded_jpeg` 表示主动使用相机预览，未断言RAW传感器解码失败；导出仍须完整原始解码。
+
+远端预览的EXIF不使用会顺序读取整份TIFF的容器解析器，而是只定点读取经典TIFF的IFD0及ExifIFD常用公开字段。最多2个目录、每目录512条、256个保留字段、单字段4KiB、累计128KiB逻辑元数据读取；底层网络仍按上述Range分块计费。MakerNote、UserComment、GPS、缩略图及像素数据指针不在此路径中展开；不支持、越界或超限的可选字段保持缺失，真实I/O与版本错误仍使本次预览失败。本地原图的EXIF读取不受此选择性路径影响。
 
 旧remote-cache仅登记SQLite明确引用的文件；无法确认归属的文件计入unmanaged，不自动删除。数据库、凭据目录不迁移。跨进程按库共享/独占租约保护完整资产操作与重绑；远端扫描在网络期间释放库/目录锁，发布每页前重新核对绑定，同库扫描另行串行，避免交错标记缺失。存储check/browse/fetch捕获连接快照后在注册表锁外执行网络。短时目录结构锁与缓存事务预约、租约共同保护扫描、导出、清理及迁移。
 

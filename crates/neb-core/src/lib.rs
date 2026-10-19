@@ -10,6 +10,7 @@ mod embedded_preview;
 mod focus_points;
 mod imaging;
 mod model;
+mod remote_exif;
 
 pub use cache::{CacheLease, CacheManager, Reservation};
 pub use catalog::Core;

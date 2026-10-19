@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "neb-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "neb-service",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "neb-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2715,7 +2715,7 @@ dependencies = [
 
 [[package]]
 name = "neb-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2737,7 +2737,7 @@ dependencies = [
 
 [[package]]
 name = "neb-ingest"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "neb-service"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2767,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "neb-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cap-fs-ext",

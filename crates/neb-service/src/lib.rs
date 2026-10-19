@@ -104,6 +104,7 @@ impl From<anyhow::Error> for CommandError {
             "E_INVALID",
             "E_OFFLINE",
             "E_LIMIT",
+            "E_DOWNLOAD_REQUIRED",
             "E_UNSUPPORTED_CODEC",
             "E_NOT_FOUND",
             "E_CONFLICT",

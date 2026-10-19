@@ -323,14 +323,32 @@ impl RemoteRangeReader {
         }
         let mut bytes = Vec::with_capacity(expected as usize);
         loop {
-            if bytes.len() as u64 == expected && declared == Some(expected) {
+            if bytes.len() as u64 == expected {
+                if declared.is_none() {
+                    // A response without Content-Length still needs an EOF check,
+                    // even when its valid payload has exactly filled the budget.
+                    // Read at most one overflow sentinel, never another payload
+                    // chunk; an extra byte poisons the reader and is not cached.
+                    let mut sentinel = [0];
+                    let count = response.read(&mut sentinel).map_err(|_| {
+                        RangeReadError::InvalidResponse(
+                            "Range response body was truncated or unreadable",
+                        )
+                    })?;
+                    self.body_bytes += count as u64;
+                    if count != 0 {
+                        return Err(RangeReadError::InvalidResponse(
+                            "Range response body exceeds its declared range",
+                        ));
+                    }
+                }
                 break;
             }
             let remaining = self.options.max_bytes.saturating_sub(self.body_bytes);
             if remaining == 0 {
                 return Err(RangeReadError::BudgetExceeded);
             }
-            let wanted = (expected + 1 - bytes.len() as u64).min(remaining).min(8192) as usize;
+            let wanted = (expected - bytes.len() as u64).min(remaining).min(8192) as usize;
             let mut block = [0u8; 8192];
             let count = response.read(&mut block[..wanted]).map_err(|_| {
                 RangeReadError::InvalidResponse("Range response body was truncated or unreadable")
@@ -340,11 +358,6 @@ impl RemoteRangeReader {
             }
             self.body_bytes += count as u64;
             bytes.extend_from_slice(&block[..count]);
-            if bytes.len() as u64 > expected {
-                return Err(RangeReadError::InvalidResponse(
-                    "Range response body exceeds its declared range",
-                ));
-            }
         }
         if bytes.len() as u64 != expected {
             return Err(RangeReadError::InvalidResponse(
