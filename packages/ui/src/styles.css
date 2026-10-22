@@ -2134,3 +2134,59 @@ kbd {
     transition-duration: 0ms !important;
   }
 }
+
+/* Location availability: one presentation for cards and the open library. */
+.availability-badge {
+  margin-left: auto;
+  padding: 0 var(--nl-space-2);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+  line-height: 20px;
+}
+.availability-badge.online {
+  color: var(--nl-success);
+  border-color: currentColor;
+}
+.availability-badge.offline,
+.availability-badge.error {
+  color: var(--nl-danger);
+  border-color: currentColor;
+}
+.availability-badge.auth_required,
+.availability-badge.trust_required {
+  color: var(--nl-warning);
+  border-color: currentColor;
+}
+.library-card-top > .availability-badge + svg {
+  margin-left: var(--nl-space-2);
+}
+.library-card-container.unavailable .library-card {
+  opacity: 0.6;
+}
+.library-card-container.unavailable .library-card:hover,
+.library-card-container.unavailable .library-card:focus-visible {
+  opacity: 0.85;
+}
+.availability-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nl-space-2) var(--nl-space-3);
+  margin: 0 0 var(--nl-space-3);
+  padding: var(--nl-space-2) var(--nl-space-3);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+  color: var(--nl-text);
+  background: var(--nl-warning-bg);
+  font-size: var(--nl-text-sm);
+}
+.availability-banner.offline,
+.availability-banner.error {
+  background: var(--nl-danger-bg);
+}
+.availability-banner > span {
+  flex: 1 1 240px;
+  color: var(--nl-text-muted);
+}

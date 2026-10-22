@@ -873,3 +873,29 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
     .toEqual(['Mountain.png — Nebulume', 'Second.png — Nebulume']);
   await expect(page).toHaveTitle('Second.png — Nebulume');
 });
+
+test('an offline NAS library is greyed, explains why, keeps marks usable and blocks scanning', async ({
+  page,
+}) => {
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list')
+      return [local, { ...remote, connected: false, availability: 'offline' }];
+    return undefined;
+  });
+  const card = page.getByRole('button', { name: /打开图片库 NAS 旅行/ });
+  await expect(card).toHaveAccessibleName('打开图片库 NAS 旅行，不可达');
+  await expect(page.locator('.library-card-container.unavailable')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /打开图片库 本地摄影/ })).toHaveAccessibleName(
+    /未连接|在线/,
+  );
+  await card.click();
+  const banner = page.locator('.availability-banner');
+  await expect(banner).toContainText('不可达');
+  await expect(banner).toContainText('评级与旗标仍可修改');
+  await expect(page.getByRole('button', { name: '扫描更新' })).toBeDisabled();
+  // Browsing the existing index still works while the location is offline.
+  await expect(page.getByRole('button', { name: /Mountain\.png/ })).toBeVisible();
+  expect(calls.some((call) => call.command === 'library.scan')).toBe(false);
+  await banner.getByRole('button', { name: '检查连接' }).click();
+  await expect(page.getByRole('heading', { name: '存储源' })).toBeVisible();
+});

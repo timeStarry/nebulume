@@ -35,7 +35,13 @@ import {
   type ScanResult,
   type StorageConfig,
 } from './model';
-import { libraryLocation, sourceKind, variantViewerIds, type WorkspaceSection } from './workspace';
+import {
+  availabilityPresentation,
+  libraryLocation,
+  sourceKind,
+  variantViewerIds,
+  type WorkspaceSection,
+} from './workspace';
 import {
   changedAssetFields,
   mergePendingUpdate,
@@ -323,7 +329,9 @@ export default function ManagementApp() {
   }
   async function scan(library: Library) {
     await action(`正在扫描 ${library.name}…`, async () => {
-      const result = await execute<ScanResult>('library.scan', { library_id: library.id });
+      const result = await execute<ScanResult>('library.scan', {
+        library_id: library.id,
+      }).finally(() => void refreshLibraries());
       if (library.id === libraryId()) await loadAssets();
       await refreshLibraries();
       setNotice(
@@ -751,15 +759,23 @@ export default function ManagementApp() {
                     }
                   >
                     {(library) => (
-                      <article class="library-card-container">
+                      <article
+                        class={`library-card-container ${availabilityPresentation(library).usable ? '' : 'unavailable'}`}
+                      >
                         <button
                           class="library-card"
                           onClick={() => enterLibrary(library)}
-                          aria-label={`打开图片库 ${library.name}`}
+                          aria-label={`打开图片库 ${library.name}，${availabilityPresentation(library).label}`}
                         >
                           <div class="library-card-top">
                             <Icon name="folder" size={26} />
                             <span>{sourceKind(library.source_kind)}</span>
+                            <span
+                              class={`availability-badge ${library.availability || 'unchecked'}`}
+                              title={availabilityPresentation(library).detail}
+                            >
+                              {availabilityPresentation(library).label}
+                            </span>
                             <Icon name="right" size={17} />
                           </div>
                           <h2>{library.name}</h2>
@@ -842,8 +858,18 @@ export default function ManagementApp() {
                     </button>
                     <button
                       class="button"
+                      disabled={
+                        !!busy() ||
+                        (desktop &&
+                          !availabilityPresentation(library()).usable &&
+                          library().availability !== 'error')
+                      }
+                      title={
+                        desktop && !availabilityPresentation(library()).usable
+                          ? `无法扫描：${availabilityPresentation(library()).detail}`
+                          : undefined
+                      }
                       onClick={() => (desktop ? scan(library()) : fileInput.click())}
-                      disabled={!!busy()}
                     >
                       <Icon name={desktop ? 'refresh' : 'plus'} size={15} />
                       {desktop ? '扫描更新' : '载入图片'}
@@ -870,6 +896,31 @@ export default function ManagementApp() {
                     </button>
                   </div>
                 </header>
+                <Show when={!availabilityPresentation(library()).usable}>
+                  <div
+                    class={`availability-banner ${library().availability || 'unchecked'}`}
+                    role="status"
+                  >
+                    <strong>{availabilityPresentation(library()).label}</strong>
+                    <span>{availabilityPresentation(library()).detail}</span>
+                    <Show when={availabilityPresentation(library()).action}>
+                      {(fix) => (
+                        <button class="button small" onClick={() => navigate(fix().section)}>
+                          {fix().label}
+                        </button>
+                      )}
+                    </Show>
+                    <Show when={desktop}>
+                      <button
+                        class="button small"
+                        disabled={!!busy()}
+                        onClick={() => void refreshLibraries()}
+                      >
+                        重试
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
                 <div class="collection-controls">
                   <div class="search-field">
                     <Icon name="search" size={16} />

@@ -9,6 +9,7 @@ export interface Library {
   source_name?: string;
   source_endpoint?: string;
   connected?: boolean;
+  availability?: Availability;
   hidden?: boolean;
   pair_raw_jpeg?: boolean;
 }
@@ -139,9 +140,17 @@ export interface Volume {
   removable: boolean;
   available_bytes?: number | null;
 }
+export type Availability =
+  | 'unchecked'
+  | 'online'
+  | 'offline'
+  | 'auth_required'
+  | 'trust_required'
+  | 'error';
 export interface StorageCheck {
   id: string;
   connected: boolean;
+  availability?: Availability;
   credential_status: StorageConfig['credential_status'];
   checked_at: string;
   error: string | null;
