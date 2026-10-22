@@ -72,6 +72,9 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
           case 'asset.list':
             result = { items: [{ ...photo, library_id: call.params.library_id }], total: 1 };
             break;
+          case 'import.batches':
+            result = [];
+            break;
           case 'library.capture_index.status':
             result = {
               library_id: call.params.library_id,
@@ -113,6 +116,13 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
             break;
           case '$native/viewer_context':
             result = { asset_id: photo.id, asset_ids: [photo.id] };
+            break;
+          case 'card.list':
+          case 'preset.list':
+            result = [];
+            break;
+          case 'card.identify':
+            result = { status: 'unknown', candidates: [] };
             break;
           case '$native/list_volumes':
             result = [
@@ -898,4 +908,136 @@ test('an offline NAS library is greyed, explains why, keeps marks usable and blo
   expect(calls.some((call) => call.command === 'library.scan')).toBe(false);
   await banner.getByRole('button', { name: '检查连接' }).click();
   await expect(page.getByRole('heading', { name: '存储源' })).toBeVisible();
+});
+
+test('a registered card applies its default preset, and import leads straight into culling the batch', async ({
+  page,
+}) => {
+  const card = {
+    id: '6f1c2a3b-0000-4000-8000-000000000001',
+    name: 'Z8 主卡',
+    location_id: 'loc-card',
+    created_at: '2026-10-01',
+    last_import_at: null,
+    default_preset_id: null as string | null,
+  };
+  const preset = {
+    id: 'preset-nas',
+    name: 'NAS 归档',
+    library_id: local.id,
+    rules: {
+      date_basis: 'capture',
+      date_layout: 'Y/Y-M-D',
+      type_split: 'by_kind',
+      unknown_date: 'folder',
+      subfolder: 'Z8',
+    },
+    deduplicate: true,
+    created_at: '2026-10-01',
+  };
+  const batch = {
+    id: 'batch-1',
+    library_id: local.id,
+    card_id: card.id,
+    source: 'E:\\',
+    started_at: '2026-10-23T08:00:00Z',
+    status: 'completed',
+    copied: 1,
+    duplicates: 0,
+    failed: 0,
+    asset_count: 1,
+  };
+  let registered = false;
+  const calls = await fixture(page, (call) => {
+    switch (call.command) {
+      case 'card.list':
+        return registered ? [card] : [];
+      case 'preset.list':
+        return [preset];
+      case 'card.identify':
+        return registered ? { status: 'known', card } : { status: 'unknown', candidates: [] };
+      case 'card.register':
+        registered = true;
+        return card;
+      case 'card.update':
+        card.default_preset_id = call.params.default_preset_id as string;
+        return card;
+      case 'import.plan':
+        return {
+          id: 'plan1',
+          source: call.params.source,
+          destination: call.params.destination,
+          duplicate_count: 0,
+          total_bytes: 10,
+          warnings: [],
+          items: [
+            {
+              source: 'E:\\a.NEF',
+              relative_path: 'Z8/2026/2026-10-22/RAW/a.NEF',
+              size: 10,
+              status: 'pending',
+              date_source: 'exif',
+            },
+          ],
+        };
+      case 'import.execute':
+        return {
+          id: 'batch-1',
+          plan_id: 'plan1',
+          source: 'E:\\',
+          destination: local.root,
+          status: 'completed',
+          copied: 1,
+          duplicates: 0,
+          failed: 0,
+          total: 1,
+          originals_retained: true,
+          started_at: '2026-10-23T08:00:00Z',
+          library_id: local.id,
+          indexing: { indexed: 1, skipped: 0, errors: [] },
+          items: [],
+          batch,
+        };
+      case 'import.history':
+        return [];
+      case 'import.batches':
+        return [batch];
+    }
+    return undefined;
+  });
+  await nav(page, '存储卡').click();
+  await page.getByRole('button', { name: /CAMERA CARD/ }).click();
+  await expect(page.getByText('未登记的存储卡')).toBeVisible();
+  await page.getByLabel('卡名称').fill('Z8 主卡');
+  await page.getByRole('button', { name: '登记这张卡' }).click();
+  await expect(page.locator('.card-identity')).toContainText('尚未从这张卡导入');
+  expect(calls.find((call) => call.command === 'card.register')?.params).toMatchObject({
+    mount_path: 'E:\\',
+    name: 'Z8 主卡',
+  });
+  await page.getByLabel('导入方案').selectOption(preset.id);
+  await expect(page.locator('.organize-example')).toContainText(
+    'Z8/2026/2026-10-22/RAW/DSC_0001.NEF',
+  );
+  await page.getByRole('button', { name: '设为这张卡的默认方案' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'card.update')?.params)
+    .toEqual({ id: card.id, default_preset_id: preset.id });
+  await page.getByRole('button', { name: '生成导入计划' }).click();
+  expect(calls.find((call) => call.command === 'import.plan')?.params.rules).toMatchObject(
+    preset.rules,
+  );
+  await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
+  await page.getByRole('button', { name: '开始导入' }).click();
+  expect(calls.find((call) => call.command === 'import.execute')?.params).toMatchObject({
+    card_id: card.id,
+  });
+  await page.getByRole('button', { name: '开始选图（1 张）' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === '$native/open_viewer')?.params)
+    .toMatchObject({
+      mode: 'cull',
+      queue: { library_id: local.id, options: { import_batch_id: 'batch-1' } },
+    });
+  await expect(page.getByLabel('导入批次')).toHaveValue('batch-1');
 });

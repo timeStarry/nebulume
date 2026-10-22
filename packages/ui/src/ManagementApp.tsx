@@ -31,6 +31,7 @@ import {
   type AssetListOptions,
   type AssetListResult,
   type FlagFilter,
+  type ImportBatch,
   type Library,
   type ScanResult,
   type StorageConfig,
@@ -74,6 +75,8 @@ export default function ManagementApp() {
   const [rating, setRating] = createSignal(0);
   const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
   const [flag, setFlag] = createSignal<FlagFilter>('any');
+  const [batchId, setBatchId] = createSignal('');
+  const [batches, setBatches] = createSignal<ImportBatch[]>([]);
   const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('captured_at');
   const [direction, setDirection] =
     createSignal<NonNullable<AssetListOptions['sort_direction']>>('desc');
@@ -126,7 +129,8 @@ export default function ManagementApp() {
     libraries().find((library) => library.id === libraryId()),
   );
   const selected = createMemo(() => assets().find((asset) => asset.id === selectedId()));
-  const filtered = () => !!(query() || rating() || format() !== 'all' || flag() !== 'any');
+  const filtered = () =>
+    !!(query() || rating() || format() !== 'all' || flag() !== 'any' || batchId());
   const [detail, { mutate: mutateDetail, refetch: refetchDetail }] = createResource(
     () => info() && section() === 'libraries' && selected()?.id,
     async (id): Promise<{ asset: Asset | null; error: string }> => {
@@ -181,6 +185,7 @@ export default function ManagementApp() {
       rating: rating() || undefined,
       format: format(),
       flag: flag() === 'any' ? undefined : flag(),
+      import_batch_id: batchId() || undefined,
       sort_by: sort(),
       sort_direction: direction(),
     };
@@ -244,6 +249,7 @@ export default function ManagementApp() {
     rating();
     format();
     flag();
+    batchId();
     sort();
     direction();
     const initialized = ready();
@@ -281,8 +287,14 @@ export default function ManagementApp() {
     setRating(0);
     setFormat('all');
     setFlag('any');
+    setBatchId('');
+    setBatches([]);
     setInfo(false);
     setLibraryId(library.id);
+    if (desktop)
+      void execute<ImportBatch[]>('import.batches', { library_id: library.id })
+        .then((items) => libraryId() === library.id && setBatches(items))
+        .catch(() => undefined);
     setSection('libraries');
     setError('');
     setNotice('');
@@ -417,6 +429,23 @@ export default function ManagementApp() {
         await openViewerWindow(asset.id, ids);
       });
     else setOverlay({ id: asset.id, ids });
+  }
+  /** Import → selection: filter the library to the new batch, then open culling. */
+  async function cullBatch(library: Library, batch: ImportBatch) {
+    enterLibrary(library);
+    setBatches((items) => [batch, ...items.filter((item) => item.id !== batch.id)]);
+    setBatchId(batch.id);
+    const options = { ...listOptions(), import_batch_id: batch.id, library_id: library.id };
+    try {
+      const first = await execute<AssetListResult>('asset.list', { ...options, limit: 1 });
+      const start = first.items[0];
+      if (!start) return;
+      const queue = { library_id: library.id, options };
+      if (desktop) await openViewerWindow(start.id, [start.id], { mode: 'cull', queue });
+      else setOverlay({ id: start.id, ids: [start.id], mode: 'cull', queue });
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
   async function startCulling() {
     const start = selected() || assets()[0];
@@ -957,6 +986,27 @@ export default function ManagementApp() {
                       )}
                     </For>
                   </select>
+                  <Show when={batches().length}>
+                    <select
+                      value={batchId()}
+                      onChange={(event) => setBatchId(event.currentTarget.value)}
+                      aria-label="导入批次"
+                    >
+                      <option value="" selected={!batchId()}>
+                        所有导入
+                      </option>
+                      <For each={batches()}>
+                        {(batch) => (
+                          // Options are rebuilt when the batch list reloads; mark selection
+                          // per option so the chosen batch survives that refresh.
+                          <option value={batch.id} selected={batch.id === batchId()}>
+                            {batch.started_at.slice(0, 16).replace('T', ' ')} · {batch.asset_count}{' '}
+                            张
+                          </option>
+                        )}
+                      </For>
+                    </select>
+                  </Show>
                   <select
                     value={flag()}
                     onChange={(event) => setFlag(event.currentTarget.value as FlagFilter)}
@@ -1067,7 +1117,11 @@ export default function ManagementApp() {
                               class="button"
                               onClick={() =>
                                 filtered()
-                                  ? (setQuery(''), setRating(0), setFormat('all'), setFlag('any'))
+                                  ? (setQuery(''),
+                                    setRating(0),
+                                    setFormat('all'),
+                                    setFlag('any'),
+                                    setBatchId(''))
                                   : desktop
                                     ? scan(library())
                                     : fileInput.click()
@@ -1202,6 +1256,7 @@ export default function ManagementApp() {
             libraries={libraries()}
             onCreateLibrary={() => newLibrary()}
             onOpenLibrary={enterLibrary}
+            onCull={(library, batch) => void cullBatch(library, batch)}
             onImported={() => {
               void refreshLibraries();
               if (libraryId()) void loadAssets();

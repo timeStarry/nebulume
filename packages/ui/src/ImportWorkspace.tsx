@@ -3,7 +3,11 @@ import { chooseDirectory, desktop, execute, listVolumes } from './api';
 import {
   bytes,
   errorMessage,
+  type Card,
+  type CardIdentification,
+  type ImportBatch,
   type ImportPlan,
+  type ImportPreset,
   type ImportResult,
   type Library,
   type OrganizeRules,
@@ -43,6 +47,7 @@ export default function ImportWorkspace(props: {
   onCreateLibrary: () => void;
   onImported: (library: Library, result: ImportResult) => void;
   onOpenLibrary: (library: Library) => void;
+  onCull?: (library: Library, batch: ImportBatch) => void;
 }) {
   const [volumes, setVolumes] = createSignal<Volume[]>([]);
   const [showAll, setShowAll] = createSignal(false);
@@ -56,6 +61,116 @@ export default function ImportWorkspace(props: {
     writeRules(next);
   };
   const [deduplicate, setDeduplicate] = createSignal(true);
+  const [cards, setCards] = createSignal<Card[]>([]);
+  const [presets, setPresets] = createSignal<ImportPreset[]>([]);
+  const [presetId, setPresetId] = createSignal('');
+  const [presetName, setPresetName] = createSignal('');
+  const [identified, setIdentified] = createSignal<CardIdentification>();
+  const [cardName, setCardName] = createSignal('');
+  const [bindId, setBindId] = createSignal('');
+  const knownCard = () => {
+    const value = identified();
+    return value?.status === 'known' ? value.card : undefined;
+  };
+  function applyPreset(id: string) {
+    setPresetId(id);
+    const preset = presets().find((item) => item.id === id);
+    if (!preset) return;
+    setRules({ ...defaultOrganizeRules(), ...preset.rules });
+    setDeduplicate(preset.deduplicate);
+    if (targets().some((library) => library.id === preset.library_id))
+      setTargetId(preset.library_id);
+  }
+  async function refreshCards() {
+    if (!desktop) return;
+    try {
+      const [cardList, presetList] = await Promise.all([
+        execute<Card[]>('card.list'),
+        execute<ImportPreset[]>('preset.list'),
+      ]);
+      setCards(cardList);
+      setPresets(presetList);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function identify(volume: Volume) {
+    setSource(volume.path);
+    setIdentified(undefined);
+    setBindId('');
+    if (!desktop || !volume.removable) return;
+    try {
+      const value = await execute<CardIdentification>('card.identify', {
+        mount_path: volume.path,
+        volume_label: volume.name || null,
+      });
+      setIdentified(value);
+      if (value.status === 'known') {
+        if (value.card.default_preset_id) applyPreset(value.card.default_preset_id);
+      } else {
+        setCardName(volume.name || '存储卡');
+        setBindId(value.candidates[0]?.id || '');
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function registerCard(bind: boolean) {
+    const volume = volumes().find((item) => item.path === source());
+    if (!volume) return;
+    setBusy(bind ? '正在绑定存储卡…' : '正在登记存储卡…');
+    setError('');
+    try {
+      const card = await execute<Card>(bind ? 'card.bind' : 'card.register', {
+        mount_path: volume.path,
+        volume_label: volume.name || null,
+        ...(bind ? { card_id: bindId() } : { name: cardName().trim() }),
+      });
+      setIdentified({ status: 'known', card });
+      if (card.default_preset_id) applyPreset(card.default_preset_id);
+      await refreshCards();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy('');
+    }
+  }
+  async function savePreset() {
+    const name = presetName().trim();
+    if (!name || !targetId()) return;
+    setBusy('正在保存导入方案…');
+    try {
+      const existing = presets().find((item) => item.name === name);
+      const saved = await execute<ImportPreset>('preset.save', {
+        id: existing?.id,
+        name,
+        library_id: targetId(),
+        rules: rules(),
+        deduplicate: deduplicate(),
+      });
+      await refreshCards();
+      setPresetId(saved.id);
+      setPresetName('');
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy('');
+    }
+  }
+  async function setCardDefault() {
+    const card = knownCard();
+    if (!card) return;
+    try {
+      const updated = await execute<Card>('card.update', {
+        id: card.id,
+        default_preset_id: presetId() || null,
+      });
+      setIdentified({ status: 'known', card: updated });
+      await refreshCards();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
   const [plan, setPlan] = createSignal<ImportPlan>();
   const [plannedTarget, setPlannedTarget] = createSignal<Library>();
   const [reviewed, setReviewed] = createSignal(false);
@@ -79,6 +194,7 @@ export default function ImportWorkspace(props: {
           initialized = true;
           void refreshVolumes();
           void refreshHistory();
+          void refreshCards();
         }
       },
     ),
@@ -140,7 +256,9 @@ export default function ImportWorkspace(props: {
       const completed = await execute<ImportResult>('import.execute', {
         plan_id: plan()!.id,
         library_id: plannedTarget()!.id,
+        ...(knownCard() ? { card_id: knownCard()!.id } : {}),
       });
+      if (completed.batch_error) setError(`导入批次未记录：${completed.batch_error}`);
       setResult(completed);
       if (completed.status === 'completed' || completed.status === 'partial') {
         setBusy('正在更新目标图片库索引…');
@@ -269,7 +387,7 @@ export default function ImportWorkspace(props: {
                       type="button"
                       class={`volume-item ${source() === volume.path ? 'selected' : ''}`}
                       aria-pressed={source() === volume.path}
-                      onClick={() => setSource(volume.path)}
+                      onClick={() => void identify(volume)}
                     >
                       <Icon name="card" size={20} />
                       <div>
@@ -294,7 +412,10 @@ export default function ImportWorkspace(props: {
                 <div class="path-field">
                   <input
                     value={source()}
-                    onInput={(e) => setSource(e.currentTarget.value)}
+                    onInput={(e) => {
+                      setSource(e.currentTarget.value);
+                      setIdentified(undefined);
+                    }}
                     placeholder="SD 卡 / DCIM / 文件夹"
                     required
                     disabled={!!busy()}
@@ -335,6 +456,121 @@ export default function ImportWorkspace(props: {
                   建立本地图片库
                 </button>
               </Show>
+              <Show when={identified()}>
+                {(value) => (
+                  <div class="card-identity" role="status">
+                    <Show
+                      when={knownCard()}
+                      fallback={
+                        <>
+                          <p>
+                            <strong>未登记的存储卡</strong>
+                            登记后会在卡根目录写入一个很小的识别文件
+                            .nebulume/volume.json，用来记住名称和默认导入方案。照片不会被改动。
+                          </p>
+                          <div class="form-row">
+                            <label>
+                              卡名称
+                              <input
+                                value={cardName()}
+                                onInput={(e) => setCardName(e.currentTarget.value)}
+                                disabled={!!busy()}
+                              />
+                            </label>
+                            <button
+                              class="button"
+                              type="button"
+                              disabled={!!busy() || !cardName().trim()}
+                              onClick={() => void registerCard(false)}
+                            >
+                              登记这张卡
+                            </button>
+                          </div>
+                          <Show when={cards().length}>
+                            <div class="form-row">
+                              <label>
+                                {value().status !== 'known' &&
+                                (value() as { candidates: Card[] }).candidates.length
+                                  ? '可能是已登记的卡（格式化后会丢失识别文件）'
+                                  : '或绑定到已有记录'}
+                                <select
+                                  value={bindId()}
+                                  onChange={(e) => setBindId(e.currentTarget.value)}
+                                  disabled={!!busy()}
+                                >
+                                  <option value="">选择已登记的卡</option>
+                                  <For each={cards()}>
+                                    {(card) => (
+                                      <option value={card.id}>
+                                        {card.name}
+                                        {(value() as { candidates?: Card[] }).candidates?.some(
+                                          (item) => item.id === card.id,
+                                        )
+                                          ? '（可能匹配）'
+                                          : ''}
+                                      </option>
+                                    )}
+                                  </For>
+                                </select>
+                              </label>
+                              <button
+                                class="button"
+                                type="button"
+                                disabled={!!busy() || !bindId()}
+                                onClick={() => void registerCard(true)}
+                              >
+                                绑定到此记录
+                              </button>
+                            </div>
+                          </Show>
+                          <p class="field-note">也可以不登记，直接按本次设置导入。</p>
+                        </>
+                      }
+                    >
+                      {(card) => (
+                        <p>
+                          <strong>{card().name}</strong>
+                          {card().last_import_at
+                            ? `上次导入 ${displayDate(card().last_import_at!)}`
+                            : '尚未从这张卡导入'}
+                          <Show when={card().default_preset_id}>
+                            {' · 已应用默认方案 '}
+                            {presets().find((item) => item.id === card().default_preset_id)?.name ||
+                              ''}
+                          </Show>
+                        </p>
+                      )}
+                    </Show>
+                  </div>
+                )}
+              </Show>
+              <div class="form-row preset-row">
+                <label>
+                  导入方案
+                  <select
+                    value={presetId()}
+                    onChange={(e) =>
+                      e.currentTarget.value ? applyPreset(e.currentTarget.value) : setPresetId('')
+                    }
+                    disabled={!!busy()}
+                  >
+                    <option value="">不使用方案（手动设置）</option>
+                    <For each={presets()}>
+                      {(preset) => <option value={preset.id}>{preset.name}</option>}
+                    </For>
+                  </select>
+                </label>
+                <Show when={knownCard()}>
+                  <button
+                    class="button"
+                    type="button"
+                    disabled={!!busy() || knownCard()!.default_preset_id === (presetId() || null)}
+                    onClick={() => void setCardDefault()}
+                  >
+                    {presetId() ? '设为这张卡的默认方案' : '清除这张卡的默认方案'}
+                  </button>
+                </Show>
+              </div>
               <fieldset class="organize-rules" disabled={!!busy()}>
                 <legend>目录整理</legend>
                 <div class="form-row">
@@ -421,6 +657,30 @@ export default function ImportWorkspace(props: {
                   <Show when={rules().date_basis === 'import'}>，导入日在生成计划时确定</Show>
                 </p>
               </fieldset>
+              <div class="form-row preset-save">
+                <label>
+                  保存当前设置为方案
+                  <input
+                    value={presetName()}
+                    onInput={(e) => setPresetName(e.currentTarget.value)}
+                    placeholder="例如 NAS 归档"
+                    disabled={!!busy()}
+                  />
+                </label>
+                <button
+                  class="button"
+                  type="button"
+                  disabled={
+                    !!busy() ||
+                    !presetName().trim() ||
+                    !targetId() ||
+                    !!subfolderError(rules().subfolder)
+                  }
+                  onClick={() => void savePreset()}
+                >
+                  保存方案
+                </button>
+              </div>
               <div class="form-row">
                 <label class="checkbox-label">
                   <input
@@ -566,12 +826,21 @@ export default function ImportWorkspace(props: {
                   继续导入
                 </button>
                 <button
-                  class="button primary"
+                  class="button"
                   disabled={!!busy()}
                   onClick={() => plannedTarget() && props.onOpenLibrary(plannedTarget()!)}
                 >
                   查看目标图片库
                 </button>
+                <Show when={result()?.batch?.asset_count && props.onCull}>
+                  <button
+                    class="button primary"
+                    disabled={!!busy()}
+                    onClick={() => props.onCull!(plannedTarget()!, result()!.batch!)}
+                  >
+                    开始选图（{result()!.batch!.asset_count} 张）
+                  </button>
+                </Show>
               </div>
             </div>
           </Show>

@@ -48,6 +48,9 @@ async function fixture(page: Page, options: { failFlag?: boolean } = {}) {
         case 'system.info':
           result = { originals_read_only: true };
           break;
+        case 'import.batches':
+          result = [];
+          break;
         case 'library.capture_index.status':
           result = {
             library_id: library.id,

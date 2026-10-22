@@ -101,6 +101,9 @@ async function fixture(
       case 'asset.list':
         result = browserAssetList(assets, call.params as AssetListOptions, paired);
         break;
+      case 'import.batches':
+        result = [];
+        break;
       case 'library.capture_index.status':
         result = capture;
         break;

@@ -2217,3 +2217,26 @@ kbd {
 .date-source.modified_time {
   color: var(--nl-warning);
 }
+
+/* Memory card identity on the import page */
+.card-identity {
+  display: grid;
+  gap: var(--nl-space-2);
+  padding: var(--nl-space-3) var(--nl-space-4);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+  background: var(--nl-surface-raised);
+  font-size: var(--nl-text-sm);
+}
+.card-identity p {
+  margin: 0;
+  color: var(--nl-text-muted);
+}
+.card-identity strong {
+  margin-right: var(--nl-space-2);
+  color: var(--nl-text);
+}
+.preset-row,
+.preset-save {
+  align-items: end;
+}

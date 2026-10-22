@@ -53,6 +53,7 @@ export type FlagFilter = 'any' | 'pick' | 'none' | 'reject' | 'not_reject';
 export interface AssetListOptions {
   library_id?: string;
   flag?: FlagFilter;
+  import_batch_id?: string;
   query?: string;
   rating?: number;
   format?: 'all' | 'raw' | 'jpeg';
@@ -199,6 +200,43 @@ export interface ImportPlan {
   warnings: string[];
   [key: string]: unknown;
 }
+export interface Card {
+  id: string;
+  name: string;
+  location_id: string;
+  volume_label?: string | null;
+  volume_serial?: string | null;
+  capacity_bytes?: number | null;
+  last_mount_path?: string | null;
+  last_seen_at?: string | null;
+  default_preset_id?: string | null;
+  created_at: string;
+  last_import_at?: string | null;
+}
+export type CardIdentification =
+  | { status: 'known'; card: Card }
+  | { status: 'unknown' | 'foreign'; candidates: Card[]; identity_id?: string };
+export interface ImportPreset {
+  id: string;
+  name: string;
+  library_id: string;
+  rules: OrganizeRules;
+  deduplicate: boolean;
+  created_at: string;
+}
+export interface ImportBatch {
+  id: string;
+  library_id: string;
+  card_id?: string | null;
+  source: string;
+  started_at: string;
+  finished_at?: string | null;
+  status: string;
+  copied: number;
+  duplicates: number;
+  failed: number;
+  asset_count: number;
+}
 export interface ImportResult {
   id: string;
   plan_id: string;
@@ -222,6 +260,8 @@ export interface ImportResult {
   library_id?: string;
   indexing?: ScanResult;
   indexing_error?: string;
+  batch?: ImportBatch;
+  batch_error?: string;
   [key: string]: unknown;
 }
 
