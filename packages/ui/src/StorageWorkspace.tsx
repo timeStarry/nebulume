@@ -118,10 +118,10 @@ export default function StorageWorkspace(props: {
     }
   }
   return (
-    <section class="workspace-page storage-workspace" aria-label="存储源工作区">
+    <section class="workspace-page storage-workspace" aria-label="位置工作区">
       <header class="workspace-heading">
         <div>
-          <h1>存储源</h1>
+          <h1>位置</h1>
         </div>
         <div class="workspace-heading-actions">
           <button class="button" onClick={props.onRefresh} disabled={!!busy()}>
@@ -130,13 +130,13 @@ export default function StorageWorkspace(props: {
           </button>
           <button class="button primary" onClick={props.onAdd}>
             <Icon name="plus" size={15} />
-            添加存储源
+            添加网络位置
           </button>
         </div>
       </header>
       <Show when={!desktop}>
         <div class="workspace-note">
-          浏览器演示不访问本机目录或远程设备；请使用桌面版管理真实存储源。
+          浏览器演示不访问本机目录或远程设备；请使用桌面版管理真实位置。
         </div>
       </Show>
       <Show when={error()}>
@@ -172,7 +172,7 @@ export default function StorageWorkspace(props: {
               <h2>还没有远端连接</h2>
               <p>连接 WebDAV 或 S3 后浏览远端图片。本地目录可直接建立图片库。</p>
               <button class="button" onClick={props.onAdd}>
-                添加第一个存储源
+                添加第一个网络位置
               </button>
             </div>
           }
@@ -222,7 +222,7 @@ export default function StorageWorkspace(props: {
                   class="button small"
                   onClick={() => props.onRemove(item)}
                   disabled={!!busy()}
-                  aria-label={`移除存储源 ${item.name}`}
+                  aria-label={`移除位置 ${item.name}`}
                 >
                   移除
                 </button>

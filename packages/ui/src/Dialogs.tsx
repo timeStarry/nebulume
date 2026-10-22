@@ -469,7 +469,7 @@ export function StorageDialog(props: {
   }
   return (
     <Modal
-      title={props.existing ? '连接设置 / 重连' : '添加存储源'}
+      title={props.existing ? '连接设置 / 重连' : '添加网络位置'}
       onClose={props.onClose}
       busy={busy()}
     >

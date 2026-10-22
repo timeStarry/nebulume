@@ -311,10 +311,10 @@ export default function ImportWorkspace(props: {
       }) as Record<string, string>
     )[status] || status;
   return (
-    <section class="workspace-page import-workspace" aria-label="存储卡工作区">
+    <section class="workspace-page import-workspace" aria-label="导入工作区">
       <header class="workspace-heading">
         <div>
-          <h1>存储卡</h1>
+          <h1>导入</h1>
         </div>
         <button
           class="button"

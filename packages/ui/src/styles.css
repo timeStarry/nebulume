@@ -2240,3 +2240,26 @@ kbd {
 .preset-save {
   align-items: end;
 }
+
+.settings-panel > h3 {
+  margin: 16px 0 8px;
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-sm);
+  font-weight: var(--nl-weight-medium);
+}
+.settings-owners {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.settings-owners li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--nl-border);
+  font-size: var(--nl-text-sm);
+}

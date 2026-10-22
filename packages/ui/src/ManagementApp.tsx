@@ -701,8 +701,8 @@ export default function ManagementApp() {
           each={
             [
               { id: 'libraries', label: '图片库', icon: 'grid' },
-              { id: 'sources', label: '存储源', icon: 'cloud' },
-              { id: 'cards', label: '存储卡', icon: 'card' },
+              { id: 'sources', label: '位置', icon: 'cloud' },
+              { id: 'cards', label: '导入', icon: 'card' },
               { id: 'settings', label: '设置', icon: 'settings' },
             ] as const
           }
@@ -783,7 +783,7 @@ export default function ManagementApp() {
                       <div class="workspace-empty">
                         <Icon name="folder" size={34} />
                         <h2>建立你的第一个图片库</h2>
-                        <p>从本地文件夹或已经连接的存储源选择目录。</p>
+                        <p>从本地文件夹或已连接的网络位置选择目录。</p>
                       </div>
                     }
                   >
@@ -1266,6 +1266,7 @@ export default function ManagementApp() {
         <Show when={section() === 'settings'}>
           <Settings
             system={system()}
+            onNavigate={navigate}
             thumbSize={thumbSize()}
             onSizeChange={(value) => {
               setThumbSize(value);
@@ -1404,11 +1405,24 @@ function CullingSettings() {
     </section>
   );
 }
+/** Settings holds only app-wide preferences and this machine's resources.
+ *  Everything owned by a location, library, card or preset is edited where it lives. */
 function Settings(props: {
   system?: Record<string, unknown>;
   thumbSize: number;
   onSizeChange: (value: number) => void;
+  onNavigate: (section: WorkspaceSection) => void;
 }) {
+  const owners: { what: string; where: string; section: WorkspaceSection }[] = [
+    { what: '连接地址、凭据、证书信任、测试连接', where: '位置', section: 'sources' },
+    {
+      what: '图片库名称、目录、RAW + JPEG 合并、扫描',
+      where: '图片库 → 库设置',
+      section: 'libraries',
+    },
+    { what: '存储卡名称、绑定、默认导入方案', where: '导入', section: 'cards' },
+    { what: '导入方案：目标图片库、目录整理、去重', where: '导入', section: 'cards' },
+  ];
   return (
     <section class="workspace-page settings-workspace" aria-label="设置工作区">
       <header class="workspace-heading">
@@ -1417,7 +1431,7 @@ function Settings(props: {
         </div>
       </header>
       <section class="settings-panel">
-        <h2>浏览显示</h2>
+        <h2>外观</h2>
         <div class="settings-row">
           <ThemeControl />
         </div>
@@ -1441,27 +1455,35 @@ function Settings(props: {
       <CacheSettings />
       <section class="settings-panel">
         <h2>快捷键</h2>
+        <h3>图片库网格</h3>
         <div class="settings-shortcuts">
           <span>独立查看照片</span>
           <kbd>Enter / 双击</kbd>
-          <span>上一张 / 下一张</span>
-          <kbd>← / →</kbd>
-          <span>显示或隐藏信息</span>
-          <kbd>I</kbd>
           <span>评级 / 清除评级</span>
           <kbd>1–5 / 0</kbd>
-          <span>查看器中裁剪</span>
+          <span>显示或隐藏信息</span>
+          <kbd>I</kbd>
+          <span>搜索当前图片库</span>
+          <kbd>Ctrl / ⌘ F</kbd>
+          <span>以当前筛选开始选图</span>
+          <kbd>Shift C</kbd>
+        </div>
+        <h3>查看窗口</h3>
+        <div class="settings-shortcuts">
+          <span>上一张 / 下一张</span>
+          <kbd>← / →</kbd>
+          <span>评级 / 清除评级</span>
+          <kbd>1–5 / 0</kbd>
+          <span>裁剪</span>
           <kbd>C</kbd>
           <span>显示或隐藏相机对焦点</span>
           <kbd>P</kbd>
-          <span>查看器全屏</span>
+          <span>全屏</span>
           <kbd>F</kbd>
-          <span>退出裁剪 / 全屏 / 查看器</span>
-          <kbd>Esc</kbd>
-          <span>搜索当前图片库</span>
-          <kbd>Ctrl / ⌘ F</kbd>
-          <span>以当前筛选开始选图 / 切换查看与选图</span>
+          <span>切换到选图模式</span>
           <kbd>Shift C</kbd>
+          <span>退出裁剪 / 全屏 / 关闭</span>
+          <kbd>Esc</kbd>
         </div>
         <h3>选图模式</h3>
         <div class="settings-shortcuts">
@@ -1479,13 +1501,31 @@ function Settings(props: {
           <kbd>Tab</kbd>
           <span>显示或隐藏相机对焦点</span>
           <kbd>Shift F</kbd>
+          <span>切回普通查看</span>
+          <kbd>Shift C</kbd>
         </div>
       </section>
       <section class="settings-panel">
-        <h2>运行环境</h2>
+        <h2>其他配置在哪里</h2>
+        <p>以下配置属于具体的位置、图片库或存储卡，在各自页面中修改。</p>
+        <ul class="settings-owners">
+          <For each={owners}>
+            {(owner) => (
+              <li>
+                <span>{owner.what}</span>
+                <button class="button small" onClick={() => props.onNavigate(owner.section)}>
+                  {owner.where}
+                </button>
+              </li>
+            )}
+          </For>
+        </ul>
+      </section>
+      <section class="settings-panel">
+        <h2>关于与诊断</h2>
         <p>Nebulume 0.1 Alpha · {desktop ? '桌面应用' : '浏览器演示'}</p>
         <details>
-          <summary>运行时能力与限制</summary>
+          <summary>运行时能力与限制（只读）</summary>
           <pre>{JSON.stringify(props.system || { status: '运行信息暂不可用' }, null, 2)}</pre>
         </details>
       </section>

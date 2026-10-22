@@ -378,8 +378,8 @@ test('removal dialogs preserve originals, block referenced sources and retain a 
   await expect(page.getByRole('dialog')).toContainText('原始照片及目录不会删除');
   await page.getByRole('button', { name: '取消', exact: true }).click();
   expect(calls.some((call) => call.command === 'library.remove')).toBe(false);
-  await nav(page, '存储源').click();
-  await page.getByRole('button', { name: '移除存储源 家庭 NAS' }).click();
+  await nav(page, '位置').click();
+  await page.getByRole('button', { name: '移除位置 家庭 NAS' }).click();
   await expect(page.getByRole('dialog')).toContainText('NAS 旅行');
   await expect(page.getByRole('button', { name: '确认移除', exact: true })).toBeDisabled();
   expect(calls.some((call) => call.command === 'storage.remove')).toBe(false);
@@ -387,14 +387,14 @@ test('removal dialogs preserve originals, block referenced sources and retain a 
   await page.getByRole('button', { name: '移除图片库 NAS 旅行' }).click();
   await page.getByRole('button', { name: '确认移除', exact: true }).click();
   await expect(page.getByRole('button', { name: '打开图片库 NAS 旅行' })).not.toBeVisible();
-  await nav(page, '存储源').click();
-  await page.getByRole('button', { name: '移除存储源 家庭 NAS' }).click();
+  await nav(page, '位置').click();
+  await page.getByRole('button', { name: '移除位置 家庭 NAS' }).click();
   await page.getByRole('button', { name: '确认移除', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('alert')).toContainText('关联图片库：新增归档');
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByRole('button', { name: '确认移除', exact: true }).click();
   await expect(page.getByRole('dialog')).not.toBeVisible();
-  await expect(page.getByRole('button', { name: '移除存储源 家庭 NAS' })).not.toBeVisible();
+  await expect(page.getByRole('button', { name: '移除位置 家庭 NAS' })).not.toBeVisible();
   expect(calls.filter((call) => call.command === 'storage.remove')).toHaveLength(2);
 });
 
@@ -529,7 +529,7 @@ test('a failed connection is reported, stored credentials can browse, and a dire
         next_cursor: null,
       };
   });
-  await nav(page, '存储源').click();
+  await nav(page, '位置').click();
   await expect(page.getByText('已保存至系统安全存储')).toBeVisible();
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('账号认证失败');
@@ -578,7 +578,7 @@ test('a failed browse revokes previous verification and refreshes missing creden
       };
     }
   });
-  await nav(page, '存储源').click();
+  await nav(page, '位置').click();
   await page.getByRole('button', { name: '浏览目录', exact: true }).click();
   await page.getByRole('button', { name: 'trips', exact: true }).click();
   await expect(page.locator('.source-row .source-status')).toHaveText('已验证');
@@ -606,7 +606,7 @@ test('a late failed-browse status refresh cannot overwrite a newer successful co
       return { entries: [], next_cursor: null };
     }
   });
-  await nav(page, '存储源').click();
+  await nav(page, '位置').click();
   await page.getByRole('button', { name: '浏览目录', exact: true }).click();
   await expect(page.locator('.source-row .source-status')).toHaveText('已验证');
   fail = true;
@@ -689,7 +689,7 @@ test('local libraries are created directly from a directory and become import ta
     pair_raw_jpeg: false,
   });
   expect(calls.filter((call) => call.command === 'storage.add')).toHaveLength(0);
-  await nav(page, '存储卡').click();
+  await nav(page, '导入').click();
   await expect(page.getByLabel('目标图片库')).toHaveValue('direct-local');
   await expect(
     page.getByLabel('目标图片库').locator('option', { hasText: 'NAS 旅行' }),
@@ -699,10 +699,10 @@ test('local libraries are created directly from a directory and become import ta
   await expect
     .poll(() => calls.find((call) => call.command === 'import.plan')?.params.destination)
     .toBe(root);
-  await nav(page, '存储源').click();
+  await nav(page, '位置').click();
   await expect(page.locator('.source-row').filter({ hasText: '家庭 NAS' })).toHaveCount(1);
   await expect(page.locator('.source-row').filter({ hasText: '旧本地来源' })).toHaveCount(0);
-  await page.getByRole('button', { name: '添加存储源', exact: true }).click();
+  await page.getByRole('button', { name: '添加网络位置', exact: true }).click();
   await expect(
     page.getByRole('dialog').getByRole('button', { name: '本地文件夹', exact: true }),
   ).toHaveCount(0);
@@ -803,7 +803,7 @@ test('card imports target local libraries, retain review across navigation and c
     }
     if (call.command === 'import.history') return finished ? [result] : [];
   });
-  await nav(page, '存储卡').click();
+  await nav(page, '导入').click();
   await expect(page.getByLabel('目标图片库').locator('option')).toHaveCount(2);
   await expect(page.getByLabel('目标图片库').locator('option', { hasText: 'NAS' })).toHaveCount(0);
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
@@ -812,7 +812,7 @@ test('card imports target local libraries, retain review across navigation and c
   await expect(page.getByText('没有拍摄日期，归入 unknown-date')).toBeVisible();
   await expect(page.getByRole('button', { name: '开始导入' })).toBeDisabled();
   await nav(page, '设置').click();
-  await nav(page, '存储卡').click();
+  await nav(page, '导入').click();
   await expect(page.getByText('待复制', { exact: true })).toBeVisible();
   await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
   await page.getByRole('button', { name: '开始导入' }).click();
@@ -907,7 +907,7 @@ test('an offline NAS library is greyed, explains why, keeps marks usable and blo
   await expect(page.getByRole('button', { name: /Mountain\.png/ })).toBeVisible();
   expect(calls.some((call) => call.command === 'library.scan')).toBe(false);
   await banner.getByRole('button', { name: '检查连接' }).click();
-  await expect(page.getByRole('heading', { name: '存储源' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '位置' })).toBeVisible();
 });
 
 test('a registered card applies its default preset, and import leads straight into culling the batch', async ({
@@ -1005,7 +1005,7 @@ test('a registered card applies its default preset, and import leads straight in
     }
     return undefined;
   });
-  await nav(page, '存储卡').click();
+  await nav(page, '导入').click();
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
   await expect(page.getByText('未登记的存储卡')).toBeVisible();
   await page.getByLabel('卡名称').fill('Z8 主卡');
