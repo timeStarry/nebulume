@@ -1,9 +1,9 @@
 //! Verified, non-destructive local/SD-card import with restart-safe file results.
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::Utc;
 use neb_storage::{
     atomic_json, hash_reader, open_scoped, safe_join, validate_key, PreparedDestination,
-    ScopedDestination,
+    RemoteWriter, ScopedDestination,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -49,6 +49,28 @@ pub struct ImportPlan {
     pub duplicate_count: usize,
     pub warnings: Vec<String>,
     pub created_at: String,
+    /// Remote target: the WebDAV/S3 location and the library prefix inside it.
+    #[serde(default)]
+    pub destination_location: Option<String>,
+    #[serde(default)]
+    pub destination_prefix: String,
+    /// Same name, size and capture day as an indexed file whose content was never
+    /// hashed. Skipped by default; reported as unverified, never as a duplicate.
+    #[serde(default)]
+    pub likely_duplicate_count: usize,
+}
+
+/// What the target library already holds, from its catalog. Planning a remote
+/// import never downloads files to compare them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KnownAsset {
+    /// Location-relative key, including the library prefix.
+    pub key: String,
+    pub size: u64,
+    pub sha256: Option<String>,
+    pub filename: String,
+    /// Camera capture time as indexed (`YYYY-MM-DDT...`), empty when unknown.
+    pub captured_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -81,9 +103,14 @@ pub struct ImportResult {
     pub rules: Option<OrganizeRules>,
 }
 
+enum ReviewedDestination {
+    Local(PreparedDestination),
+    Remote,
+}
+
 struct ReviewedImport {
     plan: ImportPlan,
-    destination: PreparedDestination,
+    destination: ReviewedDestination,
     preserve_names: HashSet<String>,
 }
 pub struct IngestService {
@@ -157,27 +184,7 @@ impl IngestService {
         } else {
             HashMap::new()
         };
-        // With type folders, an XMP sidecar follows the RAW/JPEG it describes so the
-        // companion group keeps a single target stem.
-        let anchors: HashMap<String, String> = if rules.type_split == TypeSplit::ByKind {
-            let mut by_group: HashMap<String, String> = HashMap::new();
-            for key in &source_files {
-                let role = extension_role(key);
-                if role == "xmp" || !is_pairable(key) {
-                    continue;
-                }
-                let entry = by_group
-                    .entry(capture_group(key))
-                    .or_insert_with(|| key.clone());
-                // Prefer the RAW as the group's anchor.
-                if organize::kind_folder(key) == "RAW" {
-                    *entry = key.clone();
-                }
-            }
-            by_group
-        } else {
-            HashMap::new()
-        };
+        let anchors = group_anchors(rules, &source_files);
         let destination_files = if deduplicate && destination.is_dir() {
             discover(&destination, &mut warnings)?.files
         } else {
@@ -208,47 +215,14 @@ impl IngestService {
                 {
                     bail!("Source changed during planning");
                 }
-                let item_date = match rules.date_basis {
-                    DateBasis::Preserve | DateBasis::None => ItemDate {
-                        day: None,
-                        source: "preserved".into(),
-                    },
-                    DateBasis::Import => ItemDate {
-                        day: Some(import_day.clone()),
-                        source: "import_date".into(),
-                    },
-                    DateBasis::Capture => {
-                        let (day, provenance) = capture_dates
-                            .get(&key)
-                            .cloned()
-                            .unwrap_or_else(|| (None, "unknown".to_string()));
-                        match day {
-                            Some(day) => ItemDate {
-                                day: Some(day),
-                                source: provenance,
-                            },
-                            // Explicit opt-in only; the plan labels every such item.
-                            None if rules.unknown_date == UnknownDate::ModifiedTime => ItemDate {
-                                day: modified_day(&metadata),
-                                source: "modified_time".into(),
-                            },
-                            None => ItemDate {
-                                day: None,
-                                source: provenance,
-                            },
-                        }
-                    }
-                };
-                let date_source = item_date.source.clone();
-                let mut relative_path = organize::target_path(rules, &key, &item_date)?;
-                if let Some(anchor) = anchors.get(&capture_group(&key)) {
-                    if extension_role(&key) == "xmp" {
-                        let folder = organize::kind_folder(anchor);
-                        if let Some(index) = relative_path.rfind("/RAW/") {
-                            relative_path.replace_range(index + 1..index + 4, folder);
-                        }
-                    }
-                }
+                let (relative_path, date_source) = target_for(
+                    rules,
+                    &key,
+                    &metadata,
+                    &capture_dates,
+                    &anchors,
+                    &import_day,
+                )?;
                 let preserve_name = preserve_names.contains(&key);
                 let duplicate_identity = dedup_identity(&relative_path, &sha256, preserve_name);
                 let mut duplicate_path = None;
@@ -363,6 +337,9 @@ impl IngestService {
             duplicate_count,
             warnings,
             created_at: Utc::now().to_rfc3339(),
+            destination_location: None,
+            destination_prefix: String::new(),
+            likely_duplicate_count: 0,
         };
         // Bound stale review snapshots; application can always make another plan.
         if self.plans.len() >= 32 {
@@ -372,7 +349,7 @@ impl IngestService {
             plan.id.clone(),
             ReviewedImport {
                 plan: plan.clone(),
-                destination: destination_capability,
+                destination: ReviewedDestination::Local(destination_capability),
                 preserve_names,
             },
         );
@@ -408,7 +385,10 @@ impl IngestService {
         };
         let journal_path = self.history_dir.join(format!("{}.json", result.id));
         atomic_json(&journal_path, &result)?;
-        let scoped_destination = reviewed.destination.materialize()?;
+        let ReviewedDestination::Local(prepared) = &reviewed.destination else {
+            bail!("This plan targets a remote location; execute it with a remote writer");
+        };
+        let scoped_destination = prepared.materialize()?;
         let mut group_members: HashMap<String, Vec<&ImportItem>> = HashMap::new();
         for item in &plan.items {
             if reviewed.preserve_names.contains(&item.source_relative_path) {
@@ -499,6 +479,317 @@ impl IngestService {
         .to_string();
         result.finished_at = Some(Utc::now().to_rfc3339());
         atomic_json(&journal_path, &result)?;
+        Ok(result)
+    }
+
+    /// Plan an import into a WebDAV/S3 library. Read-only on both sides: the card is
+    /// hashed locally, the destination is judged only from `known` catalog records.
+    pub fn plan_remote(
+        &mut self,
+        source: impl AsRef<Path>,
+        location_id: &str,
+        prefix: &str,
+        rules: &OrganizeRules,
+        deduplicate: bool,
+        known: &[KnownAsset],
+    ) -> Result<ImportPlan> {
+        rules.validate()?;
+        let prefix = prefix.trim_matches('/').to_owned();
+        validate_key(&prefix, true)?;
+        let import_day = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let source = fs::canonicalize(source.as_ref()).context("Import source is unavailable")?;
+        if !source.is_dir() {
+            bail!("Import source must be a directory");
+        }
+        let mut warnings = Vec::new();
+        let discovery = discover(&source, &mut warnings)?;
+        let source_files = discovery.files;
+        let preserve_names = companion_names(&source_files, &discovery.unavailable);
+        let capture_dates = if rules.needs_capture_dates() {
+            resolve_capture_dates(&source, &source_files, &mut warnings)
+        } else {
+            HashMap::new()
+        };
+        let anchors = group_anchors(rules, &source_files);
+        let by_hash: HashMap<&str, &KnownAsset> = known
+            .iter()
+            .filter_map(|asset| asset.sha256.as_deref().map(|hash| (hash, asset)))
+            .collect();
+        let mut by_name: HashMap<(String, u64), Vec<&KnownAsset>> = HashMap::new();
+        for asset in known {
+            by_name
+                .entry((asset.filename.to_lowercase(), asset.size))
+                .or_default()
+                .push(asset);
+        }
+        let mut batch_hashes: HashMap<String, String> = HashMap::new();
+        let mut items = Vec::new();
+        for key in source_files {
+            let inspect = (|| -> Result<ImportItem> {
+                let (metadata, size, sha256, modified) = inspect_source(&source, &key)?;
+                let (relative_path, date_source) = target_for(
+                    rules,
+                    &key,
+                    &metadata,
+                    &capture_dates,
+                    &anchors,
+                    &import_day,
+                )?;
+                let target = join_key(&prefix, &relative_path);
+                let preserve_name = preserve_names.contains(&key);
+                let identity = dedup_identity(&relative_path, &sha256, preserve_name);
+                let mut status = "pending";
+                let mut duplicate_path = None;
+                if deduplicate {
+                    if let Some(asset) = by_hash
+                        .get(sha256.as_str())
+                        .filter(|asset| same_dedup_role(&target, &asset.key, preserve_name))
+                    {
+                        status = "duplicate";
+                        duplicate_path = Some(asset.key.clone());
+                    } else if let Some(existing) = batch_hashes.get(&identity) {
+                        status = "duplicate";
+                        duplicate_path = Some(existing.clone());
+                    } else {
+                        // Unverified match: every field must be known and equal.
+                        let filename = Path::new(&key)
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_lowercase())
+                            .unwrap_or_default();
+                        let day = capture_dates.get(&key).and_then(|(day, _)| day.clone());
+                        if let Some(day) = day {
+                            if let Some(asset) = by_name.get(&(filename, size)).and_then(|list| {
+                                list.iter().find(|asset| {
+                                    asset.sha256.is_none()
+                                        && asset.captured_at.get(..10) == Some(day.as_str())
+                                })
+                            }) {
+                                status = "likely_duplicate";
+                                duplicate_path = Some(asset.key.clone());
+                            }
+                        }
+                    }
+                    batch_hashes
+                        .entry(identity)
+                        .or_insert_with(|| duplicate_path.clone().unwrap_or(target.clone()));
+                }
+                Ok(ImportItem {
+                    source: source.join(&key).to_string_lossy().into_owned(),
+                    relative_path,
+                    size,
+                    status: status.to_owned(),
+                    sha256,
+                    date_source,
+                    duplicate_path,
+                    source_relative_path: key.clone(),
+                    modified_nanos: modified,
+                })
+            })();
+            match inspect {
+                Ok(item) => items.push(item),
+                Err(error) => warnings.push(format!("Skipped {key}: {error}")),
+            }
+        }
+        exclude_incomplete_groups(&mut items, &preserve_names, &mut warnings);
+        let count = |status: &str| items.iter().filter(|item| item.status == status).count();
+        let plan = ImportPlan {
+            id: Uuid::new_v4().to_string(),
+            source: source.to_string_lossy().into_owned(),
+            destination: format!("location:{location_id}/{prefix}"),
+            layout: match rules.date_basis {
+                DateBasis::Preserve => "preserve",
+                _ => "date",
+            }
+            .to_string(),
+            rules: rules.clone(),
+            import_day,
+            deduplicate,
+            total_bytes: items
+                .iter()
+                .filter(|item| item.status == "pending")
+                .map(|item| item.size)
+                .sum(),
+            duplicate_count: count("duplicate"),
+            likely_duplicate_count: count("likely_duplicate"),
+            items,
+            warnings,
+            created_at: Utc::now().to_rfc3339(),
+            destination_location: Some(location_id.to_owned()),
+            destination_prefix: prefix,
+        };
+        if self.plans.len() >= 32 {
+            self.plans.clear();
+        }
+        self.plans.insert(
+            plan.id.clone(),
+            ReviewedImport {
+                plan: plan.clone(),
+                destination: ReviewedDestination::Remote,
+                preserve_names,
+            },
+        );
+        Ok(plan)
+    }
+
+    /// Publish a reviewed remote plan. Every file is re-verified against the plan,
+    /// published only at a key that did not exist, and journaled as it completes.
+    pub fn execute_remote(
+        &mut self,
+        plan_id: &str,
+        writer: &RemoteWriter,
+        include_likely: bool,
+    ) -> Result<ImportResult> {
+        let reviewed = self
+            .plans
+            .get(plan_id)
+            .context("Plan not found; review a fresh import plan")?;
+        let plan = reviewed.plan.clone();
+        ensure!(
+            matches!(reviewed.destination, ReviewedDestination::Remote)
+                && plan.destination_location.as_deref() == Some(writer.location_id()),
+            "This plan does not target this remote location"
+        );
+        let source = Path::new(&plan.source);
+        if fs::canonicalize(source)? != source {
+            bail!("Import source changed after planning");
+        }
+        let mut result = ImportResult {
+            id: Uuid::new_v4().to_string(),
+            plan_id: plan.id.clone(),
+            source: plan.source.clone(),
+            destination: plan.destination.clone(),
+            status: "running".to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            finished_at: None,
+            total: plan.items.len(),
+            copied: 0,
+            duplicates: 0,
+            failed: 0,
+            items: Vec::new(),
+            originals_retained: true,
+            rules: Some(plan.rules.clone()),
+        };
+        let journal_path = self.history_dir.join(format!("{}.json", result.id));
+        atomic_json(&journal_path, &result)?;
+        let mut group_members: HashMap<String, Vec<&ImportItem>> = HashMap::new();
+        for item in &plan.items {
+            if reviewed.preserve_names.contains(&item.source_relative_path) {
+                group_members
+                    .entry(capture_group(&item.source_relative_path))
+                    .or_default()
+                    .push(item);
+            }
+        }
+        let mut group_errors = conflicting_companion_groups(&plan.items, &group_members);
+        let mut published: HashMap<String, String> = HashMap::new();
+        for item in &plan.items {
+            let preserve_name = reviewed.preserve_names.contains(&item.source_relative_path);
+            let group = preserve_name.then(|| capture_group(&item.source_relative_path));
+            let identity = dedup_identity(&item.relative_path, &item.sha256, preserve_name);
+            let skip = item.status == "duplicate"
+                || (item.status == "likely_duplicate" && !include_likely);
+            let outcome = (|| -> Result<ItemResult> {
+                if skip {
+                    let status = if item.status == "duplicate" {
+                        "duplicate"
+                    } else {
+                        "likely_duplicate"
+                    };
+                    return Ok(ItemResult {
+                        source: item.source.clone(),
+                        destination: item.duplicate_path.clone().unwrap_or_default(),
+                        status: status.into(),
+                        size: item.size,
+                        sha256: Some(item.sha256.clone()),
+                        error: None,
+                    });
+                }
+                if let Some(error) = group.as_ref().and_then(|group| group_errors.get(group)) {
+                    bail!("{error}");
+                }
+                verify_source(source, item)?;
+                if plan.deduplicate {
+                    if let Some(key) = published.get(&identity) {
+                        return Ok(ItemResult {
+                            source: item.source.clone(),
+                            destination: key.clone(),
+                            status: "duplicate".into(),
+                            size: item.size,
+                            sha256: Some(item.sha256.clone()),
+                            error: None,
+                        });
+                    }
+                }
+                for attempt in 0..100 {
+                    let relative = collision_key(&item.relative_path, &item.sha256, attempt)?;
+                    let key = join_key(&plan.destination_prefix, &relative);
+                    let file = open_scoped(source, &item.source_relative_path)?;
+                    match writer.put_new(&key, file, item.size, &item.sha256) {
+                        Ok(()) => {
+                            return Ok(ItemResult {
+                                source: item.source.clone(),
+                                destination: key,
+                                status: "copied".into(),
+                                size: item.size,
+                                sha256: Some(item.sha256.clone()),
+                                error: None,
+                            })
+                        }
+                        Err(error) if format!("{error:#}").contains("E_CONFLICT") => {
+                            if preserve_name {
+                                bail!("Filename conflict in an XMP companion group at {key}: individual files cannot be renamed without breaking pairing. Choose another prefix; all source files are retained");
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                bail!("Too many filename conflicts for {}", item.relative_path)
+            })();
+            let item_result = match outcome {
+                Ok(item_result) => {
+                    match item_result.status.as_str() {
+                        "copied" => {
+                            result.copied += 1;
+                            published.insert(identity, item_result.destination.clone());
+                        }
+                        _ => result.duplicates += 1,
+                    }
+                    item_result
+                }
+                Err(error) => {
+                    if let Some(group) = group {
+                        group_errors.entry(group).or_insert_with(|| {
+                            format!(
+                                "XMP companion group stopped after {} failed: {error:#}. Already published files are retained; no remaining member will be published",
+                                item.source_relative_path
+                            )
+                        });
+                    }
+                    result.failed += 1;
+                    ItemResult {
+                        source: item.source.clone(),
+                        destination: join_key(&plan.destination_prefix, &item.relative_path),
+                        status: "failed".to_string(),
+                        size: item.size,
+                        sha256: None,
+                        error: Some(format!("{error:#}")),
+                    }
+                }
+            };
+            result.items.push(item_result);
+            atomic_json(&journal_path, &result)?;
+        }
+        result.status = if result.failed == 0 {
+            "completed"
+        } else if result.copied + result.duplicates == 0 {
+            "failed"
+        } else {
+            "partial"
+        }
+        .to_string();
+        result.finished_at = Some(Utc::now().to_rfc3339());
+        atomic_json(&journal_path, &result)?;
+        self.plans.remove(plan_id);
         Ok(result)
     }
 
@@ -882,6 +1173,155 @@ fn dedup_identity(target: &str, hash: &str, preserve_name: bool) -> String {
     } else {
         format!("{role}\0{hash}")
     }
+}
+
+/// Destination key and date provenance for one source file under `rules`.
+fn target_for(
+    rules: &OrganizeRules,
+    key: &str,
+    metadata: &fs::Metadata,
+    capture_dates: &HashMap<String, (Option<String>, String)>,
+    anchors: &HashMap<String, String>,
+    import_day: &str,
+) -> Result<(String, String)> {
+    let item_date = match rules.date_basis {
+        DateBasis::Preserve | DateBasis::None => ItemDate {
+            day: None,
+            source: "preserved".into(),
+        },
+        DateBasis::Import => ItemDate {
+            day: Some(import_day.to_owned()),
+            source: "import_date".into(),
+        },
+        DateBasis::Capture => {
+            let (day, provenance) = capture_dates
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| (None, "unknown".to_string()));
+            match day {
+                Some(day) => ItemDate {
+                    day: Some(day),
+                    source: provenance,
+                },
+                // Explicit opt-in only; the plan labels every such item.
+                None if rules.unknown_date == UnknownDate::ModifiedTime => ItemDate {
+                    day: modified_day(metadata),
+                    source: "modified_time".into(),
+                },
+                None => ItemDate {
+                    day: None,
+                    source: provenance,
+                },
+            }
+        }
+    };
+    let mut relative_path = organize::target_path(rules, key, &item_date)?;
+    // With type folders an XMP follows the file it describes.
+    if let Some(anchor) = anchors.get(&capture_group(key)) {
+        if extension_role(key) == "xmp" {
+            let folder = organize::kind_folder(anchor);
+            if let Some(index) = relative_path.rfind("/RAW/") {
+                relative_path.replace_range(index + 1..index + 4, folder);
+            }
+        }
+    }
+    Ok((relative_path, item_date.source))
+}
+
+/// With type folders, each companion group is anchored on its RAW (else first image).
+fn group_anchors(rules: &OrganizeRules, source_files: &[String]) -> HashMap<String, String> {
+    let mut by_group: HashMap<String, String> = HashMap::new();
+    if rules.type_split != TypeSplit::ByKind {
+        return by_group;
+    }
+    for key in source_files {
+        if extension_role(key) == "xmp" || !is_pairable(key) {
+            continue;
+        }
+        let entry = by_group
+            .entry(capture_group(key))
+            .or_insert_with(|| key.clone());
+        if organize::kind_folder(key) == "RAW" {
+            *entry = key.clone();
+        }
+    }
+    by_group
+}
+
+fn join_key(prefix: &str, relative: &str) -> String {
+    if prefix.is_empty() {
+        relative.to_owned()
+    } else {
+        format!("{prefix}/{relative}")
+    }
+}
+
+/// Members of XMP companion groups keep their exact names.
+fn companion_names(files: &[String], unavailable: &[String]) -> HashSet<String> {
+    let sidecars: HashSet<_> = files
+        .iter()
+        .chain(unavailable)
+        .filter(|key| extension_role(key) == "xmp")
+        .map(|key| capture_group(key))
+        .collect();
+    files
+        .iter()
+        .chain(unavailable)
+        .filter(|key| is_pairable(key) && sidecars.contains(&capture_group(key)))
+        .cloned()
+        .collect()
+}
+
+/// Hash a source file while proving it did not change during the read.
+fn inspect_source(root: &Path, key: &str) -> Result<(fs::Metadata, u64, String, u128)> {
+    let mut file = open_scoped(root, key)?;
+    let metadata = file.metadata()?;
+    let modified = modified_nanos(&metadata)?;
+    let (size, sha256) = hash_reader(&mut file)?;
+    let after = file.metadata()?;
+    if size != metadata.len() || size != after.len() || modified != modified_nanos(&after)? {
+        bail!("Source changed during planning");
+    }
+    Ok((metadata, size, sha256, modified))
+}
+
+/// Re-check a planned source immediately before publication.
+fn verify_source(root: &Path, item: &ImportItem) -> Result<()> {
+    validate_key(&item.source_relative_path, false)?;
+    validate_key(&item.relative_path, false)?;
+    let mut file = open_scoped(root, &item.source_relative_path)?;
+    let metadata = file.metadata()?;
+    if metadata.len() != item.size || modified_nanos(&metadata)? != item.modified_nanos {
+        bail!("Source changed after planning; create a fresh plan");
+    }
+    let (size, hash) = hash_reader(&mut file)?;
+    if size != item.size || hash != item.sha256 {
+        bail!("Source content changed after planning");
+    }
+    Ok(())
+}
+
+/// A companion group with an unreadable member is excluded as a whole.
+fn exclude_incomplete_groups(
+    items: &mut Vec<ImportItem>,
+    preserve_names: &HashSet<String>,
+    warnings: &mut Vec<String>,
+) {
+    let planned: HashSet<_> = items
+        .iter()
+        .map(|item| item.source_relative_path.clone())
+        .collect();
+    let incomplete: BTreeSet<_> = preserve_names
+        .iter()
+        .filter(|key| !planned.contains(*key))
+        .map(|key| capture_group(key))
+        .collect();
+    for group in &incomplete {
+        warnings.push(format!(
+            "Incomplete XMP companion group {group} was excluded from the plan because a source member could not be read. No member of this group will be imported; restore source access and create a new plan"
+        ));
+    }
+    items.retain(|item| !incomplete.contains(&capture_group(&item.source_relative_path)));
 }
 
 fn modified_day(metadata: &fs::Metadata) -> Option<String> {

@@ -100,6 +100,10 @@ impl RemoteWriter {
         }
     }
 
+    pub fn location_id(&self) -> &str {
+        &self.config.id
+    }
+
     pub fn capability(&self) -> WriteCapability {
         WriteCapability::load(&self.capability)
     }
