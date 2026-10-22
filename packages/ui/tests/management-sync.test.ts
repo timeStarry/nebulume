@@ -99,3 +99,17 @@ describe('management change classification', () => {
     expect(mergePendingUpdate({ id: 'a', asset }, { id: 'a' }).asset).toBeUndefined();
   });
 });
+
+describe('culling flag synchronization', () => {
+  it('classifies flag changes and reconciles only flag-filtered lists', () => {
+    const picked = { ...asset, flag: 'pick' as const };
+    expect(changedAssetFields(asset, picked)).toBe('flag');
+    expect(needsCatalogReconcile({ library_id: 'library' }, 'flag', asset, picked)).toBe(false);
+    expect(
+      needsCatalogReconcile({ library_id: 'library', flag: 'any' }, 'flag', asset, picked),
+    ).toBe(false);
+    expect(
+      needsCatalogReconcile({ library_id: 'library', flag: 'not_reject' }, 'flag', asset, picked),
+    ).toBe(true);
+  });
+});

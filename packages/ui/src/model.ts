@@ -35,6 +35,8 @@ export interface Asset {
   width?: number;
   height?: number;
   rating: number;
+  /** Culling mark stored in the catalog; never written to the original. */
+  flag?: Flag;
   metadata: Record<string, string>;
   crop?: Crop | null;
   availability: string;
@@ -45,8 +47,11 @@ export interface Asset {
   preview_revision?: number;
   variants?: Pick<Asset, 'id' | 'filename' | 'extension' | 'kind'>[];
 }
+export type Flag = 'none' | 'pick' | 'reject';
+export type FlagFilter = 'any' | 'pick' | 'none' | 'reject' | 'not_reject';
 export interface AssetListOptions {
   library_id?: string;
+  flag?: FlagFilter;
   query?: string;
   rating?: number;
   format?: 'all' | 'raw' | 'jpeg';

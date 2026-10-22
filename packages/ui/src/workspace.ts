@@ -2,6 +2,8 @@ import type {
   Asset,
   AssetListOptions,
   AssetListResult,
+  Flag,
+  FlagFilter,
   Library,
   StorageConfig,
   StorageCheck,
@@ -70,6 +72,10 @@ export function variantViewerIds(
   return [...new Set(items.map((item) => (item.id === representativeId ? variantId : item.id)))];
 }
 
+export function matchesFlag(flag: Flag, filter: FlagFilter = 'any'): boolean {
+  return filter === 'any' || (filter === 'not_reject' ? flag !== 'reject' : flag === filter);
+}
+
 /** The browser's explicit in-memory catalog mirrors query order before pagination. */
 export function browserAssetList(
   items: Asset[],
@@ -85,6 +91,7 @@ export function browserAssetList(
     (!query ||
       `${item.filename} ${Object.values(item.metadata).join(' ')}`.toLowerCase().includes(query)) &&
     item.rating >= (options.rating || 0) &&
+    matchesFlag(item.flag || 'none', options.flag) &&
     (options.format === 'raw'
       ? item.kind === 'raw'
       : options.format === 'jpeg'

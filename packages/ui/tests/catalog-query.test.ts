@@ -159,3 +159,22 @@ describe('browser catalog mirrors whole-library queries', () => {
     expect(variantViewerIds(items, 'jpg', 'jpg')).toEqual(['before', 'jpg', 'after']);
   });
 });
+
+describe('browser catalog flag filter', () => {
+  it('filters picks, unflagged and hides rejects', () => {
+    const items = [
+      { ...photo('a', 'a.jpg'), flag: 'pick' as const },
+      { ...photo('b', 'b.jpg'), flag: 'reject' as const },
+      photo('c', 'c.jpg'),
+    ];
+    const ids = (flag: 'any' | 'pick' | 'none' | 'reject' | 'not_reject') =>
+      browserAssetList(items, { flag, sort_by: 'filename', sort_direction: 'asc' }).items.map(
+        (item) => item.id,
+      );
+    expect(ids('pick')).toEqual(['a']);
+    expect(ids('none')).toEqual(['c']);
+    expect(ids('reject')).toEqual(['b']);
+    expect(ids('not_reject')).toEqual(['a', 'c']);
+    expect(ids('any')).toEqual(['a', 'b', 'c']);
+  });
+});
