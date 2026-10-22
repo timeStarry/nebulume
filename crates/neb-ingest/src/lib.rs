@@ -76,6 +76,9 @@ pub struct ImportResult {
     pub failed: usize,
     pub items: Vec<ItemResult>,
     pub originals_retained: bool,
+    /// Rules frozen in the executed plan; absent in journals from older versions.
+    #[serde(default)]
+    pub rules: Option<OrganizeRules>,
 }
 
 struct ReviewedImport {
@@ -401,6 +404,7 @@ impl IngestService {
             failed: 0,
             items: Vec::new(),
             originals_retained: true,
+            rules: Some(plan.rules.clone()),
         };
         let journal_path = self.history_dir.join(format!("{}.json", result.id));
         atomic_json(&journal_path, &result)?;

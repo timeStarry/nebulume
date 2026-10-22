@@ -18,6 +18,7 @@ use std::{
 };
 
 mod capture_index;
+mod cards;
 mod remote_cache;
 
 type AssetOperations = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
@@ -175,7 +176,11 @@ impl Service {
         }
         let structural_write =
             matches!(command, "library.add" | "library.update" | "library.remove")
-                || matches!(command, "storage.add" | "storage.remove" | "file.open");
+                || matches!(command, "storage.add" | "storage.remove" | "file.open")
+                || matches!(
+                    command,
+                    "card.register" | "card.bind" | "card.remove" | "preset.remove"
+                );
         // Long operations hold only their own library lease. A slow remote file
         // or scan cannot monopolize the catalog for unrelated local libraries.
         let _process_library = if matches!(command, "library.update" | "library.remove") {
@@ -297,6 +302,61 @@ impl Service {
             })
             .collect::<Result<Vec<_>>>()
             .map(Value::from)
+    }
+
+    fn record_batch(
+        &self,
+        library: &Library,
+        result: &Value,
+        card: Option<&Value>,
+    ) -> Result<neb_core::ImportBatch> {
+        let card_id = match card.and_then(Value::as_str) {
+            Some(id) => Some(self.core.card(id)?.id),
+            None => None,
+        };
+        let count = |key: &str| result.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let text = |key: &str| {
+            result
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        // Only files this import wrote are tagged; skipped duplicates keep their batch.
+        let copied: Vec<(String, String)> = result
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|item| item.get("status").and_then(Value::as_str) == Some("copied"))
+            .filter_map(|item| {
+                let path = fs::canonicalize(item.get("destination")?.as_str()?).ok()?;
+                Some((
+                    path.to_string_lossy().into_owned(),
+                    item.get("sha256")?.as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        self.core.record_import_batch(
+            &neb_core::ImportBatch {
+                id: text("id"),
+                library_id: library.id.clone(),
+                card_id,
+                source: text("source"),
+                rules: result.get("rules").cloned().unwrap_or_else(|| json!({})),
+                started_at: text("started_at"),
+                finished_at: result
+                    .get("finished_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                status: text("status"),
+                copied: count("copied"),
+                duplicates: count("duplicates"),
+                failed: count("failed"),
+                asset_count: 0,
+            },
+            &copied,
+        )
     }
 
     fn source(&self, id: &str) -> Result<StorageConfig> {
@@ -672,6 +732,24 @@ impl Service {
                 Ok(serde_json::to_value(added)?)
             }
             "location.list" => self.location_list(),
+            "card.list" => Ok(serde_json::to_value(self.core.cards()?)?),
+            "card.identify" => cards::identify(&self.core, &params),
+            "card.register" => cards::register(&self.core, &params),
+            "card.bind" => cards::bind(&self.core, &params),
+            "card.update" => cards::update(&self.core, &params),
+            "card.remove" => {
+                self.core.remove_card(string(&params, "id")?)?;
+                Ok(json!({"id":string(&params, "id")?}))
+            }
+            "preset.list" => Ok(serde_json::to_value(self.core.import_presets()?)?),
+            "preset.save" => cards::save_preset(&self.core, &params),
+            "preset.remove" => {
+                self.core.remove_import_preset(string(&params, "id")?)?;
+                Ok(json!({"id":string(&params, "id")?}))
+            }
+            "import.batches" => Ok(serde_json::to_value(
+                self.core.import_batches(string(&params, "library_id")?)?,
+            )?),
             "storage.remove" => self.remove_storage(string(&params, "id")?),
             "storage.check" => {
                 let id = string(&params, "id")?;
@@ -791,6 +869,11 @@ impl Service {
                         match self.scan_library(&library.id) {
                             Ok(report) => result["indexing"] = report,
                             Err(error) => result["indexing_error"] = json!(format!("{error:#}")),
+                        }
+                        // The batch is recorded after indexing so it can tag new assets.
+                        match self.record_batch(&library, &result, params.get("card_id")) {
+                            Ok(batch) => result["batch"] = serde_json::to_value(batch)?,
+                            Err(error) => result["batch_error"] = json!(format!("{error:#}")),
                         }
                     }
                 }

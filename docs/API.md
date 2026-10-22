@@ -119,7 +119,11 @@ RAW 传感器解码失败时，查看与直方图可回退到标准 TIFF IFD / I
 - `storage.browse {id,prefix?,limit?,cursor?}` → `{entries:[{key,size,is_dir,created_at?:string}],next_cursor:string|null}`；limit 默认 200，范围 1–1000。created_at可选，来自源的真实创建属性；缺失/无效省略，S3不把LastModified视为创建时间。
 - `storage.fetch {id,key,destination}` → `{path,size,sha256}`（新文件，无覆盖发布）
 - `import.plan {source,destination,rules?:OrganizeRules,layout?:'preserve'|'date',deduplicate?:boolean}` → `ImportPlan`；`rules` 优先，`layout` 为兼容别名（preserve = 保留卡内目录，date = 拍摄日 `Y-M-D`），默认 preserve / true，创建计划不复制文件。`OrganizeRules={date_basis:'capture'|'import'|'none'|'preserve',date_layout?:'Y-M-D'|'Y/Y-M-D'|'Y/M/Y-M-D'|'Y/M/D',type_split?:'none'|'by_kind',unknown_date?:'folder'|'modified_time',subfolder?}`：固定选项而非模板；`by_kind` 在日期目录内分 RAW/JPG/TIFF/OTHER，XMP 跟随其 RAW；拍摄日缺失默认进入 `unknown-date/`，仅显式选择 `modified_time` 时按源文件修改日并逐项标注 `date_source`；导入日在规划时冻结为 `ImportPlan.import_day`；`subfolder` 只接受普通目录名，拒绝越级、绝对路径与保留名。文件名永不改变。`ImportPlan.rules` 记录冻结的规则。
-- `import.execute {plan_id}` → `ImportResult`；仅当前会话已审核计划可执行，计划消费后重试须重新规划。
+- `card.identify {mount_path,volume_label?,volume_serial?,capacity_bytes?}` → `{status:'known',card}` | `{status:'unknown'|'foreign',candidates:Card[],identity_id?}`；只读。按卷根 `/.nebulume/volume.json` 识别；卷标/序列号/容量只作“可能是这张卡”的提示，从不自动绑定。未挂载返回 `E_OFFLINE`。
+- `card.register {mount_path,name,...}` → `Card`：写入身份文件并读回校验（写保护卡返回 `E_IO`），同时建立 `removable` 位置。已登记返回 `E_CONFLICT`。`card.bind {mount_path,card_id,...}` → `Card`：把当前卷（如格式化后的卡）绑定到用户选择的已有记录，重写身份文件，继承名称、默认方案与历史。`card.list {}`、`card.update {id,name?,default_preset_id?:string|null}`、`card.remove {id}`（只删记录，不触碰卡与已导入文件）。身份文件是唯一写入卡的内容。
+- `preset.list {}`、`preset.save {id?,name,library_id,rules:OrganizeRules,deduplicate?}`（规则经 neb-ingest 校验）、`preset.remove {id}`（引用它的卡改为无默认方案）。
+- `import.batches {library_id}` → `ImportBatch[]`：`{id,library_id,card_id?,source,rules,started_at,finished_at?,status,copied,duplicates,failed,asset_count}`。`asset.list` 接受 `import_batch_id` 筛选。
+- `import.execute {plan_id}` → `ImportResult`；可附 `card_id`。完成并索引目标库后写入导入批次，结果附 `batch`（失败时 `batch_error`）；只有本次实际复制的文件被标记该批次并记录 SHA-256，跳过的重复项不改归属。`ImportResult.rules` 为执行时冻结的规则。仅当前会话已审核计划可执行，计划消费后重试须重新规划。
 - `import.history {}` → `ImportResult[]`，来自持久日志；遗留 running 作业返回 interrupted。
 - `system.info {}` → runtime version, capability status and explicit limits.
 
