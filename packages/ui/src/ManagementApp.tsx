@@ -17,7 +17,8 @@ import AssetInspector from './AssetInspector';
 import { Thumbnail } from './PhotoView';
 import StorageWorkspace from './StorageWorkspace';
 import ImportWorkspace from './ImportWorkspace';
-import Viewer from './Viewer';
+import Viewer, { type CullQueue, type ViewerMode } from './Viewer';
+import { readAutoAdvance, writeAutoAdvance } from './culling';
 import Icon from './Icon';
 import BrandMark from './BrandMark';
 import ThemeControl from './ThemeControl';
@@ -29,6 +30,7 @@ import {
   type Asset,
   type AssetListOptions,
   type AssetListResult,
+  type FlagFilter,
   type Library,
   type ScanResult,
   type StorageConfig,
@@ -65,6 +67,7 @@ export default function ManagementApp() {
   const [query, setQuery] = createSignal('');
   const [rating, setRating] = createSignal(0);
   const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
+  const [flag, setFlag] = createSignal<FlagFilter>('any');
   const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('captured_at');
   const [direction, setDirection] =
     createSignal<NonNullable<AssetListOptions['sort_direction']>>('desc');
@@ -89,7 +92,12 @@ export default function ManagementApp() {
   );
   const [librarySource, setLibrarySource] = createSignal<StorageConfig>();
   const [libraryPrefix, setLibraryPrefix] = createSignal('');
-  const [overlay, setOverlay] = createSignal<{ id: string; ids: string[] }>();
+  const [overlay, setOverlay] = createSignal<{
+    id: string;
+    ids: string[];
+    mode?: ViewerMode;
+    queue?: CullQueue;
+  }>();
   let fileInput!: HTMLInputElement;
   let searchInput: HTMLInputElement | undefined;
   let navigationButton: HTMLButtonElement | undefined;
@@ -112,6 +120,7 @@ export default function ManagementApp() {
     libraries().find((library) => library.id === libraryId()),
   );
   const selected = createMemo(() => assets().find((asset) => asset.id === selectedId()));
+  const filtered = () => !!(query() || rating() || format() !== 'all' || flag() !== 'any');
   const [detail, { mutate: mutateDetail, refetch: refetchDetail }] = createResource(
     () => info() && section() === 'libraries' && selected()?.id,
     async (id): Promise<{ asset: Asset | null; error: string }> => {
@@ -165,6 +174,7 @@ export default function ManagementApp() {
       query: query().trim() || undefined,
       rating: rating() || undefined,
       format: format(),
+      flag: flag() === 'any' ? undefined : flag(),
       sort_by: sort(),
       sort_direction: direction(),
     };
@@ -227,6 +237,7 @@ export default function ManagementApp() {
     query();
     rating();
     format();
+    flag();
     sort();
     direction();
     const initialized = ready();
@@ -263,6 +274,7 @@ export default function ManagementApp() {
     setQuery('');
     setRating(0);
     setFormat('all');
+    setFlag('any');
     setInfo(false);
     setLibraryId(library.id);
     setSection('libraries');
@@ -398,6 +410,19 @@ export default function ManagementApp() {
       });
     else setOverlay({ id: asset.id, ids });
   }
+  async function startCulling() {
+    const start = selected() || assets()[0];
+    const id = libraryId();
+    if (!start || !id) return;
+    // The viewer snapshots the whole filtered result, not just the loaded page.
+    const queue = { library_id: id, options: { ...listOptions(), library_id: id } };
+    const loaded = assets().map((item) => item.id);
+    if (desktop)
+      await action('正在打开选图…', async () => {
+        await openViewerWindow(start.id, loaded, { mode: 'cull', queue });
+      });
+    else setOverlay({ id: start.id, ids: loaded, mode: 'cull', queue });
+  }
   async function openFile() {
     if (!desktop) {
       openAfterImport = true;
@@ -487,6 +512,10 @@ export default function ManagementApp() {
     else if (event.key.toLowerCase() === 'i') setInfo((value) => !value);
     else if (/^[0-5]$/.test(event.key)) void rate(Number(event.key));
     else if (event.key === 'Escape') setInfo(false);
+    else if (event.shiftKey && event.key.toLowerCase() === 'c' && assets().length) {
+      event.preventDefault();
+      void startCulling();
+    }
   }
   function queueAssetUpdate(update: AssetUpdated) {
     if (!update.id) return;
@@ -820,6 +849,16 @@ export default function ManagementApp() {
                       {desktop ? '扫描更新' : '载入图片'}
                     </button>
                     <button
+                      class="button"
+                      disabled={!assets().length || !!busy()}
+                      onClick={() => void startCulling()}
+                      aria-keyshortcuts="Shift+C"
+                      title="以当前筛选结果逐张选图（Shift+C）"
+                    >
+                      <Icon name="star" size={15} />
+                      选图
+                    </button>
+                    <button
                       class={`button ${info() ? 'active' : ''}`}
                       disabled={!selected()}
                       onClick={() => setInfo((value) => !value)}
@@ -866,6 +905,17 @@ export default function ManagementApp() {
                         </option>
                       )}
                     </For>
+                  </select>
+                  <select
+                    value={flag()}
+                    onChange={(event) => setFlag(event.currentTarget.value as FlagFilter)}
+                    aria-label="旗标筛选"
+                  >
+                    <option value="any">所有旗标</option>
+                    <option value="pick">留用</option>
+                    <option value="none">未标记</option>
+                    <option value="reject">淘汰</option>
+                    <option value="not_reject">隐藏淘汰</option>
                   </select>
                   <select
                     value={format()}
@@ -950,13 +1000,13 @@ export default function ManagementApp() {
                           <h2>
                             {loading()
                               ? '正在读取图片…'
-                              : query() || rating() || format() !== 'all'
+                              : filtered()
                                 ? '没有匹配的照片'
                                 : '图片库尚无照片'}
                           </h2>
                           <p>
-                            {query() || rating() || format() !== 'all'
-                              ? '调整搜索词、评级或文件格式筛选。'
+                            {filtered()
+                              ? '调整搜索词、评级、旗标或文件格式筛选。'
                               : desktop
                                 ? '扫描此目录建立索引，照片在原位置保留。'
                                 : '选择本地图片开始体验。'}
@@ -965,18 +1015,14 @@ export default function ManagementApp() {
                             <button
                               class="button"
                               onClick={() =>
-                                query() || rating() || format() !== 'all'
-                                  ? (setQuery(''), setRating(0), setFormat('all'))
+                                filtered()
+                                  ? (setQuery(''), setRating(0), setFormat('all'), setFlag('any'))
                                   : desktop
                                     ? scan(library())
                                     : fileInput.click()
                               }
                             >
-                              {query() || rating() || format() !== 'all'
-                                ? '清除筛选'
-                                : desktop
-                                  ? '扫描图片库'
-                                  : '选择本地图片'}
+                              {filtered() ? '清除筛选' : desktop ? '扫描图片库' : '选择本地图片'}
                             </button>
                           </Show>
                         </div>
@@ -1200,6 +1246,8 @@ export default function ManagementApp() {
           <Viewer
             initialAssetId={context().id}
             initialAssetIds={context().ids}
+            initialMode={context().mode}
+            initialQueue={context().queue}
             onClose={() => {
               setOverlay(undefined);
               document.title = 'Nebulume — 影像管理';
@@ -1226,6 +1274,29 @@ function saveThumbSize(value: number) {
   } catch {
     /* The preference remains effective for this session. */
   }
+}
+function CullingSettings() {
+  const [auto, setAuto] = createSignal(readAutoAdvance());
+  return (
+    <section class="settings-panel">
+      <h2>浏览与选图</h2>
+      <div class="settings-row">
+        <div>
+          <strong>打标后自动下一张</strong>
+          <p>选图模式中打星或打旗后，确认动效结束即前进。选图工具栏可随时切换。</p>
+        </div>
+        <input
+          type="checkbox"
+          checked={auto()}
+          onChange={(event) => {
+            setAuto(event.currentTarget.checked);
+            writeAutoAdvance(event.currentTarget.checked);
+          }}
+          aria-label="打标后自动下一张"
+        />
+      </div>
+    </section>
+  );
 }
 function Settings(props: {
   system?: Record<string, unknown>;
@@ -1260,6 +1331,7 @@ function Settings(props: {
           />
         </div>
       </section>
+      <CullingSettings />
       <CacheSettings />
       <section class="settings-panel">
         <h2>快捷键</h2>
@@ -1282,6 +1354,25 @@ function Settings(props: {
           <kbd>Esc</kbd>
           <span>搜索当前图片库</span>
           <kbd>Ctrl / ⌘ F</kbd>
+          <span>以当前筛选开始选图 / 切换查看与选图</span>
+          <kbd>Shift C</kbd>
+        </div>
+        <h3>选图模式</h3>
+        <div class="settings-shortcuts">
+          <span>打星 / 清除星级</span>
+          <kbd>1–5 / 0</kbd>
+          <span>留用 / 淘汰 / 清除旗标</span>
+          <kbd>P / X / U</kbd>
+          <span>单张 / 对比视图</span>
+          <kbd>G / C</kbd>
+          <span>适合窗口 ↔ 1:1</span>
+          <kbd>Z</kbd>
+          <span>撤销上一次标记</span>
+          <kbd>Ctrl / ⌘ Z</kbd>
+          <span>显示或隐藏选图信息</span>
+          <kbd>Tab</kbd>
+          <span>显示或隐藏相机对焦点</span>
+          <kbd>Shift F</kbd>
         </div>
       </section>
       <section class="settings-panel">

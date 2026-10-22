@@ -1,4 +1,5 @@
 import {
+  For,
   Show,
   createEffect,
   createMemo,
@@ -13,7 +14,7 @@ import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { chooseSave, desktop, execute, viewerContext } from './api';
 import AssetInspector from './AssetInspector';
-import PhotoView from './PhotoView';
+import PhotoView, { Thumbnail } from './PhotoView';
 import Icon from './Icon';
 import {
   errorMessage,
@@ -22,17 +23,41 @@ import {
   isTextEntry,
   validCrop,
   type Asset,
+  type AssetListOptions,
+  type AssetListResult,
   type Crop,
+  type Flag,
   type FocusInfo,
   type Preview,
 } from './model';
 import { viewerIds } from './workspace';
 import { focusPresentation } from './viewer-focus';
+import {
+  CULL_MARK_ANIMATION_MS,
+  UndoStack,
+  compareWindow,
+  cullKeyAction,
+  markOf,
+  nextAfterMark,
+  readAutoAdvance,
+  snapshotQueue,
+  writeAutoAdvance,
+  type Mark,
+} from './culling';
 import './viewer-focus.css';
+import './culling.css';
+
+export type ViewerMode = 'view' | 'cull';
+export interface CullQueue {
+  library_id: string;
+  options: AssetListOptions;
+}
 
 export default function Viewer(props: {
   initialAssetId?: string;
   initialAssetIds?: string[];
+  initialMode?: ViewerMode;
+  initialQueue?: CullQueue;
   onClose?: () => void;
   onAssetChanged?: (asset: Asset) => void;
 }) {
@@ -58,6 +83,18 @@ export default function Viewer(props: {
   const [focusLoading, setFocusLoading] = createSignal(false);
   const [focusError, setFocusError] = createSignal('');
   const [refreshing, setRefreshing] = createSignal(false);
+  const [mode, setMode] = createSignal<ViewerMode>(props.initialMode || 'view');
+  const [cullView, setCullView] = createSignal<'single' | 'compare'>('single');
+  const [compareCount] = createSignal(2);
+  const [hud, setHud] = createSignal(true);
+  const [autoAdvance, setAutoAdvance] = createSignal(readAutoAdvance());
+  const [pulse, setPulse] = createSignal<{ kind: 'rate' | 'flag'; value: string; key: number }>();
+  const [zoomToggle, setZoomToggle] = createSignal(0);
+  const [compareAssets, setCompareAssets] = createSignal<Record<string, Asset>>({});
+  const [queueLoading, setQueueLoading] = createSignal(false);
+  const undo = new UndoStack();
+  let pulseTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingAdvance: (() => void) | undefined;
   let container!: HTMLDivElement;
   let timer: ReturnType<typeof setTimeout>;
   let request = 0;
@@ -165,7 +202,9 @@ export default function Viewer(props: {
     setAsset(undefined);
     setCropMode(false);
     try {
-      const next = await execute<Asset>('asset.get', { id: nextId });
+      const loaded = await execute<Asset>('asset.get', { id: nextId });
+      const pending = optimistic.get(nextId);
+      const next = pending ? { ...loaded, rating: pending.rating, flag: pending.flag } : loaded;
       if (token === request && id() === nextId) {
         setAsset({ ...next, preview_revision: revisions.get(next.id) });
         setCrop({ ...(next.crop || fullCrop) });
@@ -183,18 +222,39 @@ export default function Viewer(props: {
       if (next) void loadAsset(next);
     }),
   );
+  async function adoptQueue(startId: string, ids: string[], queue?: CullQueue | null) {
+    setIds(viewerIds(startId, ids));
+    if (!queue) return;
+    // Freeze membership once: marks made in this session never remove images.
+    setQueueLoading(true);
+    try {
+      setIds(
+        await snapshotQueue(
+          (command, params) => execute<AssetListResult>(command, params),
+          queue.library_id,
+          queue.options,
+          startId,
+        ),
+      );
+    } catch (e) {
+      setError(`无法载入选图队列，仅显示已打开的照片：${errorMessage(e)}`);
+    } finally {
+      setQueueLoading(false);
+    }
+  }
   onMount(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
     const previousTitle = document.title;
     // Single-letter shortcuts are active only while focus belongs to this viewer.
     container.focus({ preventScroll: true });
     if (props.initialAssetId) {
-      setIds(viewerIds(props.initialAssetId, props.initialAssetIds || []));
+      void adoptQueue(props.initialAssetId, props.initialAssetIds || [], props.initialQueue);
     } else if (desktop)
       void viewerContext()
         .then((context) => {
-          setIds(viewerIds(context.asset_id, context.asset_ids));
+          setMode(context.mode === 'cull' ? 'cull' : 'view');
           setId(context.asset_id);
+          void adoptQueue(context.asset_id, context.asset_ids, context.queue);
         })
         .catch((e) => {
           setError(errorMessage(e));
@@ -208,6 +268,7 @@ export default function Viewer(props: {
     window.addEventListener('keydown', keyboard);
     onCleanup(() => {
       clearTimeout(timer);
+      clearTimeout(pulseTimer);
       window.removeEventListener('keydown', keyboard);
       request++;
       focusRequest++;
@@ -216,10 +277,169 @@ export default function Viewer(props: {
     });
   });
   function move(direction: number) {
-    if (cropMode() || busy() || loading()) return;
+    if (cropMode() || busy()) return;
+    if (loading() && mode() !== 'cull') return;
     const next = ids()[index() + direction];
     if (next) setId(next);
     activity();
+  }
+  // Culling: optimistic marks, short confirmation, then optional auto-advance.
+  function finishPulse() {
+    clearTimeout(pulseTimer);
+    pulseTimer = undefined;
+    setPulse(undefined);
+    const advance = pendingAdvance;
+    pendingAdvance = undefined;
+    advance?.();
+  }
+  // Marks not yet confirmed by the catalog; a reload of that photo must not show stale values.
+  const optimistic = new Map<string, Mark>();
+  async function markTarget(targetId: string): Promise<Mark | undefined> {
+    const pending = optimistic.get(targetId);
+    if (pending) return pending;
+    const current = asset();
+    if (current?.id === targetId) return markOf(current);
+    const compared = compareAssets()[targetId];
+    if (compared) return markOf(compared);
+    // Rapid keys can arrive before the next photo has loaded; read its marks directly.
+    return markOf(await execute<Asset>('asset.get', { id: targetId }));
+  }
+  function applyLocal(updated: Mark) {
+    setAsset((previous) =>
+      previous && previous.id === updated.id
+        ? { ...previous, rating: updated.rating, flag: updated.flag }
+        : previous,
+    );
+    setCompareAssets((map) =>
+      map[updated.id]
+        ? {
+            ...map,
+            [updated.id]: { ...map[updated.id], rating: updated.rating, flag: updated.flag },
+          }
+        : map,
+    );
+  }
+  async function persistMark(target: Mark, next: Mark) {
+    const result =
+      next.flag !== target.flag && next.rating !== target.rating
+        ? await execute<Asset>('asset.mark_batch', {
+            ids: [next.id],
+            rating: next.rating,
+            flag: next.flag,
+          }).then(() => execute<Asset>('asset.get', { id: next.id }))
+        : next.flag !== target.flag
+          ? await execute<Asset>('asset.flag', { id: next.id, flag: next.flag })
+          : await execute<Asset>('asset.rate', { id: next.id, rating: next.rating });
+    await changed(result, next.flag !== target.flag ? 'flag' : 'rating');
+  }
+  async function mark(kind: 'rate' | 'flag', value: number | Flag) {
+    // A key during the confirmation finishes it (and its advance) first, so each key
+    // applies to the photo the user sees next; none is dropped or applied twice.
+    if (pulse()) finishPulse();
+    const targetId = id();
+    if (!targetId) return;
+    let before: Mark | undefined;
+    try {
+      before = await markTarget(targetId);
+    } catch (e) {
+      setError(`标记未保存：${errorMessage(e)}`);
+      return;
+    }
+    if (!before || id() !== targetId) return;
+    if (pulse()) finishPulse();
+    const next: Mark =
+      kind === 'rate' ? { ...before, rating: value as number } : { ...before, flag: value as Flag };
+    const unchanged = next.rating === before.rating && next.flag === before.flag;
+    applyLocal(next);
+    const position = ids().indexOf(targetId);
+    const step = nextAfterMark(position, ids().length, autoAdvance());
+    setPulse({ kind, value: String(value), key: Date.now() });
+    let failed = false;
+    if (!unchanged) {
+      const previous = before;
+      optimistic.set(targetId, next);
+      undo.push(previous);
+      void persistMark(previous, next)
+        .catch((e) => {
+          failed = true;
+          applyLocal(previous);
+          setError(`标记未保存：${errorMessage(e)}`);
+          if (id() !== targetId && ids().includes(targetId)) setId(targetId);
+        })
+        .finally(() => {
+          if (optimistic.get(targetId) === next) optimistic.delete(targetId);
+        });
+    }
+    // Advance on the confirmation, not on the save, so fast culling keeps pace.
+    pendingAdvance = () => {
+      if (failed || id() !== targetId) return;
+      if (step.atEnd) setNotice('已到最后一张。');
+      else if (step.index !== position) setId(ids()[step.index]);
+    };
+    pulseTimer = setTimeout(finishPulse, CULL_MARK_ANIMATION_MS);
+  }
+  async function undoMark() {
+    if (pulse()) finishPulse();
+    const previous = undo.pop();
+    if (!previous) {
+      setNotice('没有可撤销的标记。');
+      return;
+    }
+    try {
+      const updated = await execute<Asset>('asset.mark_batch', {
+        ids: [previous.id],
+        rating: previous.rating,
+        flag: previous.flag,
+      }).then(() => execute<Asset>('asset.get', { id: previous.id }));
+      if (id() !== previous.id && ids().includes(previous.id)) setId(previous.id);
+      applyLocal(previous);
+      await changed(updated, 'flag');
+    } catch (e) {
+      undo.push(previous);
+      setError(`撤销失败：${errorMessage(e)}`);
+    }
+  }
+  function toggleMode() {
+    if (cropMode()) setCropMode(false);
+    setMode((value) => (value === 'cull' ? 'view' : 'cull'));
+    activity();
+  }
+  function toggleAutoAdvance() {
+    const next = !autoAdvance();
+    setAutoAdvance(next);
+    writeAutoAdvance(next);
+  }
+  const compareIds = createMemo(() =>
+    mode() === 'cull' && cullView() === 'compare'
+      ? compareWindow(ids(), Math.max(0, index()), compareCount())
+      : [],
+  );
+  createEffect(
+    on(compareIds, (list) => {
+      for (const compareId of list) {
+        if (compareAssets()[compareId]) continue;
+        void execute<Asset>('asset.get', { id: compareId })
+          .then((loaded) => setCompareAssets((map) => ({ ...map, [compareId]: loaded })))
+          .catch(() => undefined);
+      }
+    }),
+  );
+  function cullKeyboard(event: KeyboardEvent): boolean {
+    const action = cullKeyAction(event);
+    if (!action) return false;
+    event.preventDefault();
+    if (action.kind === 'rate' || action.kind === 'flag') {
+      if (!event.repeat) void mark(action.kind, action.value);
+    } else if (action.kind === 'move') move(action.delta);
+    else if (action.kind === 'view') setCullView(action.value);
+    else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
+    else if (action.kind === 'undo') void undoMark();
+    else if (action.kind === 'hud') setHud((value) => !value);
+    else if (action.kind === 'mode') toggleMode();
+    else if (action.kind === 'focus') toggleFocus();
+    else if (action.kind === 'fullscreen') void fullscreen();
+    else if (action.kind === 'escape') void escape();
+    return true;
   }
   async function close() {
     try {
@@ -271,6 +491,15 @@ export default function Viewer(props: {
   function keyboard(event: KeyboardEvent) {
     recoverFocus();
     if (!container.contains(document.activeElement)) return;
+    if (
+      mode() === 'cull' &&
+      !isTextEntry(event.target) &&
+      !event.defaultPrevented &&
+      !(event.key === 'Tab' && isControl(document.activeElement))
+    ) {
+      activity();
+      if (cullKeyboard(event)) return;
+    }
     if (props.onClose && event.key === 'Tab') {
       const nodes = [
         ...container.querySelectorAll<HTMLElement>(
@@ -311,7 +540,7 @@ export default function Viewer(props: {
       event.preventDefault();
       move(-1);
     } else if (key === 'i') setInfo((value) => !value);
-    else if (key === 'c') beginCrop();
+    else if (key === 'c' && !event.shiftKey) beginCrop();
     else if (key === 'p' && !event.repeat) {
       event.preventDefault();
       toggleFocus();
@@ -320,6 +549,7 @@ export default function Viewer(props: {
       event.preventDefault();
       void escape();
     } else if (/^[0-5]$/.test(key)) void rate(Number(key));
+    else if (key === 'c' && event.shiftKey) toggleMode();
   }
   function toggleFocus() {
     if (focusUnavailableReason()) return;
@@ -344,7 +574,7 @@ export default function Viewer(props: {
       queueMicrotask(() => recoverFocus(trigger));
     }
   }
-  async function changed(updated: Asset, change: 'rating' | 'crop' | 'refresh') {
+  async function changed(updated: Asset, change: 'rating' | 'flag' | 'crop' | 'refresh') {
     const revision =
       change === 'crop' ? Date.now() : updated.preview_revision || revisions.get(updated.id);
     updated = { ...updated, preview_revision: revision };
@@ -357,7 +587,7 @@ export default function Viewer(props: {
           id: updated.id,
           change,
           asset: updated,
-          ...(change === 'rating' ? {} : { revision }),
+          ...(change === 'rating' || change === 'flag' ? {} : { revision }),
         });
       } catch {
         setError('编辑已保存，但未能通知图库更新。请在图库使用“扫描更新”。');
@@ -425,7 +655,7 @@ export default function Viewer(props: {
     <div
       ref={container}
       tabIndex={-1}
-      class={`immersive-viewer ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${info() ? 'with-info' : ''}`}
+      class={`immersive-viewer ${mode() === 'cull' ? 'culling' : ''} ${mode() === 'cull' && asset()?.flag === 'reject' ? 'rejected' : ''} ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${info() ? 'with-info' : ''}`}
       onPointerMove={activity}
       onPointerDown={(event) => {
         activity();
@@ -457,15 +687,47 @@ export default function Viewer(props: {
             </Show>
           </div>
           <div class="viewer-toolbar-actions">
+            <div class="viewer-mode-switch" role="group" aria-label="查看模式">
+              <button
+                class={mode() === 'view' ? 'active' : ''}
+                aria-pressed={mode() === 'view'}
+                onClick={() => mode() !== 'view' && toggleMode()}
+                title="普通查看（Shift+C 切换）"
+              >
+                查看
+              </button>
+              <button
+                class={mode() === 'cull' ? 'active' : ''}
+                aria-pressed={mode() === 'cull'}
+                aria-keyshortcuts="Shift+C"
+                onClick={() => mode() !== 'cull' && toggleMode()}
+                title="选图（Shift+C 切换）"
+              >
+                选图
+              </button>
+            </div>
+            <Show when={mode() === 'cull'}>
+              <button
+                class={`button compact cull-auto ${autoAdvance() ? 'active' : ''}`}
+                aria-pressed={autoAdvance()}
+                onClick={toggleAutoAdvance}
+                title="打分或打旗后自动前进到下一张"
+              >
+                自动下一张
+              </button>
+            </Show>
             <button
               class={`icon-button focus-toggle ${focusVisible() ? 'active' : ''}`}
               onClick={toggleFocus}
               aria-disabled={!!focusUnavailableReason()}
-              aria-label="显示对焦点（P）"
+              aria-label={mode() === 'cull' ? '显示对焦点（Shift+F）' : '显示对焦点（P）'}
               aria-pressed={focusVisible()}
-              aria-keyshortcuts="P"
+              aria-keyshortcuts={mode() === 'cull' ? 'Shift+F' : 'P'}
               aria-describedby={focusHelpId}
-              title={focusUnavailableReason() || '对焦点（P）· 实线选定，虚线活动'}
+              title={
+                focusUnavailableReason() ||
+                `对焦点（${mode() === 'cull' ? 'Shift+F' : 'P'}）· 实线选定，虚线活动`
+              }
             >
               <svg
                 width="18"
@@ -498,7 +760,7 @@ export default function Viewer(props: {
             <button
               class={`icon-button ${cropMode() ? 'active' : ''}`}
               onClick={() => (cropMode() ? setCropMode(false) : beginCrop())}
-              disabled={!asset() || !!busy()}
+              disabled={!asset() || !!busy() || mode() === 'cull'}
               aria-label={cropMode() ? '退出裁剪' : '裁剪（C）'}
               aria-pressed={cropMode()}
               aria-keyshortcuts="C"
@@ -563,8 +825,42 @@ export default function Viewer(props: {
             </button>
           </div>
         </Show>
+        <Show when={compareIds().length}>
+          <div
+            class={`cull-compare count-${compareIds().length}`}
+            role="listbox"
+            aria-label="对比视图"
+          >
+            <For each={compareIds()}>
+              {(compareId) => (
+                <Show
+                  when={compareAssets()[compareId]}
+                  fallback={<div class="cull-compare-placeholder">载入中…</div>}
+                >
+                  {(item) => (
+                    <div
+                      class={`cull-compare-item ${compareId === id() ? 'focused' : ''}`}
+                      role="option"
+                      aria-selected={compareId === id()}
+                    >
+                      <Thumbnail
+                        asset={item()}
+                        selected={compareId === id()}
+                        onSelect={() => setId(compareId)}
+                        onOpen={() => {
+                          setId(compareId);
+                          setCullView('single');
+                        }}
+                      />
+                    </div>
+                  )}
+                </Show>
+              )}
+            </For>
+          </div>
+        </Show>
         <Show
-          when={asset()}
+          when={compareIds().length ? undefined : asset()}
           fallback={
             <div class="viewer-loading" role="status" aria-live="polite">
               {loading() ? (
@@ -596,6 +892,7 @@ export default function Viewer(props: {
               hasNext={!busy() && !cropMode() && index() < ids().length - 1}
               focusEnabled={focusVisible()}
               focusRegions={focus().regions}
+              zoomToggle={zoomToggle()}
               onPreviewStateChange={(state) => {
                 if (current().id !== id() || state.key !== currentPreviewKey()) return;
                 setPreviewKey(state.key);
@@ -625,6 +922,34 @@ export default function Viewer(props: {
                 }
               }}
             />
+          )}
+        </Show>
+        <Show when={mode() === 'cull' && hud() && asset()}>
+          {(current) => (
+            <div
+              class={`cull-hud ${pulse() ? `pulse pulse-${pulse()!.kind}` : ''} flag-${current().flag || 'none'}`}
+              role="status"
+              aria-live="polite"
+            >
+              <span class="cull-hud-stars" aria-label={`${current().rating} 星`}>
+                <For each={[1, 2, 3, 4, 5]}>
+                  {(value) => <i class={value <= current().rating ? 'on' : ''}>★</i>}
+                </For>
+              </span>
+              <span class={`cull-hud-flag ${current().flag || 'none'}`}>
+                {current().flag === 'pick'
+                  ? '留用'
+                  : current().flag === 'reject'
+                    ? '淘汰'
+                    : '未标记'}
+              </span>
+              <span class="cull-hud-count">
+                {queueLoading() ? '队列载入中…' : `${Math.max(0, index() + 1)} / ${ids().length}`}
+              </span>
+              <span class="cull-hud-keys" aria-hidden="true">
+                1–5 星 · P 留用 · X 淘汰 · U 清除 · ⌘/Ctrl+Z 撤销
+              </span>
+            </div>
           )}
         </Show>
         <Show when={busy()}>

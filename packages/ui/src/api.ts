@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { demoCommand } from './demo';
-import type { Volume } from './model';
+import type { AssetListOptions, Volume } from './model';
 import { createPreviewScheduler, type PreviewRequestOptions } from './concurrency';
 
 export const desktop = isTauri();
@@ -61,10 +61,29 @@ export async function chooseImage(): Promise<string | null> {
   });
   return typeof selected === 'string' ? selected : null;
 }
-export function openViewerWindow(assetId: string, assetIds: string[]): Promise<string> {
-  return invoke<string>('open_viewer', { assetId, assetIds });
+export interface ViewerQueueContext {
+  library_id: string;
+  options: AssetListOptions;
 }
-export function viewerContext(): Promise<{ asset_id: string; asset_ids: string[] }> {
+export function openViewerWindow(
+  assetId: string,
+  assetIds: string[],
+  extra: { mode?: 'view' | 'cull'; queue?: ViewerQueueContext } = {},
+): Promise<string> {
+  // Ordinary viewing keeps its original payload; culling adds mode and queue.
+  return invoke<string>('open_viewer', {
+    assetId,
+    assetIds,
+    ...(extra.mode ? { mode: extra.mode } : {}),
+    ...(extra.queue ? { queue: extra.queue } : {}),
+  });
+}
+export function viewerContext(): Promise<{
+  asset_id: string;
+  asset_ids: string[];
+  mode?: 'view' | 'cull';
+  queue?: ViewerQueueContext | null;
+}> {
   return invoke('viewer_context');
 }
 export function listVolumes(): Promise<Volume[]> {
