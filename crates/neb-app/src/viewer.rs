@@ -1,5 +1,5 @@
 use neb_service::{CommandError, Service};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     collections::{HashMap, HashSet},
@@ -12,11 +12,22 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowB
 
 const MAX_ASSETS: usize = 10_000;
 const MAX_WINDOWS: usize = 16;
+const MAX_QUEUE_OPTIONS: usize = 8 * 1024;
 
 #[derive(Clone, Serialize)]
 pub struct ViewerContext {
     pub asset_id: String,
     pub asset_ids: Vec<String>,
+    /// "view" for ordinary viewing, "cull" to start in culling mode.
+    pub mode: String,
+    /// A culling queue description; the window snapshots matching ids itself.
+    pub queue: Option<ViewerQueue>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ViewerQueue {
+    pub library_id: String,
+    pub options: serde_json::Value,
 }
 
 #[derive(Default)]
@@ -60,7 +71,36 @@ fn context(asset_id: String, asset_ids: Vec<String>) -> Result<ViewerContext, Co
     Ok(ViewerContext {
         asset_id,
         asset_ids,
+        mode: "view".into(),
+        queue: None,
     })
+}
+
+fn culling_context(
+    asset_id: String,
+    asset_ids: Vec<String>,
+    mode: Option<String>,
+    queue: Option<ViewerQueue>,
+) -> Result<ViewerContext, CommandError> {
+    let mut result = context(asset_id, asset_ids)?;
+    let mode = mode.unwrap_or_else(|| "view".into());
+    if !matches!(mode.as_str(), "view" | "cull") {
+        return Err(error("E_INVALID", "Viewer mode must be view or cull"));
+    }
+    if let Some(queue) = &queue {
+        let valid = !queue.library_id.is_empty()
+            && queue.library_id.len() <= 128
+            && !queue.library_id.chars().any(char::is_control);
+        if !valid || !queue.options.is_object() {
+            return Err(error("E_INVALID", "Invalid viewer queue"));
+        }
+        if queue.options.to_string().len() > MAX_QUEUE_OPTIONS {
+            return Err(error("E_LIMIT", "Viewer queue options are too large"));
+        }
+    }
+    result.mode = mode;
+    result.queue = queue;
+    Ok(result)
 }
 
 pub async fn open(
@@ -68,7 +108,10 @@ pub async fn open(
     asset_id: String,
     asset_ids: Vec<String>,
 ) -> Result<String, CommandError> {
-    let context = context(asset_id, asset_ids)?;
+    open_context(app, context(asset_id, asset_ids)?).await
+}
+
+async fn open_context(app: AppHandle, context: ViewerContext) -> Result<String, CommandError> {
     let service = Arc::clone(app.state::<Arc<Service>>().inner());
     let selected = context.asset_id.clone();
     let asset = tauri::async_runtime::spawn_blocking(move || {
@@ -118,8 +161,10 @@ pub async fn open_viewer(
     app: AppHandle,
     asset_id: String,
     asset_ids: Vec<String>,
+    mode: Option<String>,
+    queue: Option<ViewerQueue>,
 ) -> Result<String, CommandError> {
-    open(app, asset_id, asset_ids).await
+    open_context(app, culling_context(asset_id, asset_ids, mode, queue)?).await
 }
 
 #[tauri::command]
@@ -211,5 +256,32 @@ mod tests {
         assert!(context("".into(), vec![]).is_err());
         assert!(context("ok".into(), vec!["line\nbreak".into()]).is_err());
         assert!(context("ok".into(), vec!["a".into(); MAX_ASSETS + 1]).is_err());
+    }
+
+    #[test]
+    fn viewer_context_carries_mode_and_bounded_queue() {
+        let queue = |options| ViewerQueue {
+            library_id: "library".into(),
+            options,
+        };
+        let plain = culling_context("a".into(), vec![], None, None).unwrap();
+        assert_eq!(plain.mode, "view");
+        let cull = culling_context(
+            "a".into(),
+            vec![],
+            Some("cull".into()),
+            Some(queue(serde_json::json!({"flag":"none"}))),
+        )
+        .unwrap();
+        assert_eq!(cull.mode, "cull");
+        assert_eq!(cull.queue.unwrap().options["flag"], "none");
+        let invalid = culling_context("a".into(), vec![], Some("edit".into()), None);
+        assert_eq!(invalid.err().unwrap().code, "E_INVALID");
+        let large = serde_json::json!({"query":"x".repeat(MAX_QUEUE_OPTIONS)});
+        let limited = culling_context("a".into(), vec![], Some("cull".into()), Some(queue(large)));
+        assert_eq!(limited.err().unwrap().code, "E_LIMIT");
+        let not_object =
+            culling_context("a".into(), vec![], None, Some(queue(serde_json::json!([]))));
+        assert_eq!(not_object.err().unwrap().code, "E_INVALID");
     }
 }
