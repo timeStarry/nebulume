@@ -6,11 +6,36 @@ import {
   type ImportPlan,
   type ImportResult,
   type Library,
+  type OrganizeRules,
   type ScanResult,
   type Volume,
 } from './model';
-import { displayDate, localLibraries } from './workspace';
+import {
+  dateSourceName,
+  defaultOrganizeRules,
+  displayDate,
+  localLibraries,
+  organizeExample,
+  subfolderError,
+} from './workspace';
 import Icon from './Icon';
+
+const RULES_KEY = 'nebulume.import.rules';
+function readRules(): OrganizeRules {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RULES_KEY) || 'null');
+    return saved ? { ...defaultOrganizeRules(), ...saved } : defaultOrganizeRules();
+  } catch {
+    return defaultOrganizeRules();
+  }
+}
+function writeRules(rules: OrganizeRules) {
+  try {
+    localStorage.setItem(RULES_KEY, JSON.stringify(rules));
+  } catch {
+    /* Rules still apply to this session. */
+  }
+}
 
 export default function ImportWorkspace(props: {
   active: boolean;
@@ -24,7 +49,12 @@ export default function ImportWorkspace(props: {
   const [volumeError, setVolumeError] = createSignal('');
   const [source, setSource] = createSignal('');
   const [targetId, setTargetId] = createSignal('');
-  const [layout, setLayout] = createSignal('date');
+  const [rules, setRules] = createSignal<OrganizeRules>(readRules());
+  const updateRules = (patch: Partial<OrganizeRules>) => {
+    const next = { ...rules(), ...patch };
+    setRules(next);
+    writeRules(next);
+  };
   const [deduplicate, setDeduplicate] = createSignal(true);
   const [plan, setPlan] = createSignal<ImportPlan>();
   const [plannedTarget, setPlannedTarget] = createSignal<Library>();
@@ -91,7 +121,7 @@ export default function ImportWorkspace(props: {
       const next = await execute<ImportPlan>('import.plan', {
         source: source().trim(),
         destination: target.root,
-        layout: layout(),
+        rules: rules(),
         deduplicate: deduplicate(),
       });
       setPlannedTarget({ ...target });
@@ -305,18 +335,93 @@ export default function ImportWorkspace(props: {
                   建立本地图片库
                 </button>
               </Show>
-              <div class="form-row">
-                <label>
-                  目录组织
-                  <select
-                    value={layout()}
-                    onChange={(e) => setLayout(e.currentTarget.value)}
-                    disabled={!!busy()}
+              <fieldset class="organize-rules" disabled={!!busy()}>
+                <legend>目录整理</legend>
+                <div class="form-row">
+                  <label>
+                    分类依据
+                    <select
+                      value={rules().date_basis}
+                      onChange={(e) =>
+                        updateRules({
+                          date_basis: e.currentTarget.value as OrganizeRules['date_basis'],
+                        })
+                      }
+                    >
+                      <option value="capture">按拍摄日期</option>
+                      <option value="import">按导入日期</option>
+                      <option value="preserve">保留卡内目录</option>
+                      <option value="none">不分日期</option>
+                    </select>
+                  </label>
+                  <Show when={rules().date_basis === 'capture' || rules().date_basis === 'import'}>
+                    <label>
+                      日期层级
+                      <select
+                        value={rules().date_layout}
+                        onChange={(e) =>
+                          updateRules({
+                            date_layout: e.currentTarget.value as OrganizeRules['date_layout'],
+                          })
+                        }
+                      >
+                        <option value="Y-M-D">2026-10-22</option>
+                        <option value="Y/Y-M-D">2026 / 2026-10-22</option>
+                        <option value="Y/M/Y-M-D">2026 / 10 / 2026-10-22</option>
+                        <option value="Y/M/D">2026 / 10 / 22</option>
+                      </select>
+                    </label>
+                  </Show>
+                </div>
+                <div class="form-row">
+                  <label>
+                    子目录（可选）
+                    <input
+                      value={rules().subfolder}
+                      onInput={(e) => updateRules({ subfolder: e.currentTarget.value.trim() })}
+                      placeholder="例如 Camera/Z8"
+                      aria-invalid={!!subfolderError(rules().subfolder)}
+                    />
+                  </label>
+                  <label class="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={rules().type_split === 'by_kind'}
+                      onChange={(e) =>
+                        updateRules({ type_split: e.currentTarget.checked ? 'by_kind' : 'none' })
+                      }
+                    />
+                    按类型分目录（RAW / JPG / TIFF / OTHER）
+                  </label>
+                </div>
+                <Show when={rules().date_basis === 'capture'}>
+                  <label class="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={rules().unknown_date === 'modified_time'}
+                      onChange={(e) =>
+                        updateRules({
+                          unknown_date: e.currentTarget.checked ? 'modified_time' : 'folder',
+                        })
+                      }
+                    />
+                    无拍摄时间时改用文件修改日期（计划中逐项标注）
+                  </label>
+                </Show>
+                <Show when={subfolderError(rules().subfolder)}>
+                  <p class="form-error">{subfolderError(rules().subfolder)}</p>
+                </Show>
+                <p class="field-note organize-example">
+                  示例：<code>{organizeExample(rules())}</code>
+                  <Show
+                    when={rules().date_basis === 'capture' && rules().unknown_date === 'folder'}
                   >
-                    <option value="date">按拍摄日期归档</option>
-                    <option value="preserve">保留来源目录结构</option>
-                  </select>
-                </label>
+                    ，无拍摄时间的文件归入 unknown-date
+                  </Show>
+                  <Show when={rules().date_basis === 'import'}>，导入日在生成计划时确定</Show>
+                </p>
+              </fieldset>
+              <div class="form-row">
                 <label class="checkbox-label">
                   <input
                     type="checkbox"
@@ -327,11 +432,13 @@ export default function ImportWorkspace(props: {
                   按文件内容跳过重复
                 </label>
               </div>
-              <Show when={layout() === 'date'}>
-                <p class="field-note">无拍摄日期的文件归入 unknown-date。</p>
-              </Show>
               <div class="workspace-form-actions">
-                <button class="button primary" disabled={!!busy() || !desktop || !targetId()}>
+                <button
+                  class="button primary"
+                  disabled={
+                    !!busy() || !desktop || !targetId() || !!subfolderError(rules().subfolder)
+                  }
+                >
                   生成导入计划
                 </button>
               </div>
@@ -374,7 +481,18 @@ export default function ImportWorkspace(props: {
                 <For each={plan()!.items.slice(0, 200)}>
                   {(item) => (
                     <div class="directory-entry">
-                      <span title={item.source}>{item.relative_path}</span>
+                      <span title={item.source}>
+                        {item.relative_path}
+                        <Show
+                          when={
+                            item.date_source === 'modified_time' || item.date_source === 'unknown'
+                          }
+                        >
+                          <small class={`date-source ${item.date_source}`}>
+                            {dateSourceName(item.date_source)}
+                          </small>
+                        </Show>
+                      </span>
                       <span>{bytes(item.size)}</span>
                       <span>{statusName(item.status)}</span>
                     </div>

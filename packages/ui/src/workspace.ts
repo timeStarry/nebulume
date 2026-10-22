@@ -6,6 +6,7 @@ import type {
   Flag,
   FlagFilter,
   Library,
+  OrganizeRules,
   StorageConfig,
   StorageCheck,
 } from './model';
@@ -211,4 +212,63 @@ export function availabilityPresentation(
         action: { label: '查看连接', section: 'sources' },
       };
   }
+}
+
+export const defaultOrganizeRules = (): OrganizeRules => ({
+  date_basis: 'capture',
+  date_layout: 'Y-M-D',
+  type_split: 'none',
+  unknown_date: 'folder',
+  subfolder: '',
+});
+/** Mirrors neb-ingest's subfolder validation so the form can explain problems early. */
+export function subfolderError(value: string): string {
+  if (!value) return '';
+  if (value.length > 120) return '子目录最多 120 个字符。';
+  const reserved = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
+  for (const part of value.split('/'))
+    if (
+      !part ||
+      part === '.' ||
+      part === '..' ||
+      /[.\s]$/.test(part) ||
+      reserved.test(part.split('.')[0]) ||
+      /[\\:*?"<>|\u0000-\u001f]/.test(part)
+    )
+      return '子目录只能是用 / 分隔的普通文件夹名，不能包含 .. 或特殊字符。';
+  return '';
+}
+/** A representative destination path, matching neb-ingest's target layout. */
+export function organizeExample(rules: OrganizeRules, day = '2026-10-22'): string {
+  const [y, m, d] = day.split('-');
+  const parts: string[] = [];
+  if (rules.subfolder) parts.push(rules.subfolder);
+  if (rules.date_basis === 'preserve') parts.push('DCIM/100NIKON');
+  else if (rules.date_basis !== 'none')
+    parts.push(
+      rules.date_layout === 'Y/Y-M-D'
+        ? `${y}/${day}`
+        : rules.date_layout === 'Y/M/Y-M-D'
+          ? `${y}/${m}/${day}`
+          : rules.date_layout === 'Y/M/D'
+            ? `${y}/${m}/${d}`
+            : day,
+    );
+  if (rules.type_split === 'by_kind') parts.push('RAW');
+  parts.push('DSC_0001.NEF');
+  return parts.join('/');
+}
+export function dateSourceName(source?: string): string {
+  return (
+    (
+      {
+        exif: '拍摄时间',
+        paired_exif: '同组拍摄时间',
+        import_date: '导入日',
+        modified_time: '文件修改时间',
+        unknown: '未知日期',
+        preserved: '保留目录',
+      } as Record<string, string>
+    )[source || ''] || ''
+  );
 }

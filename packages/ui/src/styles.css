@@ -2190,3 +2190,30 @@ kbd {
   flex: 1 1 240px;
   color: var(--nl-text-muted);
 }
+
+/* Import organization rules */
+.organize-rules {
+  display: grid;
+  gap: var(--nl-space-3);
+  margin: 0;
+  padding: var(--nl-space-3) var(--nl-space-4);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+}
+.organize-rules legend {
+  padding: 0 var(--nl-space-1);
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-sm);
+}
+.organize-example code {
+  font-family: var(--nl-font-mono);
+  overflow-wrap: anywhere;
+}
+.date-source {
+  margin-left: var(--nl-space-2);
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+}
+.date-source.modified_time {
+  color: var(--nl-warning);
+}

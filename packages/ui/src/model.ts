@@ -179,6 +179,15 @@ export interface ImportItem {
   relative_path: string;
   size: number;
   status: string;
+  /** exif, paired_exif, import_date, modified_time, unknown or preserved. */
+  date_source?: string;
+}
+export interface OrganizeRules {
+  date_basis: 'capture' | 'import' | 'none' | 'preserve';
+  date_layout: 'Y-M-D' | 'Y/Y-M-D' | 'Y/M/Y-M-D' | 'Y/M/D';
+  type_split: 'none' | 'by_kind';
+  unknown_date: 'folder' | 'modified_time';
+  subfolder: string;
 }
 export interface ImportPlan {
   id: string;
