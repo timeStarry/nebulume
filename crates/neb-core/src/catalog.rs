@@ -46,7 +46,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 7,
+            version <= 8,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -183,6 +183,43 @@ impl Core {
                  PRAGMA user_version=7;",
             )?;
         }
+        if version < 8 {
+            // Cards, presets and batches are catalog records only; no media is read.
+            migration.execute_batch(
+                "CREATE TABLE volume_identities(
+                    id TEXT PRIMARY KEY NOT NULL,
+                    location_id TEXT NOT NULL UNIQUE REFERENCES locations(id),
+                    volume_label TEXT, volume_serial TEXT, capacity_bytes INTEGER,
+                    last_mount_path TEXT, last_seen_at TEXT);
+                 CREATE TABLE import_presets(
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    library_id TEXT NOT NULL REFERENCES libraries(id),
+                    rules_json TEXT NOT NULL,
+                    deduplicate INTEGER NOT NULL DEFAULT 1 CHECK(deduplicate IN (0,1)),
+                    created_at TEXT NOT NULL);
+                 CREATE TABLE cards(
+                    id TEXT PRIMARY KEY NOT NULL REFERENCES volume_identities(id),
+                    name TEXT NOT NULL,
+                    default_preset_id TEXT REFERENCES import_presets(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    last_import_at TEXT);
+                 CREATE TABLE import_batches(
+                    id TEXT PRIMARY KEY NOT NULL,
+                    library_id TEXT NOT NULL REFERENCES libraries(id),
+                    card_id TEXT,
+                    source TEXT NOT NULL,
+                    rules_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    copied INTEGER NOT NULL DEFAULT 0,
+                    duplicates INTEGER NOT NULL DEFAULT 0,
+                    failed INTEGER NOT NULL DEFAULT 0);
+                 CREATE INDEX import_batches_library ON import_batches(library_id,started_at);
+                 PRAGMA user_version=8;",
+            )?;
+        }
         migration.commit()?;
         Ok(Self {
             database: Mutex::new(database),
@@ -190,7 +227,7 @@ impl Core {
         })
     }
 
-    fn db(&self) -> Result<MutexGuard<'_, Connection>> {
+    pub(crate) fn db(&self) -> Result<MutexGuard<'_, Connection>> {
         self.database
             .lock()
             .map_err(|_| anyhow!("E_INTERNAL: Catalog lock is unavailable"))
@@ -661,6 +698,9 @@ impl Core {
         )?;
         ensure!(exists, "E_NOT_FOUND: Library does not exist");
         let removed = transaction.execute("DELETE FROM assets WHERE library_id=?1", [id])?;
+        // Presets and batch summaries are catalog records about this library only.
+        transaction.execute("DELETE FROM import_batches WHERE library_id=?1", [id])?;
+        transaction.execute("DELETE FROM import_presets WHERE library_id=?1", [id])?;
         transaction.execute("DELETE FROM libraries WHERE id=?1", [id])?;
         delete_orphan_locations(&transaction)?;
         transaction.commit()?;
@@ -1544,7 +1584,7 @@ impl Core {
             .collect::<Vec<_>>()
             .join(" AND ");
         let scope_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
-        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6)");
+        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7)");
         let db = self.db()?;
         // Determine ambiguity from the unfiltered library. Only thin identity
         // fields are read globally; large metadata blobs are loaded for the page.
@@ -1604,7 +1644,8 @@ impl Core {
                         &search
                     },
                     format,
-                    flag
+                    flag,
+                    args.import_batch_id
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -1712,6 +1753,7 @@ struct AssetQuery {
     sort_by: Option<String>,
     sort_direction: Option<String>,
     flag: Option<String>,
+    import_batch_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1828,7 +1870,7 @@ fn location_row(row: &Row<'_>) -> rusqlite::Result<Location> {
     })
 }
 
-fn path_key(path: &str) -> String {
+pub(crate) fn path_key(path: &str) -> String {
     if cfg!(windows) {
         path.to_lowercase()
     } else {

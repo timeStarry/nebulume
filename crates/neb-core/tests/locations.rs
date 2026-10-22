@@ -11,7 +11,7 @@ fn photo(path: &std::path::Path) {
         .unwrap();
 }
 
-const V7_DOWNGRADE: &str = "DROP INDEX assets_library_key; DROP INDEX libraries_location; ALTER TABLE assets DROP COLUMN key; ALTER TABLE libraries DROP COLUMN location_id; DROP TABLE locations; PRAGMA user_version=6;";
+const V7_DOWNGRADE: &str = "DROP INDEX import_batches_library; DROP TABLE import_batches; DROP TABLE cards; DROP TABLE import_presets; DROP TABLE volume_identities; DROP INDEX assets_library_key; DROP INDEX libraries_location; ALTER TABLE assets DROP COLUMN key; ALTER TABLE libraries DROP COLUMN location_id; DROP TABLE locations; PRAGMA user_version=6;";
 
 #[test]
 fn folder_library_gets_an_implicit_location_and_location_relative_keys() {
@@ -125,7 +125,7 @@ fn v6_catalog_upgrades_to_v7_without_touching_marks_or_files() {
     let version: i64 = database
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let asset = core.asset(&id).unwrap();
     assert_eq!((asset.rating, asset.flag.as_str()), (4, "pick"));
     assert_eq!(asset.key.as_deref(), Some("a.png"));
