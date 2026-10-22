@@ -106,10 +106,15 @@ impl From<anyhow::Error> for CommandError {
             "E_OFFLINE",
             "E_LIMIT",
             "E_DOWNLOAD_REQUIRED",
+            // Longer codes first: matching is by prefix.
             "E_UNSUPPORTED_CODEC",
+            "E_UNSUPPORTED",
             "E_NOT_FOUND",
             "E_CONFLICT",
             "E_IN_USE",
+            "E_WRITE_UNVERIFIED",
+            "E_VERIFY",
+            "E_IO",
         ]
         .into_iter()
         .find(|code| message.starts_with(code))
@@ -304,6 +309,94 @@ impl Service {
             .map(Value::from)
     }
 
+    /// `library_id` naming a WebDAV/S3 library selects the remote import path.
+    fn remote_import_target(&self, params: &Value) -> Result<Option<(Library, StorageConfig)>> {
+        let Some(id) = params.get("library_id").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let library = self.core.library(id)?;
+        let Some(source) = library
+            .storage_id
+            .as_deref()
+            .map(|id| self.source(id))
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+        Ok((source.kind != "local").then_some((library, source)))
+    }
+
+    fn execute_remote_import(
+        &self,
+        library: &Library,
+        source: &StorageConfig,
+        params: &Value,
+    ) -> Result<Value> {
+        let writer = {
+            let storage = self
+                .storage
+                .lock()
+                .map_err(|_| anyhow!("Storage state unavailable"))?;
+            // Only a location that passed the explicit write test accepts imports.
+            ensure!(
+                storage.write_capability(&source.id) == neb_storage::WriteCapability::Verified,
+                "E_WRITE_UNVERIFIED: Test writing to {} in Locations before importing to it",
+                source.name
+            );
+            storage.open_writer(&source.id)?
+        };
+        let include_likely = params
+            .get("include_likely_duplicates")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let outcome = {
+            let mut ingest = self
+                .ingest
+                .lock()
+                .map_err(|_| anyhow!("Import state unavailable"))?;
+            ingest.execute_remote(string(params, "plan_id")?, &writer, include_likely)?
+        };
+        let mut result = serde_json::to_value(&outcome)?;
+        result["library_id"] = json!(library.id);
+        // Register published files directly from known keys and sizes; no rescan.
+        let mut registered = 0;
+        let mut errors = Vec::new();
+        for item in outcome.items.iter().filter(|item| item.status == "copied") {
+            let extension = Path::new(&item.destination)
+                .extension()
+                .and_then(|v| v.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if neb_core::image_kind(&extension).is_none() {
+                continue;
+            }
+            let cache_name = format!(
+                "{}.{}",
+                hex::encode(Sha256::digest(
+                    format!("{}:{}", item.destination, item.size).as_bytes()
+                )),
+                extension
+            );
+            match self.core.register_remote_asset(
+                &library.id,
+                &item.destination,
+                &cache_name,
+                item.size,
+            ) {
+                Ok(_) => registered += 1,
+                Err(error) => {
+                    errors.push(json!({"path":item.destination,"message":format!("{error:#}")}))
+                }
+            }
+        }
+        result["indexing"] = json!({"indexed":registered,"skipped":0,"errors":errors});
+        match self.record_batch(library, &result, params.get("card_id")) {
+            Ok(batch) => result["batch"] = serde_json::to_value(batch)?,
+            Err(error) => result["batch_error"] = json!(format!("{error:#}")),
+        }
+        Ok(result)
+    }
+
     fn record_batch(
         &self,
         library: &Library,
@@ -330,11 +423,18 @@ impl Service {
             .flatten()
             .filter(|item| item.get("status").and_then(Value::as_str) == Some("copied"))
             .filter_map(|item| {
-                let path = fs::canonicalize(item.get("destination")?.as_str()?).ok()?;
-                Some((
-                    path.to_string_lossy().into_owned(),
-                    item.get("sha256")?.as_str()?.to_owned(),
-                ))
+                let destination = item.get("destination")?.as_str()?;
+                // Local results are paths; remote results are location keys.
+                let path = if library.storage_id.is_some() && !Path::new(destination).is_absolute()
+                {
+                    destination.to_owned()
+                } else {
+                    fs::canonicalize(destination)
+                        .ok()?
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                Some((path, item.get("sha256")?.as_str()?.to_owned()))
             })
             .collect();
         self.core.record_import_batch(
@@ -717,7 +817,13 @@ impl Service {
                     .storage
                     .lock()
                     .map_err(|_| anyhow!("Storage state unavailable"))?;
-                Ok(serde_json::to_value(storage.list())?)
+                let mut list = serde_json::to_value(storage.list())?;
+                // Write capability is a per-process result of the explicit write test.
+                for source in list.as_array_mut().into_iter().flatten() {
+                    let id = source["id"].as_str().unwrap_or_default().to_owned();
+                    source["write_capability"] = json!(storage.write_capability(&id).as_str());
+                }
+                Ok(list)
             }
             "storage.add" => {
                 let request: AddStorageRequest =
@@ -751,6 +857,16 @@ impl Service {
                 self.core.import_batches(string(&params, "library_id")?)?,
             )?),
             "storage.remove" => self.remove_storage(string(&params, "id")?),
+            "storage.write_check" => {
+                // Explicit: writes and removes one small test object on the server.
+                let id = string(&params, "id")?;
+                let writer = self
+                    .storage
+                    .lock()
+                    .map_err(|_| anyhow!("Storage state unavailable"))?
+                    .open_writer(id)?;
+                Ok(serde_json::to_value(writer.probe())?)
+            }
             "storage.check" => {
                 let id = string(&params, "id")?;
                 let (snapshot, config) = {
@@ -825,17 +941,56 @@ impl Service {
                             .unwrap_or("preserve"),
                     )?,
                 };
-                Ok(serde_json::to_value(
-                    ingest.plan_with_rules(
+                let deduplicate = params
+                    .get("deduplicate")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                // A remote library is addressed by id; local targets keep `destination`.
+                if let Some(target) = self.remote_import_target(&params)? {
+                    let (library, source) = target;
+                    let known: Vec<neb_ingest::KnownAsset> = self
+                        .core
+                        .import_known_assets(&library.id)?
+                        .into_iter()
+                        .map(
+                            |(key, size, sha256, filename, captured_at)| neb_ingest::KnownAsset {
+                                key,
+                                size,
+                                sha256,
+                                filename,
+                                captured_at,
+                            },
+                        )
+                        .collect();
+                    let mut plan = serde_json::to_value(ingest.plan_remote(
                         string(&params, "source")?,
-                        string(&params, "destination")?,
+                        &source.id,
+                        &library.source_prefix,
                         &rules,
-                        params
-                            .get("deduplicate")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(true),
-                    )?,
-                )?)
+                        deduplicate,
+                        &known,
+                    )?)?;
+                    plan["library_id"] = json!(library.id);
+                    plan["write_capability"] = json!(self
+                        .storage
+                        .lock()
+                        .map_err(|_| anyhow!("Storage state unavailable"))?
+                        .write_capability(&source.id)
+                        .as_str());
+                    return Ok(plan);
+                }
+                Ok(serde_json::to_value(ingest.plan_with_rules(
+                    string(&params, "source")?,
+                    string(&params, "destination")?,
+                    &rules,
+                    deduplicate,
+                )?)?)
+            }
+            "import.execute" if self.remote_import_target(&params)?.is_some() => {
+                let (library, source) = self
+                    .remote_import_target(&params)?
+                    .expect("checked by the match guard");
+                self.execute_remote_import(&library, &source, &params)
             }
             "import.execute" => {
                 let mut ingest = self

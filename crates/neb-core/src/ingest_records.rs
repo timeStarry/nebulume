@@ -67,6 +67,9 @@ pub struct ImportBatch {
     pub asset_count: u64,
 }
 
+/// (location key, size, sha256 if known, filename, captured_at)
+pub type KnownAssetRow = (String, u64, Option<String>, String, String);
+
 const CARD_COLUMNS: &str = "c.id,c.name,v.location_id,v.volume_label,v.volume_serial,v.capacity_bytes,v.last_mount_path,v.last_seen_at,c.default_preset_id,c.created_at,c.last_import_at";
 const CARD_FROM: &str = "cards c JOIN volume_identities v ON v.id=c.id";
 
@@ -365,10 +368,17 @@ impl Core {
         )?;
         {
             let mut tag = transaction.prepare(
-                "UPDATE assets SET import_batch_id=?1,sha256=COALESCE(sha256,?2) WHERE library_id=?3 AND path_key=?4",
+                "UPDATE assets SET import_batch_id=?1,sha256=COALESCE(sha256,?2) WHERE library_id=?3 AND (path_key=?4 OR key=?5)",
             )?;
+            // Local imports pass canonical paths; remote imports pass location keys.
             for (path, sha256) in copied {
-                tag.execute(params![batch.id, sha256, batch.library_id, path_key(path)])?;
+                tag.execute(params![
+                    batch.id,
+                    sha256,
+                    batch.library_id,
+                    path_key(path),
+                    path
+                ])?;
             }
         }
         if let Some(card) = &batch.card_id {
@@ -383,6 +393,31 @@ impl Core {
         transaction.commit()?;
         drop(db);
         self.import_batch(&batch.id)
+    }
+
+    /// What a library already holds, for import de-duplication without downloads:
+    /// (location key, size, sha256 if known, filename, captured_at).
+    pub fn import_known_assets(
+        &self,
+        library_id: &str,
+    ) -> Result<Vec<KnownAssetRow>> {
+        self.library(library_id)?;
+        let db = self.db()?;
+        let mut statement = db.prepare(
+            "SELECT key,size,sha256,filename,captured_at FROM assets WHERE library_id=?1 AND key IS NOT NULL AND availability<>'missing'",
+        )?;
+        let rows = statement
+            .query_map([library_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?.max(0) as u64,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn import_batch(&self, id: &str) -> Result<ImportBatch> {
