@@ -19,6 +19,7 @@ fn local_directory_creates_library_without_storage_registration_and_survives_res
     assert_eq!(library["source_kind"], "local");
     assert!(library["storage_id"].is_null());
     assert_eq!(library["connected"], true);
+    assert_eq!(library["availability"], "online");
     assert_eq!(svc.execute("storage.list", json!({})).unwrap(), json!([]));
     assert_eq!(
         svc.execute("library.scan", json!({"library_id":library["id"]}))
@@ -151,4 +152,37 @@ fn detaching_legacy_local_source_at_same_directory_preserves_edits_and_source_co
         source["id"]
     );
     assert_eq!(fs::read(photos.path().join("photo.ppm")).unwrap(), PHOTO);
+}
+
+#[test]
+fn remote_library_is_unchecked_until_a_real_operation_and_offline_after_failure() {
+    let data = tempfile::tempdir().unwrap();
+    let svc = Service::open(data.path()).unwrap();
+    // Port 9 on loopback is closed: the request fails to connect, not to authenticate.
+    let source = svc
+        .execute(
+            "storage.add",
+            json!({"name":"NAS","kind":"webdav","endpoint":"http://127.0.0.1:9/dav/"}),
+        )
+        .unwrap();
+    let library = svc
+        .execute(
+            "library.add",
+            json!({"name":"NAS 照片","storage_id":source["id"]}),
+        )
+        .unwrap();
+    assert_eq!(library["availability"], "unchecked");
+    assert_eq!(library["connected"], false);
+    let check = svc
+        .execute("storage.check", json!({"id":source["id"]}))
+        .unwrap();
+    assert_eq!(check["availability"], "offline");
+    let listed = svc.execute("library.list", json!({})).unwrap();
+    assert_eq!(listed[0]["availability"], "offline");
+    // Marks stay writable regardless of location state (no assets yet: list still works).
+    assert_eq!(
+        svc.execute("asset.list", json!({"library_id":library["id"]}))
+            .unwrap()["total"],
+        0
+    );
 }

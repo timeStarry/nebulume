@@ -275,14 +275,15 @@ impl Service {
             .as_ref()
             .map(|s| s.endpoint.as_str())
             .unwrap_or(&library.root));
-        value["connected"] = json!(source
-            .as_ref()
-            .map(|s| if s.kind == "local" {
-                Path::new(&library.root).is_dir()
-            } else {
-                s.connected
-            })
-            .unwrap_or_else(|| Path::new(&library.root).is_dir()));
+        // Local directories are checked directly (cheap, no network). Remote sources
+        // report only the result of the latest real operation; listing never connects.
+        let local_online = || Path::new(&library.root).is_dir();
+        let availability = match source.as_ref() {
+            Some(s) if s.kind != "local" => s.availability.clone(),
+            _ => if local_online() { "online" } else { "offline" }.to_owned(),
+        };
+        value["connected"] = json!(availability == "online");
+        value["availability"] = json!(availability);
         Ok(value)
     }
 
@@ -635,7 +636,7 @@ impl Service {
                 match snapshot {
                     Ok(browser) => Ok(serde_json::to_value(browser.check()?)?),
                     Err(error) => Ok(
-                        json!({"id":id,"connected":false,"credential_status":config.credential_status,"checked_at":chrono::Utc::now().to_rfc3339(),"error":format!("{error:#}")}),
+                        json!({"id":id,"connected":false,"availability":neb_storage::classify(&error).as_str(),"credential_status":config.credential_status,"checked_at":chrono::Utc::now().to_rfc3339(),"error":format!("{error:#}")}),
                     ),
                 }
             }
