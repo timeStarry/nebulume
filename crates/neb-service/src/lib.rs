@@ -186,6 +186,23 @@ impl Service {
                 )
                 .map_err(CommandError::from)?,
             )
+        } else if command == "asset.mark_batch" {
+            // Every id must belong to one library so a single lease covers the batch.
+            let ids: Vec<String> = params
+                .get("ids")
+                .and_then(|ids| serde_json::from_value(ids.clone()).ok())
+                .ok_or_else(|| CommandError {
+                    code: "E_INVALID",
+                    message: "A batch must contain 1 to 1000 assets".into(),
+                })?;
+            let library = self
+                .core
+                .mark_batch_library(&ids)
+                .map_err(CommandError::from)?;
+            Some(
+                process_library_lock(&self.data_dir, &library, false)
+                    .map_err(CommandError::from)?,
+            )
         } else if command.starts_with("asset.") && command != "asset.list" {
             let asset = self
                 .core
@@ -544,6 +561,9 @@ impl Service {
     }
 
     fn dispatch(&self, command: &str, params: Value) -> Result<Value> {
+        if command == "asset.mark_batch" {
+            return self.core.dispatch(command, params);
+        }
         if command.starts_with("asset.") && command != "asset.list" {
             return self.asset_dispatch(command, params);
         }
