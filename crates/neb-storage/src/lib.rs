@@ -4,6 +4,7 @@ mod credentials;
 mod full_reader;
 mod range_reader;
 mod remote;
+mod remote_write;
 mod safe;
 mod snapshot_browser;
 mod transport;
@@ -13,6 +14,7 @@ pub use credentials::{CredentialStore, CredentialStoreError, SystemCredentialSto
 pub use range_reader::{
     RangeObjectIdentity, RangeReadError, RangeReadOptions, RangeReadStats, RemoteRangeReader,
 };
+pub use remote_write::{RemoteWriter, WriteCapability, WriteCheck};
 pub use snapshot_browser::StorageBrowser;
 
 pub use transport::{inspect_tls, TlsCertificateInfo};
@@ -141,6 +143,8 @@ struct SourceState {
     credentials: Option<Credentials>,
     credential_status: String,
     availability: Arc<AvailabilityCell>,
+    /// Result of the explicit write test in this process; reset when the source changes.
+    write: Arc<std::sync::atomic::AtomicU8>,
 }
 
 fn unchecked() -> String {
@@ -194,6 +198,7 @@ impl StorageRegistry {
                     credentials: credential,
                     credential_status: config.credential_status.clone(),
                     availability: Arc::new(AvailabilityCell::default()),
+                    write: Arc::default(),
                 },
             );
         }
@@ -415,6 +420,7 @@ impl StorageRegistry {
                     credentials: Some(credentials),
                     credential_status: config.credential_status.clone(),
                     availability: Arc::new(AvailabilityCell::default()),
+                    write: Arc::default(),
                 },
             );
         Ok(config)
@@ -549,6 +555,43 @@ impl StorageRegistry {
                 state.availability.set(availability);
             }
         }
+    }
+
+    /// Write capability for a remote location: unverified until `open_writer().probe()`.
+    pub fn write_capability(&self, id: &str) -> WriteCapability {
+        self.states
+            .lock()
+            .ok()
+            .and_then(|states| {
+                states
+                    .get(id)
+                    .map(|state| WriteCapability::load(&state.write))
+            })
+            .unwrap_or(WriteCapability::Unverified)
+    }
+
+    /// A write snapshot for a WebDAV or S3 location. No network I/O happens here.
+    pub fn open_writer(&self, id: &str) -> Result<RemoteWriter> {
+        let config = self.config(id)?.clone();
+        if !matches!(config.kind.as_str(), "webdav" | "s3") {
+            bail!("E_UNSUPPORTED: Only WebDAV and S3 locations accept remote writes");
+        }
+        let credentials = self.credentials_for(&config)?;
+        let client = self.client(&config)?;
+        let states = self
+            .states
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Credential state is unavailable"))?;
+        let state = states
+            .get(id)
+            .context("Storage credential state is unavailable")?;
+        Ok(RemoteWriter::new(
+            config,
+            credentials,
+            client,
+            state.availability.clone(),
+            state.write.clone(),
+        ))
     }
 
     pub fn local_root(&self, id: &str, prefix: &str) -> Result<PathBuf> {
