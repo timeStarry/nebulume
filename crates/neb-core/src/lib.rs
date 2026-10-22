@@ -17,7 +17,7 @@ pub use catalog::Core;
 pub use focus_points::read_from as remote_focus;
 pub use focus_points::{FocusInfo, FocusRegion};
 pub use imaging::remote_preview;
-pub use model::{Asset, Crop, Library};
+pub use model::{Asset, Crop, Library, Location};
 
 pub fn image_kind(extension: &str) -> Option<&'static str> {
     imaging::kind(extension)

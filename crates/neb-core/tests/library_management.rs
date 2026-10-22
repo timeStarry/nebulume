@@ -327,7 +327,7 @@ fn version_two_catalog_migrates_pair_setting_without_changing_existing_assets() 
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     core.update_library("old", None, Some(true), None).unwrap();
     drop(core);

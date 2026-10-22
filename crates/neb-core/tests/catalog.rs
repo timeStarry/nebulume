@@ -182,7 +182,7 @@ fn simultaneous_catalog_initialization_keeps_one_complete_schema() {
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
 }
 

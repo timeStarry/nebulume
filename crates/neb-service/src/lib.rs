@@ -146,6 +146,7 @@ impl Service {
             catalog_operations: RwLock::new(()),
             capture_index: capture_index::CaptureIndexController::default(),
         };
+        service.sync_locations()?;
         service.adopt_legacy_cache()?;
         if let Err(error) = service.cache.maintain() {
             // Metadata/settings remain available when a removable cache is
@@ -247,6 +248,55 @@ impl Service {
             None
         };
         self.dispatch(command, params).map_err(Into::into)
+    }
+
+    /// Mirror every saved source into the catalog's location table, preserving ids so
+    /// libraries and credential scopes keep pointing at the same thing.
+    fn sync_locations(&self) -> Result<()> {
+        let sources = self
+            .storage
+            .lock()
+            .map_err(|_| anyhow!("Storage state unavailable"))?
+            .list();
+        for source in &sources {
+            self.core.sync_location(&location_of(source))?;
+        }
+        Ok(())
+    }
+
+    /// Locations with runtime availability; implicit folder locations are included
+    /// so the UI can show where every library lives.
+    fn location_list(&self) -> Result<Value> {
+        let sources = self
+            .storage
+            .lock()
+            .map_err(|_| anyhow!("Storage state unavailable"))?
+            .list();
+        let libraries = self.core.libraries()?;
+        self.core
+            .locations()?
+            .into_iter()
+            .map(|location| {
+                let mut value = serde_json::to_value(&location)?;
+                let availability = match sources.iter().find(|s| s.id == location.id) {
+                    Some(source) if source.kind != "local" => source.availability.clone(),
+                    _ => if Path::new(&location.endpoint).is_dir() {
+                        "online"
+                    } else {
+                        "offline"
+                    }
+                    .to_owned(),
+                };
+                value["availability"] = json!(availability);
+                value["library_ids"] = json!(libraries
+                    .iter()
+                    .filter(|library| library.location_id.as_deref() == Some(&location.id))
+                    .map(|library| library.id.as_str())
+                    .collect::<Vec<_>>());
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Value::from)
     }
 
     fn source(&self, id: &str) -> Result<StorageConfig> {
@@ -422,6 +472,7 @@ impl Service {
             .lock()
             .map_err(|_| anyhow!("Storage state unavailable"))?
             .remove(id)?;
+        self.core.remove_location(id)?;
         Ok(serde_json::to_value(removed)?)
     }
 
@@ -615,8 +666,12 @@ impl Service {
                     .storage
                     .lock()
                     .map_err(|_| anyhow!("Storage state unavailable"))?;
-                Ok(serde_json::to_value(storage.add(request)?)?)
+                let added = storage.add(request)?;
+                drop(storage);
+                self.core.sync_location(&location_of(&added))?;
+                Ok(serde_json::to_value(added)?)
             }
+            "location.list" => self.location_list(),
             "storage.remove" => self.remove_storage(string(&params, "id")?),
             "storage.check" => {
                 let id = string(&params, "id")?;
@@ -767,6 +822,21 @@ impl Read for BoundedImageReader {
         let read = self.inner.read(&mut buffer[..limit])?;
         self.remaining -= read;
         Ok(read)
+    }
+}
+
+fn location_of(source: &StorageConfig) -> neb_core::Location {
+    neb_core::Location {
+        id: source.id.clone(),
+        kind: source.kind.clone(),
+        name: source.name.clone(),
+        endpoint: source.endpoint.clone(),
+        root: source.root.clone(),
+        bucket: source.bucket.clone(),
+        region: source.region.clone(),
+        tls_certificate_sha256: source.tls_certificate_sha256.clone(),
+        implicit: false,
+        created_at: String::new(),
     }
 }
 
