@@ -4,8 +4,7 @@
 
 ## 图库 / 影像（core）
 
-- `library.list {}` → `Library[]`；每项附运行时 `availability`：`unchecked`（本进程尚未访问远端，启动不联网）/ `online` / `offline`（卷未挂载、目录不存在、主机不可达或超时）/ `auth_required`（凭据缺失、401/403、安全存储不可用）/ `trust_required`（证书变化、过期或未信任）/ `error`（其他失败，不猜测为离线）。远端只由实际列举/读取/检查结果更新，本地目录直接检查。`connected` 保留为 `availability=='online'`。`storage.list`、`storage.check` 同样返回 `availability`。
-- 原 `library.list` 说明： 本地建库 `library.add {name,root,pair_raw_jpeg?}` 直接登记目录，不创建存储源；远端建库 `library.add {name,storage_id,prefix?,pair_raw_jpeg?}` 绑定已保存连接。两者返回 `Library`，配对默认关闭。显式引用旧本地storage_id的调用继续兼容。
+- `library.list {}` → `Library[]`；每项附运行时 `availability`：`unchecked`（本进程尚未访问远端，启动不联网）/ `online` / `offline`（卷未挂载、目录不存在、主机不可达或超时）/ `auth_required`（凭据缺失、401/403、安全存储不可用）/ `trust_required`（证书变化、过期或未信任）/ `error`（其他失败，不猜测为离线）。远端只由实际列举/读取/检查结果更新，本地目录直接检查。`connected` 保留为 `availability=='online'`。`storage.list`、`storage.check` 同样返回 `availability`。本地建库 `library.add {name,root,pair_raw_jpeg?}` 直接登记目录，不创建存储源；远端建库 `library.add {name,storage_id,prefix?,pair_raw_jpeg?}` 绑定已保存连接。两者返回 `Library`，配对默认关闭。显式引用旧本地storage_id的调用继续兼容。
 - `library.update {id,name?,pair_raw_jpeg?,root?,storage_id?,source_prefix?}` → `Library`；省略字段保留原值，空前缀须显式传 `""`。root与storage_id互斥；root指定直接本地目录并解除旧连接绑定。同一真实本地目录解除历史绑定保留资产id、评级与裁剪；实际变更来源或目录时清除该库旧索引/配方，随后需要重新扫描，不移动或修改任何原文件。
 - `library.remove {id}` → `{id,removed_assets}`；移除库登记和索引/配方，不删除原文件、来源目录或存储源。
 - `library.scan {library_id}` → `{indexed,skipped,errors:[{path,message}],partial?}`；本地扫描文件，远端递归索引目录属性，尚不下载原图。
