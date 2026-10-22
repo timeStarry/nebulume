@@ -28,7 +28,7 @@ pub struct Core {
     previews: Mutex<VecDeque<(String, Value)>>,
 }
 
-const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked";
+const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag";
 const LIBRARY_COLUMNS: &str =
     "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg";
 // Bump when inspection semantics change. This lives only in the private cache
@@ -46,7 +46,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 5,
+            version <= 6,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -106,6 +106,17 @@ impl Core {
                 );
                 update.execute(params![capture.captured_at, checked, id])?;
             }
+        }
+        if version < 6 {
+            // Culling marks live only in the catalog; originals are never touched.
+            migration.execute_batch(
+                "ALTER TABLE assets ADD COLUMN flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject'));
+                 ALTER TABLE assets ADD COLUMN import_batch_id TEXT;
+                 ALTER TABLE assets ADD COLUMN sha256 TEXT;
+                 CREATE INDEX assets_library_flag ON assets(library_id,flag);
+                 CREATE INDEX assets_library_batch ON assets(library_id,import_batch_id);
+                 PRAGMA user_version=6;",
+            )?;
         }
         migration.commit()?;
         Ok(Self {
@@ -198,6 +209,28 @@ impl Core {
                 )?;
                 ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
+            }
+            "asset.flag" => {
+                #[derive(Deserialize)]
+                struct FlagArgs {
+                    id: String,
+                    flag: String,
+                }
+                let args: FlagArgs = parse(params)?;
+                ensure!(
+                    valid_flag(&args.flag),
+                    "E_INVALID: Flag must be none, pick or reject"
+                );
+                let changed = self.db()?.execute(
+                    "UPDATE assets SET flag=?1 WHERE id=?2",
+                    params![args.flag, args.id],
+                )?;
+                ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                Ok(serde_json::to_value(self.asset(&args.id)?)?)
+            }
+            "asset.mark_batch" => {
+                let args: MarkBatch = parse(params)?;
+                Ok(json!({"updated":self.mark_batch(&args)?}))
             }
             "asset.crop" => {
                 #[derive(Deserialize)]
@@ -1268,6 +1301,54 @@ impl Core {
         Ok(())
     }
 
+    fn mark_batch(&self, args: &MarkBatch) -> Result<usize> {
+        ensure!(
+            (1..=1000).contains(&args.ids.len()),
+            "E_INVALID: A batch must contain 1 to 1000 assets"
+        );
+        ensure!(
+            args.rating.is_some() || args.flag.is_some(),
+            "E_INVALID: A batch must set a rating or a flag"
+        );
+        ensure!(
+            args.rating.is_none_or(|rating| rating <= 5),
+            "E_INVALID: Rating must be an integer from 0 to 5"
+        );
+        ensure!(
+            args.flag.as_deref().is_none_or(valid_flag),
+            "E_INVALID: Flag must be none, pick or reject"
+        );
+        let mut db = self.db()?;
+        let transaction = db.transaction()?;
+        let mut updated = 0;
+        for id in &args.ids {
+            let changed = transaction.execute(
+                "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag) WHERE id=?3",
+                params![args.rating, args.flag, id],
+            )?;
+            // Dropping the transaction rolls back every earlier mark in this batch.
+            ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+            updated += changed;
+        }
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    pub fn mark_batch_library(&self, ids: &[String]) -> Result<String> {
+        let mut library = None;
+        for id in ids {
+            let current = self.asset(id)?.library_id;
+            match &library {
+                None => library = Some(current),
+                Some(first) => ensure!(
+                    *first == current,
+                    "E_INVALID: A batch can only mark assets in one library"
+                ),
+            }
+        }
+        library.context("E_INVALID: A batch must contain 1 to 1000 assets")
+    }
+
     fn list_assets(&self, args: AssetQuery) -> Result<Value> {
         let limit = args.limit.unwrap_or(200);
         ensure!(
@@ -1296,6 +1377,11 @@ impl Core {
             "rating" => "rating",
             _ => bail!("E_INVALID: Unknown asset sort field"),
         };
+        let flag = args.flag.as_deref().unwrap_or("any");
+        ensure!(
+            ["any", "pick", "none", "reject", "not_reject"].contains(&flag),
+            "E_INVALID: Unknown flag filter"
+        );
         let direction = match args.sort_direction.as_deref().unwrap_or("desc") {
             "asc" => "ASC",
             "desc" => "DESC",
@@ -1317,7 +1403,7 @@ impl Core {
             .collect::<Vec<_>>()
             .join(" AND ");
         let scope_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
-        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg')))");
+        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6)");
         let db = self.db()?;
         // Determine ambiguity from the unfiltered library. Only thin identity
         // fields are read globally; large metadata blobs are loaded for the page.
@@ -1376,7 +1462,8 @@ impl Core {
                     } else {
                         &search
                     },
-                    format
+                    format,
+                    flag
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -1483,6 +1570,18 @@ struct AssetQuery {
     format: Option<String>,
     sort_by: Option<String>,
     sort_direction: Option<String>,
+    flag: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MarkBatch {
+    ids: Vec<String>,
+    rating: Option<u8>,
+    flag: Option<String>,
+}
+
+fn valid_flag(flag: &str) -> bool {
+    matches!(flag, "none" | "pick" | "reject")
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1623,6 +1722,7 @@ fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
         created_at: row.get(15)?,
         captured_at,
         capture_status,
+        flag: row.get(18)?,
     })
 }
 

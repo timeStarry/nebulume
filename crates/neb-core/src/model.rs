@@ -72,6 +72,13 @@ pub struct Asset {
     pub crop: Option<Crop>,
     pub availability: String,
     pub source_key: Option<String>,
+    /// Culling flag: none, pick or reject. A catalog mark only; never written to the source.
+    #[serde(default = "no_flag")]
+    pub flag: String,
+}
+
+fn no_flag() -> String {
+    "none".to_owned()
 }
 
 fn pending_capture_status() -> String {

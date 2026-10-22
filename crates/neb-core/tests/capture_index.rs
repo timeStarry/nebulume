@@ -61,13 +61,13 @@ fn version_four_migration_indexes_existing_exif_without_touching_originals_or_ed
             )
             .unwrap();
     }
-    database.execute_batch("DROP INDEX assets_library_captured; ALTER TABLE assets DROP COLUMN captured_at; ALTER TABLE assets DROP COLUMN captured_at_checked; PRAGMA user_version=4;").unwrap();
+    database.execute_batch("DROP INDEX assets_library_flag; DROP INDEX assets_library_batch; ALTER TABLE assets DROP COLUMN flag; ALTER TABLE assets DROP COLUMN import_batch_id; ALTER TABLE assets DROP COLUMN sha256; DROP INDEX assets_library_captured; ALTER TABLE assets DROP COLUMN captured_at; ALTER TABLE assets DROP COLUMN captured_at_checked; PRAGMA user_version=4;").unwrap();
     let core = Core::open(temp.path().join("catalog")).unwrap();
     assert_eq!(
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     let migrated = core.asset(&known.id).unwrap();
     assert_eq!(migrated.captured_at, "2026-10-02T01:02:03.125000000");
