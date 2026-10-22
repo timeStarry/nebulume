@@ -8,11 +8,11 @@
 - `library.update {id,name?,pair_raw_jpeg?,root?,storage_id?,source_prefix?}` → `Library`；省略字段保留原值，空前缀须显式传 `""`。root与storage_id互斥；root指定直接本地目录并解除旧连接绑定。同一真实本地目录解除历史绑定保留资产id、评级与裁剪；实际变更来源或目录时清除该库旧索引/配方，随后需要重新扫描，不移动或修改任何原文件。
 - `library.remove {id}` → `{id,removed_assets}`；移除库登记和索引/配方，不删除原文件、来源目录或存储源。
 - `library.scan {library_id}` → `{indexed,skipped,errors:[{path,message}],partial?}`；本地扫描文件，远端递归索引目录属性，尚不下载原图。
-- `asset.list {library_id?,query?,rating?,format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',limit?,offset?}` → `{items:Asset[],total,file_total}`；格式/评级/搜索与排序字段/方向可任意组合，默认 all / captured_at / desc。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
+- `asset.list {library_id?,query?,rating?,flag?:'any'|'pick'|'none'|'reject'|'not_reject',format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',limit?,offset?}` → `{items:Asset[],total,file_total}`；格式/评级/旗标/搜索与排序字段/方向可任意组合，默认 all / any / captured_at / desc；`not_reject` 隐藏淘汰。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
 - `library.capture_index.status {library_id}` → `CaptureIndexStatus`；只读本库的持久计数及当前Service实例的最新作业，不启动读取。
 - `library.capture_index.start {library_id}` → `CaptureIndexStatus`；显式后台处理启动时仍为pending的实体文件。同库已有running/stopping作业时返回该作业；同一Service实例内另一库正在运行时返回`E_IN_USE`。
 - `library.capture_index.cancel {library_id,job_id}` → `CaptureIndexStatus`；校验最新job_id，活动作业转stopping，终态作业保持原状态。无作业返回`E_NOT_FOUND`，job_id已变返回`E_CONFLICT`。
-- `asset.get {id}` → `Asset`；远端只读索引与离线快照，不发起图像正文请求。本地仍按需检查已有文件的变更。`asset.rate {id,rating}` → `Asset`。
+- `asset.get {id}` → `Asset`；远端只读索引与离线快照，不发起图像正文请求。本地仍按需检查已有文件的变更。`asset.rate {id,rating}` → `Asset`。`asset.flag {id,flag:'none'|'pick'|'reject'}` → `Asset`。`asset.mark_batch {ids,rating?,flag?}` → `{updated}`：1–1000 个同库资产，至少设置一项，单事务执行，任一 id 不存在则 `E_NOT_FOUND` 且全部回滚，跨库返回 `E_INVALID`。旗标与评级一样只写目录，不改原片、不使预览失效，重新扫描保留。`Asset.flag` 默认 `none`。
 - `asset.refresh {id}` → `Asset`；显式更新原图，包含固定离线版本。远端新文件完整接收、核对长度并校验发布后才切换引用；网络、预约或发布失败保留旧缓存。评级与裁剪保留。
 - `asset.fetch_original {id}` → `Asset`；显式获取缺失原图，已有当前缓存时复用；允许手动预览策略下下载。
 - `asset.offline.set {id,pinned:boolean}` → `{asset_id,pinned,stats}`；固定前先取得完整原图，固定当前快照并计入总限额。远端重扫发现更新后不自动替换该快照；`asset.get` 附 `cache_update_available=true`，由用户执行 refresh 更新。解除固定允许作用于已移除库留下的孤立固定项。
@@ -140,7 +140,7 @@ HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须�
 
 ## 原生窗口接口
 
-这些Tauri调用由app适配层处理：`open_viewer {assetId,assetIds}` → 新窗口label；`viewer_context {}` → 当前查看窗口专属 `{asset_id,asset_ids}`；`show_manager {}` 打开管理页；`list_volumes {}` → `[{id,name,path,kind,removable,available_bytes?}]`。卷类型由OS报告，不把所有可移动卷推断为SD卡；可以手选挂载目录。
+这些Tauri调用由app适配层处理：`open_viewer {assetId,assetIds,mode?:'view'|'cull',queue?:{library_id,options}}` → 新窗口label；`queue.options` 为 `asset.list` 筛选/排序参数，序列化后不超过 8 KiB。`viewer_context {}` → 当前查看窗口专属 `{asset_id,asset_ids,mode,queue}`；选图窗口按 queue 分页快照最多 10000 个 id 后固定队列，之后的标记不改变成员。`show_manager {}` 打开管理页；`list_volumes {}` → `[{id,name,path,kind,removable,available_bytes?}]`。卷类型由OS报告，不把所有可移动卷推断为SD卡；可以手选挂载目录。
 
 命令行图片路径或安装包文件关联打开独立查看器；已有进程接收后续文件打开请求，不重复启动管理实例。不会改动用户系统默认应用设置。
 
