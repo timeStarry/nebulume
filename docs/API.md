@@ -118,7 +118,7 @@ RAW 传感器解码失败时，查看与直方图可回退到标准 TIFF IFD / I
 - `storage.inspect_tls {endpoint}` → `{endpoint,sha256,subject,issuer,not_before,not_after,subject_alt_names:string[]}`；无凭据检查局域网 HTTPS 服务器证书，不保存或自动信任证书。日期使用 RFC3339。
 - `storage.browse {id,prefix?,limit?,cursor?}` → `{entries:[{key,size,is_dir,created_at?:string}],next_cursor:string|null}`；limit 默认 200，范围 1–1000。created_at可选，来自源的真实创建属性；缺失/无效省略，S3不把LastModified视为创建时间。
 - `storage.fetch {id,key,destination}` → `{path,size,sha256}`（新文件，无覆盖发布）
-- `import.plan {source,destination,layout?:'preserve'|'date',deduplicate?:boolean}` → `ImportPlan`；默认 preserve / true，创建计划不复制文件。
+- `import.plan {source,destination,rules?:OrganizeRules,layout?:'preserve'|'date',deduplicate?:boolean}` → `ImportPlan`；`rules` 优先，`layout` 为兼容别名（preserve = 保留卡内目录，date = 拍摄日 `Y-M-D`），默认 preserve / true，创建计划不复制文件。`OrganizeRules={date_basis:'capture'|'import'|'none'|'preserve',date_layout?:'Y-M-D'|'Y/Y-M-D'|'Y/M/Y-M-D'|'Y/M/D',type_split?:'none'|'by_kind',unknown_date?:'folder'|'modified_time',subfolder?}`：固定选项而非模板；`by_kind` 在日期目录内分 RAW/JPG/TIFF/OTHER，XMP 跟随其 RAW；拍摄日缺失默认进入 `unknown-date/`，仅显式选择 `modified_time` 时按源文件修改日并逐项标注 `date_source`；导入日在规划时冻结为 `ImportPlan.import_day`；`subfolder` 只接受普通目录名，拒绝越级、绝对路径与保留名。文件名永不改变。`ImportPlan.rules` 记录冻结的规则。
 - `import.execute {plan_id}` → `ImportResult`；仅当前会话已审核计划可执行，计划消费后重试须重新规划。
 - `import.history {}` → `ImportResult[]`，来自持久日志；遗留 running 作业返回 interrupted。
 - `system.info {}` → runtime version, capability status and explicit limits.

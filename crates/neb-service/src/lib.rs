@@ -734,14 +734,24 @@ impl Service {
                     .ingest
                     .lock()
                     .map_err(|_| anyhow!("Import state unavailable"))?;
-                Ok(serde_json::to_value(
-                    ingest.plan(
-                        string(&params, "source")?,
-                        string(&params, "destination")?,
+                // Structured `rules` take precedence; `layout` remains a compatibility alias.
+                let rules = match params.get("rules").filter(|rules| !rules.is_null()) {
+                    Some(rules) => {
+                        serde_json::from_value::<neb_ingest::OrganizeRules>(rules.clone())
+                            .context("E_INVALID: Invalid import organization rules")?
+                    }
+                    None => neb_ingest::OrganizeRules::from_legacy_layout(
                         params
                             .get("layout")
                             .and_then(Value::as_str)
                             .unwrap_or("preserve"),
+                    )?,
+                };
+                Ok(serde_json::to_value(
+                    ingest.plan_with_rules(
+                        string(&params, "source")?,
+                        string(&params, "destination")?,
+                        &rules,
                         params
                             .get("deduplicate")
                             .and_then(Value::as_bool)

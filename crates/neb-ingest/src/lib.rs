@@ -15,6 +15,10 @@ use std::{
 };
 use uuid::Uuid;
 
+pub mod organize;
+pub use organize::OrganizeRules;
+use organize::{DateBasis, ItemDate, TypeSplit, UnknownDate};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportItem {
     pub source: String,
@@ -35,6 +39,10 @@ pub struct ImportPlan {
     pub source: String,
     pub destination: String,
     pub layout: String,
+    /// The frozen organization rules this plan was made with.
+    pub rules: OrganizeRules,
+    /// Day used when `date_basis` is `import`; frozen at planning time.
+    pub import_day: String,
     pub deduplicate: bool,
     pub items: Vec<ImportItem>,
     pub total_bytes: u64,
@@ -92,6 +100,7 @@ impl IngestService {
 
     /// A folder is a source, whether removable, mounted, or selected manually.
     /// Planning is read-only and does not register or modify a card.
+    /// Compatibility entry: `preserve` or `date` (capture day, `Y-M-D`).
     pub fn plan(
         &mut self,
         source: impl AsRef<Path>,
@@ -99,9 +108,23 @@ impl IngestService {
         layout: &str,
         deduplicate: bool,
     ) -> Result<ImportPlan> {
-        if !["preserve", "date"].contains(&layout) {
-            bail!("Layout must be preserve or date");
-        }
+        let rules = OrganizeRules::from_legacy_layout(layout)?;
+        self.plan_with_rules(source, destination, &rules, deduplicate)
+    }
+
+    pub fn plan_with_rules(
+        &mut self,
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        rules: &OrganizeRules,
+        deduplicate: bool,
+    ) -> Result<ImportPlan> {
+        rules.validate()?;
+        let layout = match rules.date_basis {
+            DateBasis::Preserve => "preserve",
+            _ => "date",
+        };
+        let import_day = chrono::Local::now().format("%Y-%m-%d").to_string();
         let source = fs::canonicalize(source.as_ref()).context("Import source is unavailable")?;
         if !source.is_dir() {
             bail!("Import source must be a directory");
@@ -126,8 +149,29 @@ impl IngestService {
             .filter(|key| is_pairable(key) && sidecar_groups.contains(&capture_group(key)))
             .cloned()
             .collect();
-        let capture_dates = if layout == "date" {
+        let capture_dates = if rules.needs_capture_dates() {
             resolve_capture_dates(&source, &source_files, &mut warnings)
+        } else {
+            HashMap::new()
+        };
+        // With type folders, an XMP sidecar follows the RAW/JPEG it describes so the
+        // companion group keeps a single target stem.
+        let anchors: HashMap<String, String> = if rules.type_split == TypeSplit::ByKind {
+            let mut by_group: HashMap<String, String> = HashMap::new();
+            for key in &source_files {
+                let role = extension_role(key);
+                if role == "xmp" || !is_pairable(key) {
+                    continue;
+                }
+                let entry = by_group
+                    .entry(capture_group(key))
+                    .or_insert_with(|| key.clone());
+                // Prefer the RAW as the group's anchor.
+                if organize::kind_folder(key) == "RAW" {
+                    *entry = key.clone();
+                }
+            }
+            by_group
         } else {
             HashMap::new()
         };
@@ -161,25 +205,47 @@ impl IngestService {
                 {
                     bail!("Source changed during planning");
                 }
-                let (relative_path, date_source) = if layout == "date" {
-                    let (date, provenance) = capture_dates
-                        .get(&key)
-                        .cloned()
-                        .unwrap_or_else(|| (None, "unknown".to_string()));
-                    (
-                        format!(
-                            "{}/{}",
-                            date.unwrap_or_else(|| "unknown-date".to_string()),
-                            Path::new(&key)
-                                .file_name()
-                                .context("Missing filename")?
-                                .to_string_lossy()
-                        ),
-                        provenance,
-                    )
-                } else {
-                    (key.clone(), "preserved".to_string())
+                let item_date = match rules.date_basis {
+                    DateBasis::Preserve | DateBasis::None => ItemDate {
+                        day: None,
+                        source: "preserved".into(),
+                    },
+                    DateBasis::Import => ItemDate {
+                        day: Some(import_day.clone()),
+                        source: "import_date".into(),
+                    },
+                    DateBasis::Capture => {
+                        let (day, provenance) = capture_dates
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or_else(|| (None, "unknown".to_string()));
+                        match day {
+                            Some(day) => ItemDate {
+                                day: Some(day),
+                                source: provenance,
+                            },
+                            // Explicit opt-in only; the plan labels every such item.
+                            None if rules.unknown_date == UnknownDate::ModifiedTime => ItemDate {
+                                day: modified_day(&metadata),
+                                source: "modified_time".into(),
+                            },
+                            None => ItemDate {
+                                day: None,
+                                source: provenance,
+                            },
+                        }
+                    }
                 };
+                let date_source = item_date.source.clone();
+                let mut relative_path = organize::target_path(rules, &key, &item_date)?;
+                if let Some(anchor) = anchors.get(&capture_group(&key)) {
+                    if extension_role(&key) == "xmp" {
+                        let folder = organize::kind_folder(anchor);
+                        if let Some(index) = relative_path.rfind("/RAW/") {
+                            relative_path.replace_range(index + 1..index + 4, folder);
+                        }
+                    }
+                }
                 let preserve_name = preserve_names.contains(&key);
                 let duplicate_identity = dedup_identity(&relative_path, &sha256, preserve_name);
                 let mut duplicate_path = None;
@@ -286,6 +352,8 @@ impl IngestService {
             source: source.to_string_lossy().into_owned(),
             destination: destination.to_string_lossy().into_owned(),
             layout: layout.to_string(),
+            rules: rules.clone(),
+            import_day,
             deduplicate,
             items,
             total_bytes,
@@ -810,6 +878,11 @@ fn dedup_identity(target: &str, hash: &str, preserve_name: bool) -> String {
     } else {
         format!("{role}\0{hash}")
     }
+}
+
+fn modified_day(metadata: &fs::Metadata) -> Option<String> {
+    let modified: chrono::DateTime<chrono::Local> = metadata.modified().ok()?.into();
+    Some(modified.format("%Y-%m-%d").to_string())
 }
 
 fn capture_day(root: &Path, key: &str) -> Option<String> {
