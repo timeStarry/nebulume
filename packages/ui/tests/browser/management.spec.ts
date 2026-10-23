@@ -690,10 +690,11 @@ test('local libraries are created directly from a directory and become import ta
   });
   expect(calls.filter((call) => call.command === 'storage.add')).toHaveLength(0);
   await nav(page, '导入').click();
-  await expect(page.getByLabel('目标图片库')).toHaveValue('direct-local');
+  // NAS libraries are import targets too; this test imports into the new local one.
   await expect(
     page.getByLabel('目标图片库').locator('option', { hasText: 'NAS 旅行' }),
-  ).toHaveCount(0);
+  ).toHaveCount(1);
+  await page.getByLabel('目标图片库').selectOption('direct-local');
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
   await page.getByRole('button', { name: '生成导入计划', exact: true }).click();
   await expect
@@ -804,8 +805,9 @@ test('card imports target local libraries, retain review across navigation and c
     if (call.command === 'import.history') return finished ? [result] : [];
   });
   await nav(page, '导入').click();
-  await expect(page.getByLabel('目标图片库').locator('option')).toHaveCount(2);
-  await expect(page.getByLabel('目标图片库').locator('option', { hasText: 'NAS' })).toHaveCount(0);
+  // Placeholder, the local library and the NAS library.
+  await expect(page.getByLabel('目标图片库').locator('option')).toHaveCount(3);
+  await page.getByLabel('目标图片库').selectOption(local.id);
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
   await page.getByRole('button', { name: '生成导入计划' }).click();
   await expect(page.getByText('待复制', { exact: true })).toBeVisible();
@@ -1040,4 +1042,83 @@ test('a registered card applies its default preset, and import leads straight in
       queue: { library_id: local.id, options: { import_batch_id: 'batch-1' } },
     });
   await expect(page.getByLabel('导入批次')).toHaveValue('batch-1');
+});
+
+test('a NAS import is planned by library id and blocked until the location passes a write test', async ({
+  page,
+}) => {
+  let capability = 'unverified';
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'storage.list') return [{ ...nas, write_capability: capability }];
+    if (call.command === 'storage.write_check') {
+      capability = 'verified';
+      return { id: nas.id, write_capability: 'verified', checked_at: '2026-10-23' };
+    }
+    if (call.command === 'import.plan')
+      return {
+        id: 'nas-plan',
+        source: call.params.source,
+        destination: 'location:nas/trips',
+        library_id: remote.id,
+        write_capability: capability,
+        duplicate_count: 0,
+        likely_duplicate_count: 1,
+        total_bytes: 10,
+        warnings: [],
+        items: [
+          { source: 'E:\\a.NEF', relative_path: '2026-10-22/a.NEF', size: 10, status: 'pending' },
+          {
+            source: 'E:\\b.NEF',
+            relative_path: '2026-10-22/b.NEF',
+            size: 10,
+            status: 'likely_duplicate',
+          },
+        ],
+      };
+    if (call.command === 'import.execute')
+      return {
+        id: 'job-nas',
+        plan_id: 'nas-plan',
+        source: 'E:\\',
+        destination: 'location:nas/trips',
+        status: 'completed',
+        copied: 2,
+        duplicates: 0,
+        failed: 0,
+        total: 2,
+        originals_retained: true,
+        started_at: '2026-10-23',
+        library_id: remote.id,
+        indexing: { indexed: 2, skipped: 0, errors: [] },
+        items: [],
+      };
+    if (call.command === 'import.history') return [];
+    return undefined;
+  });
+  await nav(page, '导入').click();
+  await page.getByLabel('目标图片库').selectOption(remote.id);
+  await page.getByRole('button', { name: /CAMERA CARD/ }).click();
+  await page.getByRole('button', { name: '生成导入计划' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'import.plan')?.params)
+    .toMatchObject({ library_id: remote.id });
+  expect(calls.find((call) => call.command === 'import.plan')?.params.destination).toBeUndefined();
+  await expect(page.getByText('疑似重复', { exact: true })).toBeVisible();
+  await expect(page.getByText(/需要先在“位置”中对这个网络位置“测试写入”/)).toBeVisible();
+  await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
+  await expect(page.getByRole('button', { name: '开始导入' })).toBeDisabled();
+  await page.getByRole('button', { name: '前往位置' }).click();
+  await page.getByRole('button', { name: '测试写入' }).click();
+  await expect(page.getByRole('button', { name: '可导入' })).toBeVisible();
+  expect(calls.some((call) => call.command === 'storage.write_check')).toBe(true);
+  await nav(page, '导入').click();
+  await page.getByRole('button', { name: '返回修改' }).click();
+  await page.getByLabel('目标图片库').selectOption(remote.id);
+  await page.getByRole('button', { name: '生成导入计划' }).click();
+  await page.getByRole('checkbox', { name: /仍然导入疑似重复项/ }).check();
+  await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
+  await page.getByRole('button', { name: '开始导入' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'import.execute')?.params)
+    .toMatchObject({ plan_id: 'nas-plan', library_id: remote.id, include_likely_duplicates: true });
 });

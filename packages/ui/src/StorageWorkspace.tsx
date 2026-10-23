@@ -6,6 +6,7 @@ import {
   type StorageCheck,
   type StorageConfig,
   type StorageEntry,
+  type WriteCheck,
 } from './model';
 import { checkedConnection, credentialLabel, parentPrefix, sourceKind } from './workspace';
 import Icon from './Icon';
@@ -51,6 +52,28 @@ export default function StorageWorkspace(props: {
       const message = errorMessage(e);
       setError(message);
       setChecks((previous) => ({ ...previous, [item.id]: { ok: false, message } }));
+    } finally {
+      setBusy('');
+    }
+  }
+  /** Explicit: writes and removes one small test object on the server. */
+  async function writeCheck(item: StorageConfig) {
+    setErrorSourceId(item.id);
+    setBusy(item.id);
+    setError('');
+    setNotice('');
+    try {
+      const result = await execute<WriteCheck>('storage.write_check', { id: item.id });
+      props.onUpdated({ ...item, write_capability: result.write_capability });
+      if (result.write_capability === 'verified')
+        setNotice(
+          `${item.name} 可以安全导入：新建文件经读回校验，已有文件不会被覆盖。${result.leftover ? `测试文件 ${result.leftover} 未能删除，可手动清理。` : ''}`,
+        );
+      else if (result.write_capability === 'unsupported')
+        setError(`${item.name} 无法保证不覆盖已有文件，不能作为导入目标。${result.error || ''}`);
+      else setError(result.error || '写入测试未完成。');
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
       setBusy('');
     }
@@ -209,6 +232,20 @@ export default function StorageWorkspace(props: {
                 <button class="button small" onClick={() => browse(item)} disabled={!!busy()}>
                   浏览目录
                 </button>
+                <Show when={item.kind !== 'local'}>
+                  <button
+                    class="button small"
+                    onClick={() => writeCheck(item)}
+                    disabled={!!busy()}
+                    title="写入并删除一个测试文件，确认可以安全导入到这里"
+                  >
+                    {item.write_capability === 'verified'
+                      ? '可导入'
+                      : item.write_capability === 'unsupported'
+                        ? '不可导入'
+                        : '测试写入'}
+                  </button>
+                </Show>
                 <button
                   class="icon-button"
                   onClick={() => props.onEdit(item)}

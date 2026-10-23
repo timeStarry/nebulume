@@ -132,6 +132,16 @@ export interface StorageConfig {
   tls_certificate_sha256?: string | null;
   remember_credentials?: boolean;
   credential_status?: 'system' | 'session' | 'missing' | 'unavailable' | 'not_required';
+  /** Result of the explicit write test in this app session. */
+  write_capability?: WriteCapability;
+}
+export type WriteCapability = 'unverified' | 'verified' | 'unsupported';
+export interface WriteCheck {
+  id: string;
+  write_capability: WriteCapability;
+  error?: string | null;
+  leftover?: string | null;
+  checked_at: string;
 }
 export interface Volume {
   id: string;
@@ -197,6 +207,11 @@ export interface ImportPlan {
   items: ImportItem[];
   total_bytes: number;
   duplicate_count: number;
+  /** Same name, size and capture day as an unhashed library file; skipped unless included. */
+  likely_duplicate_count?: number;
+  /** Present for NAS targets: whether this location passed the write test. */
+  write_capability?: WriteCapability;
+  library_id?: string;
   warnings: string[];
   [key: string]: unknown;
 }

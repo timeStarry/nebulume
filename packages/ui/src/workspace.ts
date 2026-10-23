@@ -16,6 +16,12 @@ export function localLibraries(libraries: Library[]): Library[] {
     (library) => !library.hidden && (!library.source_kind || library.source_kind === 'local'),
   );
 }
+/** Libraries an import can write into: local folders and WebDAV/S3 libraries. */
+export function importTargets(libraries: Library[]): Library[] {
+  return libraries.filter((library) => !library.hidden);
+}
+export const isRemoteLibrary = (library?: Pick<Library, 'source_kind'>) =>
+  !!library?.source_kind && library.source_kind !== 'local';
 export function libraryLocation(library: Library): string {
   if (library.source_kind && library.source_kind !== 'local') {
     return [library.source_endpoint || library.source_name || '远程存储', library.source_prefix]

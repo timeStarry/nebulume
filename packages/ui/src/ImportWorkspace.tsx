@@ -18,7 +18,9 @@ import {
   dateSourceName,
   defaultOrganizeRules,
   displayDate,
-  localLibraries,
+  importTargets,
+  isRemoteLibrary,
+  libraryLocation,
   organizeExample,
   subfolderError,
 } from './workspace';
@@ -48,6 +50,7 @@ export default function ImportWorkspace(props: {
   onImported: (library: Library, result: ImportResult) => void;
   onOpenLibrary: (library: Library) => void;
   onCull?: (library: Library, batch: ImportBatch) => void;
+  onOpenLocations?: () => void;
 }) {
   const [volumes, setVolumes] = createSignal<Volume[]>([]);
   const [showAll, setShowAll] = createSignal(false);
@@ -180,7 +183,8 @@ export default function ImportWorkspace(props: {
   const [error, setError] = createSignal('');
   const [scanMessage, setScanMessage] = createSignal('');
   let initialized = false;
-  const targets = () => localLibraries(props.libraries);
+  const targets = () => importTargets(props.libraries);
+  const [includeLikely, setIncludeLikely] = createSignal(false);
   const historyJobs = () => history().filter((job) => job.id !== result()?.id);
   createEffect(() => {
     const available = targets();
@@ -234,12 +238,14 @@ export default function ImportWorkspace(props: {
     setResult(undefined);
     setScanMessage('');
     try {
+      // NAS libraries are addressed by id; the service plans without downloading.
       const next = await execute<ImportPlan>('import.plan', {
         source: source().trim(),
-        destination: target.root,
+        ...(isRemoteLibrary(target) ? { library_id: target.id } : { destination: target.root }),
         rules: rules(),
         deduplicate: deduplicate(),
       });
+      setIncludeLikely(false);
       setPlannedTarget({ ...target });
       setPlan(next);
     } catch (e) {
@@ -257,6 +263,7 @@ export default function ImportWorkspace(props: {
         plan_id: plan()!.id,
         library_id: plannedTarget()!.id,
         ...(knownCard() ? { card_id: knownCard()!.id } : {}),
+        ...(includeLikely() ? { include_likely_duplicates: true } : {}),
       });
       if (completed.batch_error) setError(`导入批次未记录：${completed.batch_error}`);
       setResult(completed);
@@ -303,6 +310,7 @@ export default function ImportWorkspace(props: {
       ({
         pending: '待复制',
         duplicate: '重复跳过',
+        likely_duplicate: '疑似重复',
         copied: '已复制',
         failed: '失败',
         completed: '已完成',
@@ -439,21 +447,21 @@ export default function ImportWorkspace(props: {
                   disabled={!!busy()}
                 >
                   <option value="" disabled>
-                    选择本地图片库
+                    选择图片库
                   </option>
                   <For each={targets()}>
                     {(library) => (
                       <option value={library.id}>
-                        {library.name} — {library.root}
+                        {library.name} — {libraryLocation(library)}
                       </option>
                     )}
                   </For>
                 </select>
               </label>
               <Show when={!targets().length}>
-                <p class="field-note">导入目标须为本地图片库。</p>
+                <p class="field-note">还没有可导入的图片库。</p>
                 <button class="button" type="button" onClick={props.onCreateLibrary}>
-                  建立本地图片库
+                  建立图片库
                 </button>
               </Show>
               <Show when={identified()}>
@@ -731,7 +739,37 @@ export default function ImportWorkspace(props: {
                 <span>
                   <strong>{plan()!.duplicate_count}</strong> 项重复
                 </span>
+                <Show when={plan()!.likely_duplicate_count}>
+                  <span>
+                    <strong>{plan()!.likely_duplicate_count}</strong> 项疑似重复
+                  </span>
+                </Show>
               </div>
+              <Show when={plan()!.likely_duplicate_count}>
+                <label class="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={includeLikely()}
+                    onChange={(e) => setIncludeLikely(e.currentTarget.checked)}
+                    disabled={!!busy()}
+                  />
+                  仍然导入疑似重复项（文件名、大小与拍摄日期相同，但未经内容校验；可在图片库设置中建立内容指纹以严格判重）
+                </label>
+              </Show>
+              <Show when={plan()!.write_capability && plan()!.write_capability !== 'verified'}>
+                <div class="workspace-message error" role="alert">
+                  <span>
+                    {plan()!.write_capability === 'unsupported'
+                      ? '这个网络位置无法保证不覆盖已有文件，Nebulume 不会向它导入。'
+                      : '导入前需要先在“位置”中对这个网络位置“测试写入”，确认它能安全地新建文件且不覆盖已有内容。'}
+                  </span>
+                  <Show when={props.onOpenLocations && plan()!.write_capability === 'unverified'}>
+                    <button class="button small" type="button" onClick={props.onOpenLocations}>
+                      前往位置
+                    </button>
+                  </Show>
+                </div>
+              </Show>
               <div class="import-review-table">
                 <div class="directory-table-head">
                   <span>目标相对路径</span>
@@ -778,7 +816,12 @@ export default function ImportWorkspace(props: {
                 <button
                   class="button primary"
                   onClick={run}
-                  disabled={!!busy() || !reviewed() || !plan()!.items.length}
+                  disabled={
+                    !!busy() ||
+                    !reviewed() ||
+                    !plan()!.items.length ||
+                    (!!plan()!.write_capability && plan()!.write_capability !== 'verified')
+                  }
                 >
                   开始导入
                 </button>
