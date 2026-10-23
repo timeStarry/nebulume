@@ -1258,6 +1258,7 @@ export default function ManagementApp() {
             onOpenLibrary={enterLibrary}
             onCull={(library, batch) => void cullBatch(library, batch)}
             onOpenLocations={() => navigate('sources')}
+            sources={sources()}
             onImported={() => {
               void refreshLibraries();
               if (libraryId()) void loadAssets();
