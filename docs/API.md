@@ -10,6 +10,7 @@
 - `library.remove {id}` → `{id,removed_assets}`；移除库登记和索引/配方，不删除原文件、来源目录或存储源。
 - `library.scan {library_id}` → `{indexed,skipped,errors:[{path,message}],partial?}`；本地扫描文件，远端递归索引目录属性，尚不下载原图。
 - `asset.list {library_id?,query?,rating?,flag?:'any'|'pick'|'none'|'reject'|'not_reject',format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',limit?,offset?}` → `{items:Asset[],total,file_total}`；格式/评级/旗标/搜索与排序字段/方向可任意组合，默认 all / any / captured_at / desc；`not_reject` 隐藏淘汰。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
+- `library.fingerprint.status {library_id}` → `{library_id,total,known,pending,pending_bytes,remote,job}`；`library.fingerprint.start {library_id}` / `library.fingerprint.cancel {library_id,job_id}`：显式后台计算未知 SHA-256 写入 `assets.sha256`，语义同拍摄时间索引（协作式停止、同一时间仅一个库、`E_IN_USE`/`E_CONFLICT`）。本地读取原片；远端优先使用当前有效的缓存原图，否则流式完整读取直接计算哈希，不写缓存、不进预览队列。读取期间文件被替换则不记录。扫描发现文件大小或修改标记变化、远端版本变化时清除旧哈希。离线、登录或证书问题会提前停止。
 - `library.capture_index.status {library_id}` → `CaptureIndexStatus`；只读本库的持久计数及当前Service实例的最新作业，不启动读取。
 - `library.capture_index.start {library_id}` → `CaptureIndexStatus`；显式后台处理启动时仍为pending的实体文件。同库已有running/stopping作业时返回该作业；同一Service实例内另一库正在运行时返回`E_IN_USE`。
 - `library.capture_index.cancel {library_id,job_id}` → `CaptureIndexStatus`；校验最新job_id，活动作业转stopping，终态作业保持原状态。无作业返回`E_NOT_FOUND`，job_id已变返回`E_CONFLICT`。

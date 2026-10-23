@@ -121,6 +121,17 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
           case 'preset.list':
             result = [];
             break;
+          case 'library.fingerprint.status':
+            result = {
+              library_id: call.params.library_id,
+              total: 1,
+              known: 0,
+              pending: 1,
+              pending_bytes: 12000,
+              remote: call.params.library_id === remote.id,
+              job: null,
+            };
+            break;
           case 'card.identify':
             result = { status: 'unknown', candidates: [] };
             break;
@@ -1121,4 +1132,40 @@ test('a NAS import is planned by library id and blocked until the location passe
   await expect
     .poll(() => calls.find((call) => call.command === 'import.execute')?.params)
     .toMatchObject({ plan_id: 'nas-plan', library_id: remote.id, include_likely_duplicates: true });
+});
+
+test('library settings build content fingerprints, confirming before a NAS download', async ({
+  page,
+}) => {
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.fingerprint.start')
+      return {
+        library_id: remote.id,
+        total: 1,
+        known: 0,
+        pending: 1,
+        pending_bytes: 12000,
+        remote: true,
+        job: {
+          id: 'fp-1',
+          status: 'completed',
+          total: 1,
+          processed: 1,
+          hashed: 1,
+          failed: 0,
+          bytes_read: 12000,
+        },
+      };
+    return undefined;
+  });
+  await page.getByRole('button', { name: 'NAS 旅行 图片库设置' }).click();
+  const control = page.getByRole('region', { name: '内容指纹' });
+  await expect(control).toContainText('已建立 0 / 1');
+  await control.getByRole('button', { name: '建立内容指纹' }).click();
+  await expect(control).toContainText('需要完整下载 1 个文件');
+  expect(calls.some((call) => call.command === 'library.fingerprint.start')).toBe(false);
+  await control.getByRole('button', { name: '开始下载并建立' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'library.fingerprint.start')?.params)
+    .toEqual({ library_id: remote.id });
 });

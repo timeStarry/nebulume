@@ -862,6 +862,73 @@ impl Core {
         Ok(assets)
     }
 
+    /// Assets whose content hash is not yet known, for the explicit fingerprint task.
+    pub fn fingerprint_candidates(&self, library_id: &str) -> Result<Vec<Asset>> {
+        self.library(library_id)?;
+        let database = self.db()?;
+        let mut statement = database.prepare(&format!(
+            "SELECT {ASSET_COLUMNS} FROM assets WHERE library_id=?1 AND sha256 IS NULL AND availability<>'missing' ORDER BY path,id"
+        ))?;
+        let assets = statement
+            .query_map([library_id], asset_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(assets)
+    }
+
+    pub fn fingerprint_stats(&self, library_id: &str) -> Result<Value> {
+        self.library(library_id)?;
+        let (total, known, pending, pending_bytes) = self.db()?.query_row(
+            "SELECT COUNT(*),COALESCE(SUM(sha256 IS NOT NULL),0),
+             COALESCE(SUM(sha256 IS NULL AND availability<>'missing'),0),
+             COALESCE(SUM(CASE WHEN sha256 IS NULL AND availability<>'missing' THEN size ELSE 0 END),0)
+             FROM assets WHERE library_id=?1",
+            [library_id],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            },
+        )?;
+        Ok(json!({"total":total,"known":known,"pending":pending,"pending_bytes":pending_bytes}))
+    }
+
+    /// Store a hash only if it still describes the revision that was read.
+    pub fn record_asset_sha256(
+        &self,
+        id: &str,
+        expected_fingerprint: &str,
+        size: u64,
+        sha256: &str,
+    ) -> Result<bool> {
+        ensure!(
+            sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+            "E_INVALID: SHA-256 must be 64 hexadecimal digits"
+        );
+        let changed = self.db()?.execute(
+            "UPDATE assets SET sha256=?1 WHERE id=?2 AND modified_stamp=?3 AND (size=?4 OR size=0)",
+            params![
+                sha256.to_ascii_lowercase(),
+                id,
+                expected_fingerprint,
+                size as i64
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// The checked on-disk original of a local asset.
+    pub fn local_original_path(&self, id: &str) -> Result<PathBuf> {
+        let asset = self.asset(id)?;
+        ensure!(
+            asset.source_key.is_none(),
+            "E_INVALID: This asset is stored remotely"
+        );
+        self.checked_asset_path(&asset)
+    }
+
     pub fn capture_index_stats(&self, library_id: &str) -> Result<Value> {
         self.library(library_id)?;
         let (total, known, missing, pending) = self.db()?.query_row(
@@ -1083,7 +1150,7 @@ impl Core {
         self.db()?.execute(
             "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,availability,source_key,key)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'',?10,'remote',?9,?9)
-             ON CONFLICT(id) DO UPDATE SET path=excluded.path,path_key=excluded.path_key,filename=excluded.filename,size=excluded.size,modified_stamp=excluded.modified_stamp,width=NULL,height=NULL,metadata_json='{}',captured_at='',captured_at_checked=0,availability='remote'",
+             ON CONFLICT(id) DO UPDATE SET path=excluded.path,path_key=excluded.path_key,filename=excluded.filename,size=excluded.size,modified_stamp=excluded.modified_stamp,width=NULL,height=NULL,metadata_json='{}',captured_at='',captured_at_checked=0,availability='remote',sha256=NULL",
              params![id,library_id,path,path_key(&path),filename,extension,kind,size,source_key,format!("remote:{}",Uuid::new_v4())])?;
         self.asset(&id)
     }
@@ -1409,7 +1476,9 @@ impl Core {
         self.db()?.execute(
             "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked,key)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,?18)
-             ON CONFLICT(library_id,path_key) DO UPDATE SET path=excluded.path,key=excluded.key,filename=excluded.filename,extension=excluded.extension,
+             ON CONFLICT(library_id,path_key) DO UPDATE SET path=excluded.path,key=excluded.key,
+             sha256=CASE WHEN assets.size=excluded.size AND assets.modified_stamp=excluded.modified_stamp THEN assets.sha256 ELSE NULL END,
+             filename=excluded.filename,extension=excluded.extension,
              kind=excluded.kind,size=excluded.size,modified_at=excluded.modified_at,modified_stamp=excluded.modified_stamp,
              width=excluded.width,height=excluded.height,metadata_json=excluded.metadata_json,availability=excluded.availability,
              captured_at=excluded.captured_at,captured_at_checked=excluded.captured_at_checked,

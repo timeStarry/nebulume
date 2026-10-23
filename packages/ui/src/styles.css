@@ -2263,3 +2263,46 @@ kbd {
   border-top: 1px solid var(--nl-border);
   font-size: var(--nl-text-sm);
 }
+
+/* Content fingerprints in library settings */
+.fingerprint-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nl-space-2);
+  padding: var(--nl-space-3);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-md);
+}
+.fingerprint-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--nl-space-3);
+}
+.fingerprint-head strong {
+  font-size: var(--nl-text-sm);
+  font-weight: var(--nl-weight-medium);
+}
+.fingerprint-head p,
+.fingerprint-summary {
+  margin: 2px 0 0;
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+  line-height: var(--nl-line-height-body);
+}
+.fingerprint-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+}
+.fingerprint-progress progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--nl-interactive);
+}
+.fingerprint-control .workspace-message {
+  flex-wrap: wrap;
+  gap: var(--nl-space-2);
+}

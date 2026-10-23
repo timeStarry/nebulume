@@ -67,6 +67,24 @@ export interface AssetListResult {
   total: number;
   file_total?: number;
 }
+export interface FingerprintStatus {
+  library_id: string;
+  total: number;
+  known: number;
+  pending: number;
+  pending_bytes: number;
+  remote: boolean;
+  job: null | {
+    id: string;
+    status: 'running' | 'stopping' | 'completed' | 'cancelled' | 'failed';
+    total: number;
+    processed: number;
+    hashed: number;
+    failed: number;
+    bytes_read: number;
+    error?: string | null;
+  };
+}
 export interface CaptureIndexStatus {
   library_id: string;
   total: number;

@@ -19,6 +19,7 @@ use std::{
 
 mod capture_index;
 mod cards;
+mod fingerprint;
 mod remote_cache;
 
 type AssetOperations = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
@@ -90,6 +91,7 @@ pub struct Service {
     data_dir: PathBuf,
     catalog_operations: RwLock<()>,
     capture_index: capture_index::CaptureIndexController,
+    fingerprints: fingerprint::FingerprintController,
 }
 
 #[derive(Debug, Serialize)]
@@ -151,6 +153,7 @@ impl Service {
             data_dir: data_dir.to_path_buf(),
             catalog_operations: RwLock::new(()),
             capture_index: capture_index::CaptureIndexController::default(),
+            fingerprints: fingerprint::FingerprintController::default(),
         };
         service.sync_locations()?;
         service.adopt_legacy_cache()?;
@@ -799,6 +802,11 @@ impl Service {
             }
             "library.capture_index.start" => {
                 self.start_capture_index(string(&params, "library_id")?)
+            }
+            "library.fingerprint.status" => self.fingerprint_status(string(&params, "library_id")?),
+            "library.fingerprint.start" => self.start_fingerprints(string(&params, "library_id")?),
+            "library.fingerprint.cancel" => {
+                self.cancel_fingerprints(string(&params, "library_id")?, string(&params, "job_id")?)
             }
             "library.capture_index.cancel" => self
                 .cancel_capture_index(string(&params, "library_id")?, string(&params, "job_id")?),
