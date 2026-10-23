@@ -397,10 +397,7 @@ impl Core {
 
     /// What a library already holds, for import de-duplication without downloads:
     /// (location key, size, sha256 if known, filename, captured_at).
-    pub fn import_known_assets(
-        &self,
-        library_id: &str,
-    ) -> Result<Vec<KnownAssetRow>> {
+    pub fn import_known_assets(&self, library_id: &str) -> Result<Vec<KnownAssetRow>> {
         self.library(library_id)?;
         let db = self.db()?;
         let mut statement = db.prepare(
