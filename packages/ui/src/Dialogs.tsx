@@ -4,6 +4,7 @@ import { errorMessage, type Library, type StorageConfig } from './model';
 import Icon from './Icon';
 import TlsCertificatePanel from './TlsCertificatePanel';
 import StorageError from './StorageError';
+import FingerprintControl from './FingerprintControl';
 
 export function Modal(props: {
   title: string;
@@ -307,6 +308,9 @@ export function LibraryDialog(props: {
         <p class="field-help">
           同目录内各有一份的同名 RAW 与 JPEG 合并为一项，评级与裁剪分别保存。
         </p>
+        <Show when={desktop && props.existing && !bindingChanged()}>
+          <FingerprintControl libraryId={props.existing!.id} />
+        </Show>
         <Show when={bindingChanged()}>
           <div class="workspace-message error" role="alert">
             <span>
@@ -469,7 +473,7 @@ export function StorageDialog(props: {
   }
   return (
     <Modal
-      title={props.existing ? '连接设置 / 重连' : '添加存储源'}
+      title={props.existing ? '连接设置 / 重连' : '添加网络位置'}
       onClose={props.onClose}
       busy={busy()}
     >

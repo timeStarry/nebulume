@@ -4,15 +4,17 @@
 
 ## 图库 / 影像（core）
 
-- `library.list {}` → `Library[]`; 本地建库 `library.add {name,root,pair_raw_jpeg?}` 直接登记目录，不创建存储源；远端建库 `library.add {name,storage_id,prefix?,pair_raw_jpeg?}` 绑定已保存连接。两者返回 `Library`，配对默认关闭。显式引用旧本地storage_id的调用继续兼容。
+- `location.list {}` → `Location[]`：`{id,kind:'local'|'removable'|'webdav'|'s3',name,endpoint,root,bucket?,region?,tls_certificate_sha256?,implicit,created_at,availability,library_ids}`；含选目录建库产生的隐式本地位置，不含凭据。存储源的增删同步到位置表；被库使用的位置不可删除（`E_IN_USE`），隐式位置随其库移除。`Library.location_id`、`Asset.key`（位置根下含库前缀的 `/` 分隔键）为 v7 新增字段。
+- `library.list {}` → `Library[]`；每项附运行时 `availability`：`unchecked`（本进程尚未访问远端，启动不联网）/ `online` / `offline`（卷未挂载、目录不存在、主机不可达或超时）/ `auth_required`（凭据缺失、401/403、安全存储不可用）/ `trust_required`（证书变化、过期或未信任）/ `error`（其他失败，不猜测为离线）。远端只由实际列举/读取/检查结果更新，本地目录直接检查。`connected` 保留为 `availability=='online'`。`storage.list`、`storage.check` 同样返回 `availability`。本地建库 `library.add {name,root,pair_raw_jpeg?}` 直接登记目录，不创建存储源；远端建库 `library.add {name,storage_id,prefix?,pair_raw_jpeg?}` 绑定已保存连接。两者返回 `Library`，配对默认关闭。显式引用旧本地storage_id的调用继续兼容。
 - `library.update {id,name?,pair_raw_jpeg?,root?,storage_id?,source_prefix?}` → `Library`；省略字段保留原值，空前缀须显式传 `""`。root与storage_id互斥；root指定直接本地目录并解除旧连接绑定。同一真实本地目录解除历史绑定保留资产id、评级与裁剪；实际变更来源或目录时清除该库旧索引/配方，随后需要重新扫描，不移动或修改任何原文件。
 - `library.remove {id}` → `{id,removed_assets}`；移除库登记和索引/配方，不删除原文件、来源目录或存储源。
 - `library.scan {library_id}` → `{indexed,skipped,errors:[{path,message}],partial?}`；本地扫描文件，远端递归索引目录属性，尚不下载原图。
-- `asset.list {library_id?,query?,rating?,format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',limit?,offset?}` → `{items:Asset[],total,file_total}`；格式/评级/搜索与排序字段/方向可任意组合，默认 all / captured_at / desc。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
+- `asset.list {library_id?,query?,rating?,flag?:'any'|'pick'|'none'|'reject'|'not_reject',format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',limit?,offset?}` → `{items:Asset[],total,file_total}`；格式/评级/旗标/搜索与排序字段/方向可任意组合，默认 all / any / captured_at / desc；`not_reject` 隐藏淘汰。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
+- `library.fingerprint.status {library_id}` → `{library_id,total,known,pending,pending_bytes,remote,job}`；`library.fingerprint.start {library_id}` / `library.fingerprint.cancel {library_id,job_id}`：显式后台计算未知 SHA-256 写入 `assets.sha256`，语义同拍摄时间索引（协作式停止、同一时间仅一个库、`E_IN_USE`/`E_CONFLICT`）。本地读取原片；远端优先使用当前有效的缓存原图，否则流式完整读取直接计算哈希，不写缓存、不进预览队列。读取期间文件被替换则不记录。扫描发现文件大小或修改标记变化、远端版本变化时清除旧哈希。离线、登录或证书问题会提前停止。
 - `library.capture_index.status {library_id}` → `CaptureIndexStatus`；只读本库的持久计数及当前Service实例的最新作业，不启动读取。
 - `library.capture_index.start {library_id}` → `CaptureIndexStatus`；显式后台处理启动时仍为pending的实体文件。同库已有running/stopping作业时返回该作业；同一Service实例内另一库正在运行时返回`E_IN_USE`。
 - `library.capture_index.cancel {library_id,job_id}` → `CaptureIndexStatus`；校验最新job_id，活动作业转stopping，终态作业保持原状态。无作业返回`E_NOT_FOUND`，job_id已变返回`E_CONFLICT`。
-- `asset.get {id}` → `Asset`；远端只读索引与离线快照，不发起图像正文请求。本地仍按需检查已有文件的变更。`asset.rate {id,rating}` → `Asset`。
+- `asset.get {id}` → `Asset`；远端只读索引与离线快照，不发起图像正文请求。本地仍按需检查已有文件的变更。`asset.rate {id,rating}` → `Asset`。`asset.flag {id,flag:'none'|'pick'|'reject'}` → `Asset`。`asset.mark_batch {ids,rating?,flag?}` → `{updated}`：1–1000 个同库资产，至少设置一项，单事务执行，任一 id 不存在则 `E_NOT_FOUND` 且全部回滚，跨库返回 `E_INVALID`。旗标与评级一样只写目录，不改原片、不使预览失效，重新扫描保留。`Asset.flag` 默认 `none`。
 - `asset.refresh {id}` → `Asset`；显式更新原图，包含固定离线版本。远端新文件完整接收、核对长度并校验发布后才切换引用；网络、预约或发布失败保留旧缓存。评级与裁剪保留。
 - `asset.fetch_original {id}` → `Asset`；显式获取缺失原图，已有当前缓存时复用；允许手动预览策略下下载。
 - `asset.offline.set {id,pinned:boolean}` → `{asset_id,pinned,stats}`；固定前先取得完整原图，固定当前快照并计入总限额。远端重扫发现更新后不自动替换该快照；`asset.get` 附 `cache_update_available=true`，由用户执行 refresh 更新。解除固定允许作用于已移除库留下的孤立固定项。
@@ -117,8 +119,14 @@ RAW 传感器解码失败时，查看与直方图可回退到标准 TIFF IFD / I
 - `storage.inspect_tls {endpoint}` → `{endpoint,sha256,subject,issuer,not_before,not_after,subject_alt_names:string[]}`；无凭据检查局域网 HTTPS 服务器证书，不保存或自动信任证书。日期使用 RFC3339。
 - `storage.browse {id,prefix?,limit?,cursor?}` → `{entries:[{key,size,is_dir,created_at?:string}],next_cursor:string|null}`；limit 默认 200，范围 1–1000。created_at可选，来自源的真实创建属性；缺失/无效省略，S3不把LastModified视为创建时间。
 - `storage.fetch {id,key,destination}` → `{path,size,sha256}`（新文件，无覆盖发布）
-- `import.plan {source,destination,layout?:'preserve'|'date',deduplicate?:boolean}` → `ImportPlan`；默认 preserve / true，创建计划不复制文件。
-- `import.execute {plan_id}` → `ImportResult`；仅当前会话已审核计划可执行，计划消费后重试须重新规划。
+- `import.plan {source,destination,rules?:OrganizeRules,layout?:'preserve'|'date',deduplicate?:boolean}` → `ImportPlan`；`rules` 优先，`layout` 为兼容别名（preserve = 保留卡内目录，date = 拍摄日 `Y-M-D`），默认 preserve / true，创建计划不复制文件。`OrganizeRules={date_basis:'capture'|'import'|'none'|'preserve',date_layout?:'Y-M-D'|'Y/Y-M-D'|'Y/M/Y-M-D'|'Y/M/D',type_split?:'none'|'by_kind',unknown_date?:'folder'|'modified_time',subfolder?}`：固定选项而非模板；`by_kind` 在日期目录内分 RAW/JPG/TIFF/OTHER，XMP 跟随其 RAW；拍摄日缺失默认进入 `unknown-date/`，仅显式选择 `modified_time` 时按源文件修改日并逐项标注 `date_source`；导入日在规划时冻结为 `ImportPlan.import_day`；`subfolder` 只接受普通目录名，拒绝越级、绝对路径与保留名。文件名永不改变。`ImportPlan.rules` 记录冻结的规则。
+- `storage.write_check {id}` → `{id,write_capability:'verified'|'unsupported'|'unverified',error?,leftover?,checked_at}`：显式写入测试，仅限 WebDAV/S3。写入一个随机小对象，再证明对同一键的第二次写入被拒绝，然后删除；无法删除的测试对象如实返回 `leftover`。服务器替换了已有对象判为 `unsupported`。结果只在本进程有效，`storage.list` 每项附 `write_capability`。
+- 远端导入：`import.plan {source,library_id,rules?,deduplicate?}` 中 `library_id` 指向 WebDAV/S3 图片库时，按目标库目录记录判重而不下载：有 SHA-256 的严格判为 `duplicate`；无哈希但文件名（不区分大小写）、大小与拍摄日均已知且相同的判为 `likely_duplicate`，计入 `likely_duplicate_count`，默认跳过。计划附 `write_capability`、`destination_location`、`destination_prefix`。`import.execute {plan_id,library_id,include_likely_duplicates?,card_id?}` 要求该位置本进程已通过写入测试，否则 `E_WRITE_UNVERIFIED` 且不写入。WebDAV：MKCOL 父目录 → PUT 临时 `.nebulume-*.part`（`If-None-Match: *`）→ GET 读回校验 SHA-256 → `MOVE` 带 `Overwrite: F`，失败删除临时文件。S3：`PUT` 带 `If-None-Match: *`，SigV4 签名覆盖计划 SHA-256，内容不符 `E_VERIFY`，不支持条件写 `E_UNSUPPORTED`，单文件上限 5 GiB（`E_LIMIT`，暂无分片）。同名不同内容沿用哈希后缀改名。发布成功的文件按键和大小直接登记到目标库并记录 SHA-256，再写入导入批次。
+- `card.identify {mount_path,volume_label?,volume_serial?,capacity_bytes?}` → `{status:'known',card}` | `{status:'unknown'|'foreign',candidates:Card[],identity_id?}`；只读。按卷根 `/.nebulume/volume.json` 识别；卷标/序列号/容量只作“可能是这张卡”的提示，从不自动绑定。未挂载返回 `E_OFFLINE`。
+- `card.register {mount_path,name,...}` → `Card`：写入身份文件并读回校验（写保护卡返回 `E_IO`），同时建立 `removable` 位置。已登记返回 `E_CONFLICT`。`card.bind {mount_path,card_id,...}` → `Card`：把当前卷（如格式化后的卡）绑定到用户选择的已有记录，重写身份文件，继承名称、默认方案与历史。`card.list {}`、`card.update {id,name?,default_preset_id?:string|null}`、`card.remove {id}`（只删记录，不触碰卡与已导入文件）。身份文件是唯一写入卡的内容。
+- `preset.list {}`、`preset.save {id?,name,library_id,rules:OrganizeRules,deduplicate?}`（规则经 neb-ingest 校验）、`preset.remove {id}`（引用它的卡改为无默认方案）。
+- `import.batches {library_id}` → `ImportBatch[]`：`{id,library_id,card_id?,source,rules,started_at,finished_at?,status,copied,duplicates,failed,asset_count}`。`asset.list` 接受 `import_batch_id` 筛选。
+- `import.execute {plan_id}` → `ImportResult`；可附 `card_id`。完成并索引目标库后写入导入批次，结果附 `batch`（失败时 `batch_error`）；只有本次实际复制的文件被标记该批次并记录 SHA-256，跳过的重复项不改归属。`ImportResult.rules` 为执行时冻结的规则。仅当前会话已审核计划可执行，计划消费后重试须重新规划。
 - `import.history {}` → `ImportResult[]`，来自持久日志；遗留 running 作业返回 interrupted。
 - `system.info {}` → runtime version, capability status and explicit limits.
 
@@ -140,7 +148,7 @@ HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须�
 
 ## 原生窗口接口
 
-这些Tauri调用由app适配层处理：`open_viewer {assetId,assetIds}` → 新窗口label；`viewer_context {}` → 当前查看窗口专属 `{asset_id,asset_ids}`；`show_manager {}` 打开管理页；`list_volumes {}` → `[{id,name,path,kind,removable,available_bytes?}]`。卷类型由OS报告，不把所有可移动卷推断为SD卡；可以手选挂载目录。
+这些Tauri调用由app适配层处理：`open_viewer {assetId,assetIds,mode?:'view'|'cull',queue?:{library_id,options}}` → 新窗口label；`queue.options` 为 `asset.list` 筛选/排序参数，序列化后不超过 8 KiB。`viewer_context {}` → 当前查看窗口专属 `{asset_id,asset_ids,mode,queue}`；选图窗口按 queue 分页快照最多 10000 个 id 后固定队列，之后的标记不改变成员。`show_manager {}` 打开管理页；`list_volumes {}` → `[{id,name,path,kind,removable,available_bytes?}]`。卷类型由OS报告，不把所有可移动卷推断为SD卡；可以手选挂载目录。
 
 命令行图片路径或安装包文件关联打开独立查看器；已有进程接收后续文件打开请求，不重复启动管理实例。不会改动用户系统默认应用设置。
 

@@ -9,6 +9,7 @@ export interface Library {
   source_name?: string;
   source_endpoint?: string;
   connected?: boolean;
+  availability?: Availability;
   hidden?: boolean;
   pair_raw_jpeg?: boolean;
 }
@@ -35,6 +36,8 @@ export interface Asset {
   width?: number;
   height?: number;
   rating: number;
+  /** Culling mark stored in the catalog; never written to the original. */
+  flag?: Flag;
   metadata: Record<string, string>;
   crop?: Crop | null;
   availability: string;
@@ -45,8 +48,12 @@ export interface Asset {
   preview_revision?: number;
   variants?: Pick<Asset, 'id' | 'filename' | 'extension' | 'kind'>[];
 }
+export type Flag = 'none' | 'pick' | 'reject';
+export type FlagFilter = 'any' | 'pick' | 'none' | 'reject' | 'not_reject';
 export interface AssetListOptions {
   library_id?: string;
+  flag?: FlagFilter;
+  import_batch_id?: string;
   query?: string;
   rating?: number;
   format?: 'all' | 'raw' | 'jpeg';
@@ -59,6 +66,24 @@ export interface AssetListResult {
   items: Asset[];
   total: number;
   file_total?: number;
+}
+export interface FingerprintStatus {
+  library_id: string;
+  total: number;
+  known: number;
+  pending: number;
+  pending_bytes: number;
+  remote: boolean;
+  job: null | {
+    id: string;
+    status: 'running' | 'stopping' | 'completed' | 'cancelled' | 'failed';
+    total: number;
+    processed: number;
+    hashed: number;
+    failed: number;
+    bytes_read: number;
+    error?: string | null;
+  };
 }
 export interface CaptureIndexStatus {
   library_id: string;
@@ -125,6 +150,16 @@ export interface StorageConfig {
   tls_certificate_sha256?: string | null;
   remember_credentials?: boolean;
   credential_status?: 'system' | 'session' | 'missing' | 'unavailable' | 'not_required';
+  /** Result of the explicit write test in this app session. */
+  write_capability?: WriteCapability;
+}
+export type WriteCapability = 'unverified' | 'verified' | 'unsupported';
+export interface WriteCheck {
+  id: string;
+  write_capability: WriteCapability;
+  error?: string | null;
+  leftover?: string | null;
+  checked_at: string;
 }
 export interface Volume {
   id: string;
@@ -134,9 +169,17 @@ export interface Volume {
   removable: boolean;
   available_bytes?: number | null;
 }
+export type Availability =
+  | 'unchecked'
+  | 'online'
+  | 'offline'
+  | 'auth_required'
+  | 'trust_required'
+  | 'error';
 export interface StorageCheck {
   id: string;
   connected: boolean;
+  availability?: Availability;
   credential_status: StorageConfig['credential_status'];
   checked_at: string;
   error: string | null;
@@ -165,6 +208,15 @@ export interface ImportItem {
   relative_path: string;
   size: number;
   status: string;
+  /** exif, paired_exif, import_date, modified_time, unknown or preserved. */
+  date_source?: string;
+}
+export interface OrganizeRules {
+  date_basis: 'capture' | 'import' | 'none' | 'preserve';
+  date_layout: 'Y-M-D' | 'Y/Y-M-D' | 'Y/M/Y-M-D' | 'Y/M/D';
+  type_split: 'none' | 'by_kind';
+  unknown_date: 'folder' | 'modified_time';
+  subfolder: string;
 }
 export interface ImportPlan {
   id: string;
@@ -173,8 +225,50 @@ export interface ImportPlan {
   items: ImportItem[];
   total_bytes: number;
   duplicate_count: number;
+  /** Same name, size and capture day as an unhashed library file; skipped unless included. */
+  likely_duplicate_count?: number;
+  /** Present for NAS targets: whether this location passed the write test. */
+  write_capability?: WriteCapability;
+  library_id?: string;
   warnings: string[];
   [key: string]: unknown;
+}
+export interface Card {
+  id: string;
+  name: string;
+  location_id: string;
+  volume_label?: string | null;
+  volume_serial?: string | null;
+  capacity_bytes?: number | null;
+  last_mount_path?: string | null;
+  last_seen_at?: string | null;
+  default_preset_id?: string | null;
+  created_at: string;
+  last_import_at?: string | null;
+}
+export type CardIdentification =
+  | { status: 'known'; card: Card }
+  | { status: 'unknown' | 'foreign'; candidates: Card[]; identity_id?: string };
+export interface ImportPreset {
+  id: string;
+  name: string;
+  library_id: string;
+  rules: OrganizeRules;
+  deduplicate: boolean;
+  created_at: string;
+}
+export interface ImportBatch {
+  id: string;
+  library_id: string;
+  card_id?: string | null;
+  source: string;
+  started_at: string;
+  finished_at?: string | null;
+  status: string;
+  copied: number;
+  duplicates: number;
+  failed: number;
+  asset_count: number;
 }
 export interface ImportResult {
   id: string;
@@ -199,6 +293,8 @@ export interface ImportResult {
   library_id?: string;
   indexing?: ScanResult;
   indexing_error?: string;
+  batch?: ImportBatch;
+  batch_error?: string;
   [key: string]: unknown;
 }
 

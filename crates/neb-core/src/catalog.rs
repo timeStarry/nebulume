@@ -18,7 +18,7 @@ use crate::{
     capture_time::{self, CaptureStatus, CaptureTime},
     imaging,
     model::{ScanError, ScanReport},
-    Asset, Crop, Library,
+    Asset, Crop, Library, Location,
 };
 
 pub struct Core {
@@ -28,9 +28,9 @@ pub struct Core {
     previews: Mutex<VecDeque<(String, Value)>>,
 }
 
-const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked";
+const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key";
 const LIBRARY_COLUMNS: &str =
-    "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg";
+    "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg,location_id";
 // Bump when inspection semantics change. This lives only in the private cache
 // fingerprint, so old catalogs upgrade on access without rewriting user EXIF.
 const INSPECTION_VERSION: &str = "inspect-v2";
@@ -46,7 +46,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 5,
+            version <= 8,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -107,6 +107,119 @@ impl Core {
                 update.execute(params![capture.captured_at, checked, id])?;
             }
         }
+        if version < 6 {
+            // Culling marks live only in the catalog; originals are never touched.
+            migration.execute_batch(
+                "ALTER TABLE assets ADD COLUMN flag TEXT NOT NULL DEFAULT 'none' CHECK(flag IN ('none','pick','reject'));
+                 ALTER TABLE assets ADD COLUMN import_batch_id TEXT;
+                 ALTER TABLE assets ADD COLUMN sha256 TEXT;
+                 CREATE INDEX assets_library_flag ON assets(library_id,flag);
+                 CREATE INDEX assets_library_batch ON assets(library_id,import_batch_id);
+                 PRAGMA user_version=6;",
+            )?;
+        }
+        if version < 7 {
+            // Locations are additive: existing root/storage_id columns keep working,
+            // ids, marks and crops are untouched, and nothing outside SQLite is read.
+            migration.execute_batch(
+                "CREATE TABLE locations(
+                    id TEXT PRIMARY KEY NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('local','removable','webdav','s3')),
+                    name TEXT NOT NULL,
+                    endpoint TEXT NOT NULL,
+                    root TEXT NOT NULL DEFAULT '',
+                    bucket TEXT, region TEXT, tls_certificate_sha256 TEXT,
+                    implicit INTEGER NOT NULL DEFAULT 0 CHECK(implicit IN (0,1)),
+                    created_at TEXT NOT NULL);
+                 ALTER TABLE libraries ADD COLUMN location_id TEXT;
+                 ALTER TABLE assets ADD COLUMN key TEXT;
+                 CREATE INDEX libraries_location ON libraries(location_id);
+                 UPDATE libraries SET location_id=storage_id WHERE storage_id IS NOT NULL;
+                 UPDATE assets SET key=source_key WHERE source_key IS NOT NULL;",
+            )?;
+            let direct: Vec<(String, String, String, String)> = {
+                let mut statement = migration.prepare(
+                    "SELECT id,name,root,created_at FROM libraries WHERE storage_id IS NULL",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            for (library, name, root, created_at) in direct {
+                let location = Uuid::new_v4().to_string();
+                migration.execute(
+                    "INSERT INTO locations(id,kind,name,endpoint,implicit,created_at) VALUES(?1,'local',?2,?3,1,?4)",
+                    params![location, name, root, created_at],
+                )?;
+                migration.execute(
+                    "UPDATE libraries SET location_id=?1 WHERE id=?2",
+                    params![location, library],
+                )?;
+            }
+            let local: Vec<(String, String, String, String)> = {
+                let mut statement = migration.prepare(
+                    "SELECT a.id,a.path,l.root,l.source_prefix FROM assets a JOIN libraries l ON l.id=a.library_id WHERE a.source_key IS NULL",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let mut update = migration.prepare("UPDATE assets SET key=?1 WHERE id=?2")?;
+            for (id, path, root, prefix) in local {
+                update.execute(params![
+                    location_key(&prefix, Path::new(&root), Path::new(&path)),
+                    id
+                ])?;
+            }
+            drop(update);
+            migration.execute_batch(
+                "CREATE UNIQUE INDEX assets_library_key ON assets(library_id,key) WHERE key IS NOT NULL;
+                 PRAGMA user_version=7;",
+            )?;
+        }
+        if version < 8 {
+            // Cards, presets and batches are catalog records only; no media is read.
+            migration.execute_batch(
+                "CREATE TABLE volume_identities(
+                    id TEXT PRIMARY KEY NOT NULL,
+                    location_id TEXT NOT NULL UNIQUE REFERENCES locations(id),
+                    volume_label TEXT, volume_serial TEXT, capacity_bytes INTEGER,
+                    last_mount_path TEXT, last_seen_at TEXT);
+                 CREATE TABLE import_presets(
+                    id TEXT PRIMARY KEY NOT NULL,
+                    name TEXT NOT NULL,
+                    library_id TEXT NOT NULL REFERENCES libraries(id),
+                    rules_json TEXT NOT NULL,
+                    deduplicate INTEGER NOT NULL DEFAULT 1 CHECK(deduplicate IN (0,1)),
+                    created_at TEXT NOT NULL);
+                 CREATE TABLE cards(
+                    id TEXT PRIMARY KEY NOT NULL REFERENCES volume_identities(id),
+                    name TEXT NOT NULL,
+                    default_preset_id TEXT REFERENCES import_presets(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    last_import_at TEXT);
+                 CREATE TABLE import_batches(
+                    id TEXT PRIMARY KEY NOT NULL,
+                    library_id TEXT NOT NULL REFERENCES libraries(id),
+                    card_id TEXT,
+                    source TEXT NOT NULL,
+                    rules_json TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    copied INTEGER NOT NULL DEFAULT 0,
+                    duplicates INTEGER NOT NULL DEFAULT 0,
+                    failed INTEGER NOT NULL DEFAULT 0);
+                 CREATE INDEX import_batches_library ON import_batches(library_id,started_at);
+                 PRAGMA user_version=8;",
+            )?;
+        }
         migration.commit()?;
         Ok(Self {
             database: Mutex::new(database),
@@ -114,7 +227,7 @@ impl Core {
         })
     }
 
-    fn db(&self) -> Result<MutexGuard<'_, Connection>> {
+    pub(crate) fn db(&self) -> Result<MutexGuard<'_, Connection>> {
         self.database
             .lock()
             .map_err(|_| anyhow!("E_INTERNAL: Catalog lock is unavailable"))
@@ -199,6 +312,28 @@ impl Core {
                 ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
+            "asset.flag" => {
+                #[derive(Deserialize)]
+                struct FlagArgs {
+                    id: String,
+                    flag: String,
+                }
+                let args: FlagArgs = parse(params)?;
+                ensure!(
+                    valid_flag(&args.flag),
+                    "E_INVALID: Flag must be none, pick or reject"
+                );
+                let changed = self.db()?.execute(
+                    "UPDATE assets SET flag=?1 WHERE id=?2",
+                    params![args.flag, args.id],
+                )?;
+                ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                Ok(serde_json::to_value(self.asset(&args.id)?)?)
+            }
+            "asset.mark_batch" => {
+                let args: MarkBatch = parse(params)?;
+                Ok(json!({"updated":self.mark_batch(&args)?}))
+            }
             "asset.crop" => {
                 #[derive(Deserialize)]
                 struct CropArgs {
@@ -261,6 +396,60 @@ impl Core {
             }
             _ => bail!("E_NOT_FOUND: Unknown core command {command}"),
         }
+    }
+
+    /// Every location, including implicit ones behind folder libraries.
+    pub fn locations(&self) -> Result<Vec<Location>> {
+        let db = self.db()?;
+        let mut statement = db.prepare(
+            "SELECT id,kind,name,endpoint,root,bucket,region,tls_certificate_sha256,implicit,created_at FROM locations ORDER BY implicit,name,id",
+        )?;
+        let rows = statement
+            .query_map([], location_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Mirror an explicit storage location's non-secret fields. Ids are preserved, so
+    /// credential-store entries scoped by the source id keep working.
+    pub fn sync_location(&self, location: &Location) -> Result<()> {
+        ensure!(
+            matches!(
+                location.kind.as_str(),
+                "local" | "removable" | "webdav" | "s3"
+            ),
+            "E_INVALID: Unknown location kind"
+        );
+        ensure!(
+            !location.id.is_empty(),
+            "E_INVALID: Location id is required"
+        );
+        let created_at = if location.created_at.is_empty() {
+            Utc::now().to_rfc3339()
+        } else {
+            location.created_at.clone()
+        };
+        self.db()?.execute(
+            "INSERT INTO locations(id,kind,name,endpoint,root,bucket,region,tls_certificate_sha256,implicit,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,0,?9)
+             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,name=excluded.name,endpoint=excluded.endpoint,root=excluded.root,
+             bucket=excluded.bucket,region=excluded.region,tls_certificate_sha256=excluded.tls_certificate_sha256,implicit=0",
+            params![location.id, location.kind, location.name, location.endpoint, location.root, location.bucket, location.region, location.tls_certificate_sha256, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Remove an explicit location that no library uses.
+    pub fn remove_location(&self, id: &str) -> Result<()> {
+        let db = self.db()?;
+        let used: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM libraries WHERE location_id=?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        ensure!(!used, "E_IN_USE: Location is used by a library");
+        db.execute("DELETE FROM locations WHERE id=?1", [id])?;
+        Ok(())
     }
 
     pub fn libraries(&self) -> Result<Vec<Library>> {
@@ -339,9 +528,15 @@ impl Core {
             source_prefix: String::new(),
             hidden,
             pair_raw_jpeg,
+            location_id: Some(Uuid::new_v4().to_string()),
         };
+        // Choosing a folder stays one step: its location is created implicitly.
         db.execute(
-            "INSERT INTO libraries(id,name,root,root_key,created_at,hidden,pair_raw_jpeg) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO locations(id,kind,name,endpoint,implicit,created_at) VALUES(?1,'local',?2,?3,1,?4)",
+            params![library.location_id, library.name, library.root, library.created_at],
+        )?;
+        db.execute(
+            "INSERT INTO libraries(id,name,root,root_key,created_at,hidden,pair_raw_jpeg,location_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 library.id,
                 library.name,
@@ -349,7 +544,8 @@ impl Core {
                 root_key,
                 library.created_at,
                 library.hidden,
-                library.pair_raw_jpeg
+                library.pair_raw_jpeg,
+                library.location_id
             ],
         )?;
         Ok(library)
@@ -466,11 +662,22 @@ impl Core {
             library.root = root;
             library.storage_id = source.map(str::to_owned);
             library.source_prefix = prefix.into();
+            library.location_id = Some(match source {
+                Some(source) => source.to_owned(),
+                None => implicit_location(&transaction, &library)?,
+            });
         }
         if changed_binding {
             transaction.execute("DELETE FROM assets WHERE library_id=?1", [id])?;
         }
-        transaction.execute("UPDATE libraries SET name=?1,pair_raw_jpeg=?2,root=?3,root_key=?4,storage_id=?5,source_prefix=?6 WHERE id=?7", params![library.name,library.pair_raw_jpeg,library.root,path_key(&library.root),library.storage_id,library.source_prefix,id])?;
+        transaction.execute("UPDATE libraries SET name=?1,pair_raw_jpeg=?2,root=?3,root_key=?4,storage_id=?5,source_prefix=?6,location_id=?7 WHERE id=?8", params![library.name,library.pair_raw_jpeg,library.root,path_key(&library.root),library.storage_id,library.source_prefix,library.location_id,id])?;
+        if library.storage_id.is_none() {
+            transaction.execute(
+                "UPDATE locations SET name=?1 WHERE id=?2 AND implicit=1",
+                params![library.name, library.location_id],
+            )?;
+        }
+        delete_orphan_locations(&transaction)?;
         transaction.commit()?;
         drop(db);
         if changed_binding {
@@ -491,7 +698,11 @@ impl Core {
         )?;
         ensure!(exists, "E_NOT_FOUND: Library does not exist");
         let removed = transaction.execute("DELETE FROM assets WHERE library_id=?1", [id])?;
+        // Presets and batch summaries are catalog records about this library only.
+        transaction.execute("DELETE FROM import_batches WHERE library_id=?1", [id])?;
+        transaction.execute("DELETE FROM import_presets WHERE library_id=?1", [id])?;
         transaction.execute("DELETE FROM libraries WHERE id=?1", [id])?;
+        delete_orphan_locations(&transaction)?;
         transaction.commit()?;
         drop(db);
         if let Ok(mut previews) = self.previews.lock() {
@@ -514,10 +725,13 @@ impl Core {
                 .is_none_or(|id| id == storage_id && library.source_prefix == prefix),
             "E_CONFLICT: This library already belongs to a different storage directory"
         );
-        self.db()?.execute(
-            "UPDATE libraries SET storage_id=?1,source_prefix=?2 WHERE id=?3",
+        let db = self.db()?;
+        db.execute(
+            "UPDATE libraries SET storage_id=?1,source_prefix=?2,location_id=?1 WHERE id=?3",
             params![storage_id, prefix, library_id],
         )?;
+        delete_orphan_locations(&db)?;
+        drop(db);
         self.library(library_id)
     }
 
@@ -646,6 +860,73 @@ impl Core {
             .query_map([library_id], asset_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(assets)
+    }
+
+    /// Assets whose content hash is not yet known, for the explicit fingerprint task.
+    pub fn fingerprint_candidates(&self, library_id: &str) -> Result<Vec<Asset>> {
+        self.library(library_id)?;
+        let database = self.db()?;
+        let mut statement = database.prepare(&format!(
+            "SELECT {ASSET_COLUMNS} FROM assets WHERE library_id=?1 AND sha256 IS NULL AND availability<>'missing' ORDER BY path,id"
+        ))?;
+        let assets = statement
+            .query_map([library_id], asset_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(assets)
+    }
+
+    pub fn fingerprint_stats(&self, library_id: &str) -> Result<Value> {
+        self.library(library_id)?;
+        let (total, known, pending, pending_bytes) = self.db()?.query_row(
+            "SELECT COUNT(*),COALESCE(SUM(sha256 IS NOT NULL),0),
+             COALESCE(SUM(sha256 IS NULL AND availability<>'missing'),0),
+             COALESCE(SUM(CASE WHEN sha256 IS NULL AND availability<>'missing' THEN size ELSE 0 END),0)
+             FROM assets WHERE library_id=?1",
+            [library_id],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            },
+        )?;
+        Ok(json!({"total":total,"known":known,"pending":pending,"pending_bytes":pending_bytes}))
+    }
+
+    /// Store a hash only if it still describes the revision that was read.
+    pub fn record_asset_sha256(
+        &self,
+        id: &str,
+        expected_fingerprint: &str,
+        size: u64,
+        sha256: &str,
+    ) -> Result<bool> {
+        ensure!(
+            sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+            "E_INVALID: SHA-256 must be 64 hexadecimal digits"
+        );
+        let changed = self.db()?.execute(
+            "UPDATE assets SET sha256=?1 WHERE id=?2 AND modified_stamp=?3 AND (size=?4 OR size=0)",
+            params![
+                sha256.to_ascii_lowercase(),
+                id,
+                expected_fingerprint,
+                size as i64
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// The checked on-disk original of a local asset.
+    pub fn local_original_path(&self, id: &str) -> Result<PathBuf> {
+        let asset = self.asset(id)?;
+        ensure!(
+            asset.source_key.is_none(),
+            "E_INVALID: This asset is stored remotely"
+        );
+        self.checked_asset_path(&asset)
     }
 
     pub fn capture_index_stats(&self, library_id: &str) -> Result<Value> {
@@ -867,9 +1148,9 @@ impl Core {
             .map(|asset| asset.id)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         self.db()?.execute(
-            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,availability,source_key)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'',?10,'remote',?9)
-             ON CONFLICT(id) DO UPDATE SET path=excluded.path,path_key=excluded.path_key,filename=excluded.filename,size=excluded.size,modified_stamp=excluded.modified_stamp,width=NULL,height=NULL,metadata_json='{}',captured_at='',captured_at_checked=0,availability='remote'",
+            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,availability,source_key,key)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'',?10,'remote',?9,?9)
+             ON CONFLICT(id) DO UPDATE SET path=excluded.path,path_key=excluded.path_key,filename=excluded.filename,size=excluded.size,modified_stamp=excluded.modified_stamp,width=NULL,height=NULL,metadata_json='{}',captured_at='',captured_at_checked=0,availability='remote',sha256=NULL",
              params![id,library_id,path,path_key(&path),filename,extension,kind,size,source_key,format!("remote:{}",Uuid::new_v4())])?;
         self.asset(&id)
     }
@@ -1193,15 +1474,17 @@ impl Core {
             return Ok((true, error));
         }
         self.db()?.execute(
-            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17)
-             ON CONFLICT(library_id,path_key) DO UPDATE SET path=excluded.path,filename=excluded.filename,extension=excluded.extension,
+            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked,key)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,?18)
+             ON CONFLICT(library_id,path_key) DO UPDATE SET path=excluded.path,key=excluded.key,
+             sha256=CASE WHEN assets.size=excluded.size AND assets.modified_stamp=excluded.modified_stamp THEN assets.sha256 ELSE NULL END,
+             filename=excluded.filename,extension=excluded.extension,
              kind=excluded.kind,size=excluded.size,modified_at=excluded.modified_at,modified_stamp=excluded.modified_stamp,
              width=excluded.width,height=excluded.height,metadata_json=excluded.metadata_json,availability=excluded.availability,
              captured_at=excluded.captured_at,captured_at_checked=excluded.captured_at_checked,
              created_at=CASE WHEN assets.source_key IS NULL THEN excluded.created_at ELSE assets.created_at END,
              created_at_checked=CASE WHEN assets.source_key IS NULL THEN 1 ELSE assets.created_at_checked END",
-            params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability, file_created_at(&info), captured_at, capture_checked],
+            params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability, file_created_at(&info), captured_at, capture_checked, location_key(&library.source_prefix, Path::new(&library.root), &path)],
         )?;
         Ok((true, error))
     }
@@ -1268,6 +1551,54 @@ impl Core {
         Ok(())
     }
 
+    fn mark_batch(&self, args: &MarkBatch) -> Result<usize> {
+        ensure!(
+            (1..=1000).contains(&args.ids.len()),
+            "E_INVALID: A batch must contain 1 to 1000 assets"
+        );
+        ensure!(
+            args.rating.is_some() || args.flag.is_some(),
+            "E_INVALID: A batch must set a rating or a flag"
+        );
+        ensure!(
+            args.rating.is_none_or(|rating| rating <= 5),
+            "E_INVALID: Rating must be an integer from 0 to 5"
+        );
+        ensure!(
+            args.flag.as_deref().is_none_or(valid_flag),
+            "E_INVALID: Flag must be none, pick or reject"
+        );
+        let mut db = self.db()?;
+        let transaction = db.transaction()?;
+        let mut updated = 0;
+        for id in &args.ids {
+            let changed = transaction.execute(
+                "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag) WHERE id=?3",
+                params![args.rating, args.flag, id],
+            )?;
+            // Dropping the transaction rolls back every earlier mark in this batch.
+            ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+            updated += changed;
+        }
+        transaction.commit()?;
+        Ok(updated)
+    }
+
+    pub fn mark_batch_library(&self, ids: &[String]) -> Result<String> {
+        let mut library = None;
+        for id in ids {
+            let current = self.asset(id)?.library_id;
+            match &library {
+                None => library = Some(current),
+                Some(first) => ensure!(
+                    *first == current,
+                    "E_INVALID: A batch can only mark assets in one library"
+                ),
+            }
+        }
+        library.context("E_INVALID: A batch must contain 1 to 1000 assets")
+    }
+
     fn list_assets(&self, args: AssetQuery) -> Result<Value> {
         let limit = args.limit.unwrap_or(200);
         ensure!(
@@ -1296,6 +1627,11 @@ impl Core {
             "rating" => "rating",
             _ => bail!("E_INVALID: Unknown asset sort field"),
         };
+        let flag = args.flag.as_deref().unwrap_or("any");
+        ensure!(
+            ["any", "pick", "none", "reject", "not_reject"].contains(&flag),
+            "E_INVALID: Unknown flag filter"
+        );
         let direction = match args.sort_direction.as_deref().unwrap_or("desc") {
             "asc" => "ASC",
             "desc" => "DESC",
@@ -1317,7 +1653,7 @@ impl Core {
             .collect::<Vec<_>>()
             .join(" AND ");
         let scope_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
-        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg')))");
+        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7)");
         let db = self.db()?;
         // Determine ambiguity from the unfiltered library. Only thin identity
         // fields are read globally; large metadata blobs are loaded for the page.
@@ -1376,7 +1712,9 @@ impl Core {
                     } else {
                         &search
                     },
-                    format
+                    format,
+                    flag,
+                    args.import_batch_id
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -1483,6 +1821,19 @@ struct AssetQuery {
     format: Option<String>,
     sort_by: Option<String>,
     sort_direction: Option<String>,
+    flag: Option<String>,
+    import_batch_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MarkBatch {
+    ids: Vec<String>,
+    rating: Option<u8>,
+    flag: Option<String>,
+}
+
+fn valid_flag(flag: &str) -> bool {
+    matches!(flag, "none" | "pick" | "reject")
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1506,7 +1857,89 @@ fn id(params: &Value) -> Result<String> {
         .context("E_INVALID: Asset id is required")
 }
 
-fn path_key(path: &str) -> String {
+/// A location-relative key: the library prefix plus the path under the library root,
+/// joined with `/`. None when the path is not plainly inside the root.
+fn location_key(prefix: &str, root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let parts = relative
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(part) => part.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if parts.is_empty() {
+        return None;
+    }
+    let prefix = prefix.trim_matches('/');
+    let relative = parts.join("/");
+    Some(if prefix.is_empty() {
+        relative
+    } else {
+        format!("{prefix}/{relative}")
+    })
+}
+
+/// Reuse the library's implicit local location, or create one, for a direct folder binding.
+fn implicit_location(db: &Connection, library: &Library) -> Result<String> {
+    let current = library.location_id.as_deref().and_then(|id| {
+        db.query_row(
+            "SELECT id FROM locations WHERE id=?1 AND implicit=1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    });
+    // An implicit location belongs to exactly one library; never retarget a shared one.
+    let shared = match &current {
+        Some(id) => db.query_row(
+            "SELECT COUNT(*)>1 FROM libraries WHERE location_id=?1",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )?,
+        None => false,
+    };
+    if let (Some(id), false) = (current, shared) {
+        db.execute(
+            "UPDATE locations SET endpoint=?1 WHERE id=?2",
+            params![library.root, id],
+        )?;
+        return Ok(id);
+    }
+    let id = Uuid::new_v4().to_string();
+    db.execute(
+        "INSERT INTO locations(id,kind,name,endpoint,implicit,created_at) VALUES(?1,'local',?2,?3,1,?4)",
+        params![id, library.name, library.root, Utc::now().to_rfc3339()],
+    )?;
+    Ok(id)
+}
+
+fn delete_orphan_locations(db: &Connection) -> Result<()> {
+    db.execute(
+        "DELETE FROM locations WHERE implicit=1 AND id NOT IN (SELECT location_id FROM libraries WHERE location_id IS NOT NULL)",
+        [],
+    )?;
+    Ok(())
+}
+
+fn location_row(row: &Row<'_>) -> rusqlite::Result<Location> {
+    Ok(Location {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        name: row.get(2)?,
+        endpoint: row.get(3)?,
+        root: row.get(4)?,
+        bucket: row.get(5)?,
+        region: row.get(6)?,
+        tls_certificate_sha256: row.get(7)?,
+        implicit: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
+pub(crate) fn path_key(path: &str) -> String {
     if cfg!(windows) {
         path.to_lowercase()
     } else {
@@ -1567,6 +2000,7 @@ fn library_row(row: &Row<'_>) -> rusqlite::Result<Library> {
         source_prefix: row.get(5)?,
         hidden: row.get(6)?,
         pair_raw_jpeg: row.get(7)?,
+        location_id: row.get(8)?,
     })
 }
 
@@ -1623,6 +2057,8 @@ fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
         created_at: row.get(15)?,
         captured_at,
         capture_status,
+        flag: row.get(18)?,
+        key: row.get(19)?,
     })
 }
 

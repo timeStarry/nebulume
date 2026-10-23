@@ -18,6 +18,8 @@ use std::{
 };
 
 mod capture_index;
+mod cards;
+mod fingerprint;
 mod remote_cache;
 
 type AssetOperations = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
@@ -89,6 +91,7 @@ pub struct Service {
     data_dir: PathBuf,
     catalog_operations: RwLock<()>,
     capture_index: capture_index::CaptureIndexController,
+    fingerprints: fingerprint::FingerprintController,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,10 +108,15 @@ impl From<anyhow::Error> for CommandError {
             "E_OFFLINE",
             "E_LIMIT",
             "E_DOWNLOAD_REQUIRED",
+            // Longer codes first: matching is by prefix.
             "E_UNSUPPORTED_CODEC",
+            "E_UNSUPPORTED",
             "E_NOT_FOUND",
             "E_CONFLICT",
             "E_IN_USE",
+            "E_WRITE_UNVERIFIED",
+            "E_VERIFY",
+            "E_IO",
         ]
         .into_iter()
         .find(|code| message.starts_with(code))
@@ -145,7 +153,9 @@ impl Service {
             data_dir: data_dir.to_path_buf(),
             catalog_operations: RwLock::new(()),
             capture_index: capture_index::CaptureIndexController::default(),
+            fingerprints: fingerprint::FingerprintController::default(),
         };
+        service.sync_locations()?;
         service.adopt_legacy_cache()?;
         if let Err(error) = service.cache.maintain() {
             // Metadata/settings remain available when a removable cache is
@@ -174,7 +184,11 @@ impl Service {
         }
         let structural_write =
             matches!(command, "library.add" | "library.update" | "library.remove")
-                || matches!(command, "storage.add" | "storage.remove" | "file.open");
+                || matches!(command, "storage.add" | "storage.remove" | "file.open")
+                || matches!(
+                    command,
+                    "card.register" | "card.bind" | "card.remove" | "preset.remove"
+                );
         // Long operations hold only their own library lease. A slow remote file
         // or scan cannot monopolize the catalog for unrelated local libraries.
         let _process_library = if matches!(command, "library.update" | "library.remove") {
@@ -185,6 +199,23 @@ impl Service {
                     true,
                 )
                 .map_err(CommandError::from)?,
+            )
+        } else if command == "asset.mark_batch" {
+            // Every id must belong to one library so a single lease covers the batch.
+            let ids: Vec<String> = params
+                .get("ids")
+                .and_then(|ids| serde_json::from_value(ids.clone()).ok())
+                .ok_or_else(|| CommandError {
+                    code: "E_INVALID",
+                    message: "A batch must contain 1 to 1000 assets".into(),
+                })?;
+            let library = self
+                .core
+                .mark_batch_library(&ids)
+                .map_err(CommandError::from)?;
+            Some(
+                process_library_lock(&self.data_dir, &library, false)
+                    .map_err(CommandError::from)?,
             )
         } else if command.starts_with("asset.") && command != "asset.list" {
             let asset = self
@@ -232,6 +263,205 @@ impl Service {
         self.dispatch(command, params).map_err(Into::into)
     }
 
+    /// Mirror every saved source into the catalog's location table, preserving ids so
+    /// libraries and credential scopes keep pointing at the same thing.
+    fn sync_locations(&self) -> Result<()> {
+        let sources = self
+            .storage
+            .lock()
+            .map_err(|_| anyhow!("Storage state unavailable"))?
+            .list();
+        for source in &sources {
+            self.core.sync_location(&location_of(source))?;
+        }
+        Ok(())
+    }
+
+    /// Locations with runtime availability; implicit folder locations are included
+    /// so the UI can show where every library lives.
+    fn location_list(&self) -> Result<Value> {
+        let sources = self
+            .storage
+            .lock()
+            .map_err(|_| anyhow!("Storage state unavailable"))?
+            .list();
+        let libraries = self.core.libraries()?;
+        self.core
+            .locations()?
+            .into_iter()
+            .map(|location| {
+                let mut value = serde_json::to_value(&location)?;
+                let availability = match sources.iter().find(|s| s.id == location.id) {
+                    Some(source) if source.kind != "local" => source.availability.clone(),
+                    _ => if Path::new(&location.endpoint).is_dir() {
+                        "online"
+                    } else {
+                        "offline"
+                    }
+                    .to_owned(),
+                };
+                value["availability"] = json!(availability);
+                value["library_ids"] = json!(libraries
+                    .iter()
+                    .filter(|library| library.location_id.as_deref() == Some(&location.id))
+                    .map(|library| library.id.as_str())
+                    .collect::<Vec<_>>());
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Value::from)
+    }
+
+    /// `library_id` naming a WebDAV/S3 library selects the remote import path.
+    fn remote_import_target(&self, params: &Value) -> Result<Option<(Library, StorageConfig)>> {
+        let Some(id) = params.get("library_id").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let library = self.core.library(id)?;
+        let Some(source) = library
+            .storage_id
+            .as_deref()
+            .map(|id| self.source(id))
+            .transpose()?
+        else {
+            return Ok(None);
+        };
+        Ok((source.kind != "local").then_some((library, source)))
+    }
+
+    fn execute_remote_import(
+        &self,
+        library: &Library,
+        source: &StorageConfig,
+        params: &Value,
+    ) -> Result<Value> {
+        let writer = {
+            let storage = self
+                .storage
+                .lock()
+                .map_err(|_| anyhow!("Storage state unavailable"))?;
+            // Only a location that passed the explicit write test accepts imports.
+            ensure!(
+                storage.write_capability(&source.id) == neb_storage::WriteCapability::Verified,
+                "E_WRITE_UNVERIFIED: Test writing to {} in Locations before importing to it",
+                source.name
+            );
+            storage.open_writer(&source.id)?
+        };
+        let include_likely = params
+            .get("include_likely_duplicates")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let outcome = {
+            let mut ingest = self
+                .ingest
+                .lock()
+                .map_err(|_| anyhow!("Import state unavailable"))?;
+            ingest.execute_remote(string(params, "plan_id")?, &writer, include_likely)?
+        };
+        let mut result = serde_json::to_value(&outcome)?;
+        result["library_id"] = json!(library.id);
+        // Register published files directly from known keys and sizes; no rescan.
+        let mut registered = 0;
+        let mut errors = Vec::new();
+        for item in outcome.items.iter().filter(|item| item.status == "copied") {
+            let extension = Path::new(&item.destination)
+                .extension()
+                .and_then(|v| v.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if neb_core::image_kind(&extension).is_none() {
+                continue;
+            }
+            let cache_name = format!(
+                "{}.{}",
+                hex::encode(Sha256::digest(
+                    format!("{}:{}", item.destination, item.size).as_bytes()
+                )),
+                extension
+            );
+            match self.core.register_remote_asset(
+                &library.id,
+                &item.destination,
+                &cache_name,
+                item.size,
+            ) {
+                Ok(_) => registered += 1,
+                Err(error) => {
+                    errors.push(json!({"path":item.destination,"message":format!("{error:#}")}))
+                }
+            }
+        }
+        result["indexing"] = json!({"indexed":registered,"skipped":0,"errors":errors});
+        match self.record_batch(library, &result, params.get("card_id")) {
+            Ok(batch) => result["batch"] = serde_json::to_value(batch)?,
+            Err(error) => result["batch_error"] = json!(format!("{error:#}")),
+        }
+        Ok(result)
+    }
+
+    fn record_batch(
+        &self,
+        library: &Library,
+        result: &Value,
+        card: Option<&Value>,
+    ) -> Result<neb_core::ImportBatch> {
+        let card_id = match card.and_then(Value::as_str) {
+            Some(id) => Some(self.core.card(id)?.id),
+            None => None,
+        };
+        let count = |key: &str| result.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let text = |key: &str| {
+            result
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        // Only files this import wrote are tagged; skipped duplicates keep their batch.
+        let copied: Vec<(String, String)> = result
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|item| item.get("status").and_then(Value::as_str) == Some("copied"))
+            .filter_map(|item| {
+                let destination = item.get("destination")?.as_str()?;
+                // Local results are paths; remote results are location keys.
+                let path = if library.storage_id.is_some() && !Path::new(destination).is_absolute()
+                {
+                    destination.to_owned()
+                } else {
+                    fs::canonicalize(destination)
+                        .ok()?
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                Some((path, item.get("sha256")?.as_str()?.to_owned()))
+            })
+            .collect();
+        self.core.record_import_batch(
+            &neb_core::ImportBatch {
+                id: text("id"),
+                library_id: library.id.clone(),
+                card_id,
+                source: text("source"),
+                rules: result.get("rules").cloned().unwrap_or_else(|| json!({})),
+                started_at: text("started_at"),
+                finished_at: result
+                    .get("finished_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                status: text("status"),
+                copied: count("copied"),
+                duplicates: count("duplicates"),
+                failed: count("failed"),
+                asset_count: 0,
+            },
+            &copied,
+        )
+    }
+
     fn source(&self, id: &str) -> Result<StorageConfig> {
         self.storage
             .lock()
@@ -258,14 +488,15 @@ impl Service {
             .as_ref()
             .map(|s| s.endpoint.as_str())
             .unwrap_or(&library.root));
-        value["connected"] = json!(source
-            .as_ref()
-            .map(|s| if s.kind == "local" {
-                Path::new(&library.root).is_dir()
-            } else {
-                s.connected
-            })
-            .unwrap_or_else(|| Path::new(&library.root).is_dir()));
+        // Local directories are checked directly (cheap, no network). Remote sources
+        // report only the result of the latest real operation; listing never connects.
+        let local_online = || Path::new(&library.root).is_dir();
+        let availability = match source.as_ref() {
+            Some(s) if s.kind != "local" => s.availability.clone(),
+            _ => if local_online() { "online" } else { "offline" }.to_owned(),
+        };
+        value["connected"] = json!(availability == "online");
+        value["availability"] = json!(availability);
         Ok(value)
     }
 
@@ -404,6 +635,7 @@ impl Service {
             .lock()
             .map_err(|_| anyhow!("Storage state unavailable"))?
             .remove(id)?;
+        self.core.remove_location(id)?;
         Ok(serde_json::to_value(removed)?)
     }
 
@@ -544,6 +776,9 @@ impl Service {
     }
 
     fn dispatch(&self, command: &str, params: Value) -> Result<Value> {
+        if command == "asset.mark_batch" {
+            return self.core.dispatch(command, params);
+        }
         if command.starts_with("asset.") && command != "asset.list" {
             return self.asset_dispatch(command, params);
         }
@@ -568,6 +803,11 @@ impl Service {
             "library.capture_index.start" => {
                 self.start_capture_index(string(&params, "library_id")?)
             }
+            "library.fingerprint.status" => self.fingerprint_status(string(&params, "library_id")?),
+            "library.fingerprint.start" => self.start_fingerprints(string(&params, "library_id")?),
+            "library.fingerprint.cancel" => {
+                self.cancel_fingerprints(string(&params, "library_id")?, string(&params, "job_id")?)
+            }
             "library.capture_index.cancel" => self
                 .cancel_capture_index(string(&params, "library_id")?, string(&params, "job_id")?),
             "system.info" => Ok(json!({
@@ -585,7 +825,13 @@ impl Service {
                     .storage
                     .lock()
                     .map_err(|_| anyhow!("Storage state unavailable"))?;
-                Ok(serde_json::to_value(storage.list())?)
+                let mut list = serde_json::to_value(storage.list())?;
+                // Write capability is a per-process result of the explicit write test.
+                for source in list.as_array_mut().into_iter().flatten() {
+                    let id = source["id"].as_str().unwrap_or_default().to_owned();
+                    source["write_capability"] = json!(storage.write_capability(&id).as_str());
+                }
+                Ok(list)
             }
             "storage.add" => {
                 let request: AddStorageRequest =
@@ -594,9 +840,41 @@ impl Service {
                     .storage
                     .lock()
                     .map_err(|_| anyhow!("Storage state unavailable"))?;
-                Ok(serde_json::to_value(storage.add(request)?)?)
+                let added = storage.add(request)?;
+                drop(storage);
+                self.core.sync_location(&location_of(&added))?;
+                Ok(serde_json::to_value(added)?)
             }
+            "location.list" => self.location_list(),
+            "card.list" => Ok(serde_json::to_value(self.core.cards()?)?),
+            "card.identify" => cards::identify(&self.core, &params),
+            "card.register" => cards::register(&self.core, &params),
+            "card.bind" => cards::bind(&self.core, &params),
+            "card.update" => cards::update(&self.core, &params),
+            "card.remove" => {
+                self.core.remove_card(string(&params, "id")?)?;
+                Ok(json!({"id":string(&params, "id")?}))
+            }
+            "preset.list" => Ok(serde_json::to_value(self.core.import_presets()?)?),
+            "preset.save" => cards::save_preset(&self.core, &params),
+            "preset.remove" => {
+                self.core.remove_import_preset(string(&params, "id")?)?;
+                Ok(json!({"id":string(&params, "id")?}))
+            }
+            "import.batches" => Ok(serde_json::to_value(
+                self.core.import_batches(string(&params, "library_id")?)?,
+            )?),
             "storage.remove" => self.remove_storage(string(&params, "id")?),
+            "storage.write_check" => {
+                // Explicit: writes and removes one small test object on the server.
+                let id = string(&params, "id")?;
+                let writer = self
+                    .storage
+                    .lock()
+                    .map_err(|_| anyhow!("Storage state unavailable"))?
+                    .open_writer(id)?;
+                Ok(serde_json::to_value(writer.probe())?)
+            }
             "storage.check" => {
                 let id = string(&params, "id")?;
                 let (snapshot, config) = {
@@ -615,7 +893,7 @@ impl Service {
                 match snapshot {
                     Ok(browser) => Ok(serde_json::to_value(browser.check()?)?),
                     Err(error) => Ok(
-                        json!({"id":id,"connected":false,"credential_status":config.credential_status,"checked_at":chrono::Utc::now().to_rfc3339(),"error":format!("{error:#}")}),
+                        json!({"id":id,"connected":false,"availability":neb_storage::classify(&error).as_str(),"credential_status":config.credential_status,"checked_at":chrono::Utc::now().to_rfc3339(),"error":format!("{error:#}")}),
                     ),
                 }
             }
@@ -658,20 +936,69 @@ impl Service {
                     .ingest
                     .lock()
                     .map_err(|_| anyhow!("Import state unavailable"))?;
-                Ok(serde_json::to_value(
-                    ingest.plan(
-                        string(&params, "source")?,
-                        string(&params, "destination")?,
+                // Structured `rules` take precedence; `layout` remains a compatibility alias.
+                let rules = match params.get("rules").filter(|rules| !rules.is_null()) {
+                    Some(rules) => {
+                        serde_json::from_value::<neb_ingest::OrganizeRules>(rules.clone())
+                            .context("E_INVALID: Invalid import organization rules")?
+                    }
+                    None => neb_ingest::OrganizeRules::from_legacy_layout(
                         params
                             .get("layout")
                             .and_then(Value::as_str)
                             .unwrap_or("preserve"),
-                        params
-                            .get("deduplicate")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(true),
                     )?,
-                )?)
+                };
+                let deduplicate = params
+                    .get("deduplicate")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                // A remote library is addressed by id; local targets keep `destination`.
+                if let Some(target) = self.remote_import_target(&params)? {
+                    let (library, source) = target;
+                    let known: Vec<neb_ingest::KnownAsset> = self
+                        .core
+                        .import_known_assets(&library.id)?
+                        .into_iter()
+                        .map(
+                            |(key, size, sha256, filename, captured_at)| neb_ingest::KnownAsset {
+                                key,
+                                size,
+                                sha256,
+                                filename,
+                                captured_at,
+                            },
+                        )
+                        .collect();
+                    let mut plan = serde_json::to_value(ingest.plan_remote(
+                        string(&params, "source")?,
+                        &source.id,
+                        &library.source_prefix,
+                        &rules,
+                        deduplicate,
+                        &known,
+                    )?)?;
+                    plan["library_id"] = json!(library.id);
+                    plan["write_capability"] = json!(self
+                        .storage
+                        .lock()
+                        .map_err(|_| anyhow!("Storage state unavailable"))?
+                        .write_capability(&source.id)
+                        .as_str());
+                    return Ok(plan);
+                }
+                Ok(serde_json::to_value(ingest.plan_with_rules(
+                    string(&params, "source")?,
+                    string(&params, "destination")?,
+                    &rules,
+                    deduplicate,
+                )?)?)
+            }
+            "import.execute" if self.remote_import_target(&params)?.is_some() => {
+                let (library, source) = self
+                    .remote_import_target(&params)?
+                    .expect("checked by the match guard");
+                self.execute_remote_import(&library, &source, &params)
             }
             "import.execute" => {
                 let mut ingest = self
@@ -705,6 +1032,11 @@ impl Service {
                         match self.scan_library(&library.id) {
                             Ok(report) => result["indexing"] = report,
                             Err(error) => result["indexing_error"] = json!(format!("{error:#}")),
+                        }
+                        // The batch is recorded after indexing so it can tag new assets.
+                        match self.record_batch(&library, &result, params.get("card_id")) {
+                            Ok(batch) => result["batch"] = serde_json::to_value(batch)?,
+                            Err(error) => result["batch_error"] = json!(format!("{error:#}")),
                         }
                     }
                 }
@@ -746,6 +1078,21 @@ impl Read for BoundedImageReader {
         let read = self.inner.read(&mut buffer[..limit])?;
         self.remaining -= read;
         Ok(read)
+    }
+}
+
+fn location_of(source: &StorageConfig) -> neb_core::Location {
+    neb_core::Location {
+        id: source.id.clone(),
+        kind: source.kind.clone(),
+        name: source.name.clone(),
+        endpoint: source.endpoint.clone(),
+        root: source.root.clone(),
+        bucket: source.bucket.clone(),
+        region: source.region.clone(),
+        tls_certificate_sha256: source.tls_certificate_sha256.clone(),
+        implicit: false,
+        created_at: String::new(),
     }
 }
 

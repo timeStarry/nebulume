@@ -1,8 +1,12 @@
 import type {
+  Availability,
   Asset,
   AssetListOptions,
   AssetListResult,
+  Flag,
+  FlagFilter,
   Library,
+  OrganizeRules,
   StorageConfig,
   StorageCheck,
 } from './model';
@@ -12,6 +16,12 @@ export function localLibraries(libraries: Library[]): Library[] {
     (library) => !library.hidden && (!library.source_kind || library.source_kind === 'local'),
   );
 }
+/** Libraries an import can write into: local folders and WebDAV/S3 libraries. */
+export function importTargets(libraries: Library[]): Library[] {
+  return libraries.filter((library) => !library.hidden);
+}
+export const isRemoteLibrary = (library?: Pick<Library, 'source_kind'>) =>
+  !!library?.source_kind && library.source_kind !== 'local';
 export function libraryLocation(library: Library): string {
   if (library.source_kind && library.source_kind !== 'local') {
     return [library.source_endpoint || library.source_name || '远程存储', library.source_prefix]
@@ -70,6 +80,10 @@ export function variantViewerIds(
   return [...new Set(items.map((item) => (item.id === representativeId ? variantId : item.id)))];
 }
 
+export function matchesFlag(flag: Flag, filter: FlagFilter = 'any'): boolean {
+  return filter === 'any' || (filter === 'not_reject' ? flag !== 'reject' : flag === filter);
+}
+
 /** The browser's explicit in-memory catalog mirrors query order before pagination. */
 export function browserAssetList(
   items: Asset[],
@@ -85,6 +99,7 @@ export function browserAssetList(
     (!query ||
       `${item.filename} ${Object.values(item.metadata).join(' ')}`.toLowerCase().includes(query)) &&
     item.rating >= (options.rating || 0) &&
+    matchesFlag(item.flag || 'none', options.flag) &&
     (options.format === 'raw'
       ? item.kind === 'raw'
       : options.format === 'jpeg'
@@ -146,4 +161,120 @@ export function browserAssetList(
     total: listed.length,
     file_total: eligible.length,
   };
+}
+
+export interface AvailabilityPresentation {
+  /** Library is usable for browsing; false greys the card but it stays enterable. */
+  usable: boolean;
+  label: string;
+  detail: string;
+  /** Section that resolves the problem, when one exists. */
+  action?: { label: string; section: WorkspaceSection };
+}
+/** One source of truth for location state across cards, grid and dialogs. */
+export function availabilityPresentation(
+  library: Pick<Library, 'availability' | 'connected' | 'source_kind' | 'source_name' | 'name'>,
+): AvailabilityPresentation {
+  const state: Availability = library.availability || (library.connected ? 'online' : 'unchecked');
+  const where = library.source_name || library.name;
+  const local = !library.source_kind || library.source_kind === 'local';
+  switch (state) {
+    case 'online':
+      return { usable: true, label: '在线', detail: '' };
+    case 'unchecked':
+      return {
+        usable: true,
+        label: '未连接',
+        detail: '本次启动尚未访问此位置，首次读取时连接。',
+      };
+    case 'offline':
+      return {
+        usable: false,
+        label: local ? '未挂载' : '不可达',
+        detail: local
+          ? `${where} 当前不可用，可能是外接盘未插入。评级与旗标仍可修改，有缓存的照片仍可查看。`
+          : `${where} 当前无法连接。评级与旗标仍可修改，已缓存或固定离线的照片仍可查看。`,
+        action: local ? undefined : { label: '检查连接', section: 'sources' },
+      };
+    case 'auth_required':
+      return {
+        usable: false,
+        label: '需要登录',
+        detail: `${where} 的登录信息缺失或已失效。`,
+        action: { label: '重新登录', section: 'sources' },
+      };
+    case 'trust_required':
+      return {
+        usable: false,
+        label: '证书待确认',
+        detail: `${where} 的设备证书已变化、过期或尚未信任。`,
+        action: { label: '检查证书', section: 'sources' },
+      };
+    default:
+      return {
+        usable: false,
+        label: '访问出错',
+        detail: `${where} 上次访问失败，请在连接设置中查看详情。`,
+        action: { label: '查看连接', section: 'sources' },
+      };
+  }
+}
+
+export const defaultOrganizeRules = (): OrganizeRules => ({
+  date_basis: 'capture',
+  date_layout: 'Y-M-D',
+  type_split: 'none',
+  unknown_date: 'folder',
+  subfolder: '',
+});
+/** Mirrors neb-ingest's subfolder validation so the form can explain problems early. */
+export function subfolderError(value: string): string {
+  if (!value) return '';
+  if (value.length > 120) return '子目录最多 120 个字符。';
+  const reserved = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
+  for (const part of value.split('/'))
+    if (
+      !part ||
+      part === '.' ||
+      part === '..' ||
+      /[.\s]$/.test(part) ||
+      reserved.test(part.split('.')[0]) ||
+      /[\\:*?"<>|\u0000-\u001f]/.test(part)
+    )
+      return '子目录只能是用 / 分隔的普通文件夹名，不能包含 .. 或特殊字符。';
+  return '';
+}
+/** A representative destination path, matching neb-ingest's target layout. */
+export function organizeExample(rules: OrganizeRules, day = '2026-10-22'): string {
+  const [y, m, d] = day.split('-');
+  const parts: string[] = [];
+  if (rules.subfolder) parts.push(rules.subfolder);
+  if (rules.date_basis === 'preserve') parts.push('DCIM/100NIKON');
+  else if (rules.date_basis !== 'none')
+    parts.push(
+      rules.date_layout === 'Y/Y-M-D'
+        ? `${y}/${day}`
+        : rules.date_layout === 'Y/M/Y-M-D'
+          ? `${y}/${m}/${day}`
+          : rules.date_layout === 'Y/M/D'
+            ? `${y}/${m}/${d}`
+            : day,
+    );
+  if (rules.type_split === 'by_kind') parts.push('RAW');
+  parts.push('DSC_0001.NEF');
+  return parts.join('/');
+}
+export function dateSourceName(source?: string): string {
+  return (
+    (
+      {
+        exif: '拍摄时间',
+        paired_exif: '同组拍摄时间',
+        import_date: '导入日',
+        modified_time: '文件修改时间',
+        unknown: '未知日期',
+        preserved: '保留目录',
+      } as Record<string, string>
+    )[source || ''] || ''
+  );
 }

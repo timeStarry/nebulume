@@ -19,6 +19,7 @@ fn local_directory_creates_library_without_storage_registration_and_survives_res
     assert_eq!(library["source_kind"], "local");
     assert!(library["storage_id"].is_null());
     assert_eq!(library["connected"], true);
+    assert_eq!(library["availability"], "online");
     assert_eq!(svc.execute("storage.list", json!({})).unwrap(), json!([]));
     assert_eq!(
         svc.execute("library.scan", json!({"library_id":library["id"]}))
@@ -151,4 +152,94 @@ fn detaching_legacy_local_source_at_same_directory_preserves_edits_and_source_co
         source["id"]
     );
     assert_eq!(fs::read(photos.path().join("photo.ppm")).unwrap(), PHOTO);
+}
+
+#[test]
+fn remote_library_is_unchecked_until_a_real_operation_and_offline_after_failure() {
+    let data = tempfile::tempdir().unwrap();
+    let svc = Service::open(data.path()).unwrap();
+    // Port 9 on loopback is closed: the request fails to connect, not to authenticate.
+    let source = svc
+        .execute(
+            "storage.add",
+            json!({"name":"NAS","kind":"webdav","endpoint":"http://127.0.0.1:9/dav/"}),
+        )
+        .unwrap();
+    let library = svc
+        .execute(
+            "library.add",
+            json!({"name":"NAS 照片","storage_id":source["id"]}),
+        )
+        .unwrap();
+    assert_eq!(library["availability"], "unchecked");
+    assert_eq!(library["connected"], false);
+    let check = svc
+        .execute("storage.check", json!({"id":source["id"]}))
+        .unwrap();
+    assert_eq!(check["availability"], "offline");
+    let listed = svc.execute("library.list", json!({})).unwrap();
+    assert_eq!(listed[0]["availability"], "offline");
+    // Marks stay writable regardless of location state (no assets yet: list still works).
+    assert_eq!(
+        svc.execute("asset.list", json!({"library_id":library["id"]}))
+            .unwrap()["total"],
+        0
+    );
+}
+
+#[test]
+fn locations_list_folder_and_remote_libraries_with_availability() {
+    let data = tempfile::tempdir().unwrap();
+    let photos = tempfile::tempdir().unwrap();
+    let svc = Service::open(data.path()).unwrap();
+    let local = svc
+        .execute("library.add", json!({"name":"本机","root":photos.path()}))
+        .unwrap();
+    let source = svc
+        .execute(
+            "storage.add",
+            json!({"name":"NAS","kind":"webdav","endpoint":"http://127.0.0.1:9/dav/"}),
+        )
+        .unwrap();
+    let remote = svc
+        .execute(
+            "library.add",
+            json!({"name":"NAS 照片","storage_id":source["id"]}),
+        )
+        .unwrap();
+    let locations = svc.execute("location.list", json!({})).unwrap();
+    let locations = locations.as_array().unwrap();
+    assert_eq!(locations.len(), 2);
+    let folder = locations.iter().find(|l| l["implicit"] == true).unwrap();
+    assert_eq!(folder["availability"], "online");
+    assert_eq!(folder["library_ids"], json!([local["id"]]));
+    let nas = locations.iter().find(|l| l["id"] == source["id"]).unwrap();
+    assert_eq!(nas["kind"], "webdav");
+    assert_eq!(nas["availability"], "unchecked");
+    assert_eq!(nas["library_ids"], json!([remote["id"]]));
+    // No credentials or secrets in the location payload.
+    let text = serde_json::to_string(&nas).unwrap();
+    assert!(!text.contains("password") && !text.contains("secret"));
+    // A location in use cannot be removed; after its library goes, it can.
+    assert_eq!(
+        svc.execute("storage.remove", json!({"id":source["id"]}))
+            .unwrap_err()
+            .code,
+        "E_IN_USE"
+    );
+    svc.execute("library.remove", json!({"id":remote["id"]}))
+        .unwrap();
+    svc.execute("storage.remove", json!({"id":source["id"]}))
+        .unwrap();
+    drop(svc);
+    // Reopening re-syncs from storage without duplicating rows.
+    let svc = Service::open(data.path()).unwrap();
+    assert_eq!(
+        svc.execute("location.list", json!({}))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }

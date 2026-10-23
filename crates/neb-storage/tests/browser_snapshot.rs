@@ -115,9 +115,11 @@ fn real_probe_updates_only_the_captured_connection_generation() {
     let server = Server::new();
     let mut registry = StorageRegistry::open(data.path()).unwrap();
     let source = registry.add(request(&server)).unwrap();
+    assert_eq!(registry.list()[0].availability, "unchecked");
     let old = registry.open_browser(&source.id).unwrap();
     old.browse("", 1, None).unwrap();
     assert!(registry.list()[0].connected);
+    assert_eq!(registry.list()[0].availability, "online");
     let reconnected = registry.add(request(&server)).unwrap();
     assert_eq!(reconnected.id, source.id);
     assert!(!registry.list()[0].connected);
@@ -137,6 +139,9 @@ fn real_probe_updates_only_the_captured_connection_generation() {
     assert!(!failure.connected);
     assert!(failure.error.is_some());
     assert!(!registry.list()[0].connected);
+    // A server error is reported honestly, not guessed as offline or a login problem.
+    assert_eq!(failure.availability, "error");
+    assert_eq!(registry.list()[0].availability, "error");
 }
 
 #[test]

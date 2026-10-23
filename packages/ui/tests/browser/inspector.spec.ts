@@ -61,6 +61,9 @@ async function openInspector(
       case 'asset.list':
         result = { items: [asset], total: 1 };
         break;
+      case 'import.batches':
+        result = [];
+        break;
       case 'library.capture_index.status':
         result = {
           library_id: asset.library_id,

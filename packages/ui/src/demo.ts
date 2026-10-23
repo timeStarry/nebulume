@@ -6,6 +6,7 @@ import {
   type Library,
   type Preview,
   type AssetListOptions,
+  type Flag,
 } from './model';
 import { browserAssetList } from './workspace';
 
@@ -91,6 +92,7 @@ export async function addBrowserFiles(
         width: canvas.width,
         height: canvas.height,
         rating: 0,
+        flag: 'none',
         metadata: {},
         availability: 'available',
       });
@@ -174,6 +176,24 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       asset.rating = Number(params.rating);
       result = { ...asset };
       break;
+    case 'asset.flag':
+      if (!asset) throw new Error('图片不存在。');
+      if (!['none', 'pick', 'reject'].includes(String(params.flag)))
+        throw new Error('旗标必须是 none、pick 或 reject。');
+      asset.flag = params.flag as Flag;
+      result = { ...asset };
+      break;
+    case 'asset.mark_batch': {
+      const ids = Array.isArray(params.ids) ? (params.ids as string[]) : [];
+      const targets = ids.map((id) => assets.get(id));
+      if (!ids.length || targets.some((target) => !target)) throw new Error('图片不存在。');
+      for (const target of targets) {
+        if (params.rating !== undefined) target!.rating = Number(params.rating);
+        if (params.flag !== undefined) target!.flag = params.flag as Flag;
+      }
+      result = { updated: ids.length };
+      break;
+    }
     case 'asset.crop': {
       if (!asset) throw new Error('图片不存在。');
       const crop = {

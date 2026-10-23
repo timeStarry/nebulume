@@ -92,13 +92,13 @@ fn version_three_migration_backfills_once_and_preserves_user_edits() {
     .unwrap();
     drop(core);
     let database = rusqlite::Connection::open(data.join("catalog.sqlite3")).unwrap();
-    database.execute_batch("DROP INDEX assets_library_captured; ALTER TABLE assets DROP COLUMN captured_at; ALTER TABLE assets DROP COLUMN captured_at_checked; DROP INDEX assets_library_created; ALTER TABLE assets DROP COLUMN created_at; ALTER TABLE assets DROP COLUMN created_at_checked; PRAGMA user_version=3;").unwrap();
+    database.execute_batch("DROP INDEX import_batches_library; DROP TABLE import_batches; DROP TABLE cards; DROP TABLE import_presets; DROP TABLE volume_identities; DROP INDEX assets_library_key; DROP INDEX libraries_location; ALTER TABLE assets DROP COLUMN key; ALTER TABLE libraries DROP COLUMN location_id; DROP TABLE locations; DROP INDEX assets_library_flag; DROP INDEX assets_library_batch; ALTER TABLE assets DROP COLUMN flag; ALTER TABLE assets DROP COLUMN import_batch_id; ALTER TABLE assets DROP COLUMN sha256; DROP INDEX assets_library_captured; ALTER TABLE assets DROP COLUMN captured_at; ALTER TABLE assets DROP COLUMN captured_at_checked; DROP INDEX assets_library_created; ALTER TABLE assets DROP COLUMN created_at; ALTER TABLE assets DROP COLUMN created_at_checked; PRAGMA user_version=3;").unwrap();
     let core = Core::open(&data).unwrap();
     assert_eq!(
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        8
     );
     assert_eq!(core.asset(&asset.id).unwrap().created_at, "");
     let first = list(&core, &library.id, "asc", 0, 20);

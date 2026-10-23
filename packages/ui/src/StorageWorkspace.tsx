@@ -6,6 +6,7 @@ import {
   type StorageCheck,
   type StorageConfig,
   type StorageEntry,
+  type WriteCheck,
 } from './model';
 import { checkedConnection, credentialLabel, parentPrefix, sourceKind } from './workspace';
 import Icon from './Icon';
@@ -51,6 +52,28 @@ export default function StorageWorkspace(props: {
       const message = errorMessage(e);
       setError(message);
       setChecks((previous) => ({ ...previous, [item.id]: { ok: false, message } }));
+    } finally {
+      setBusy('');
+    }
+  }
+  /** Explicit: writes and removes one small test object on the server. */
+  async function writeCheck(item: StorageConfig) {
+    setErrorSourceId(item.id);
+    setBusy(item.id);
+    setError('');
+    setNotice('');
+    try {
+      const result = await execute<WriteCheck>('storage.write_check', { id: item.id });
+      props.onUpdated({ ...item, write_capability: result.write_capability });
+      if (result.write_capability === 'verified')
+        setNotice(
+          `${item.name} 可以安全导入：新建文件经读回校验，已有文件不会被覆盖。${result.leftover ? `测试文件 ${result.leftover} 未能删除，可手动清理。` : ''}`,
+        );
+      else if (result.write_capability === 'unsupported')
+        setError(`${item.name} 无法保证不覆盖已有文件，不能作为导入目标。${result.error || ''}`);
+      else setError(result.error || '写入测试未完成。');
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
       setBusy('');
     }
@@ -118,10 +141,10 @@ export default function StorageWorkspace(props: {
     }
   }
   return (
-    <section class="workspace-page storage-workspace" aria-label="存储源工作区">
+    <section class="workspace-page storage-workspace" aria-label="位置工作区">
       <header class="workspace-heading">
         <div>
-          <h1>存储源</h1>
+          <h1>位置</h1>
         </div>
         <div class="workspace-heading-actions">
           <button class="button" onClick={props.onRefresh} disabled={!!busy()}>
@@ -130,13 +153,13 @@ export default function StorageWorkspace(props: {
           </button>
           <button class="button primary" onClick={props.onAdd}>
             <Icon name="plus" size={15} />
-            添加存储源
+            添加网络位置
           </button>
         </div>
       </header>
       <Show when={!desktop}>
         <div class="workspace-note">
-          浏览器演示不访问本机目录或远程设备；请使用桌面版管理真实存储源。
+          浏览器演示不访问本机目录或远程设备；请使用桌面版管理真实位置。
         </div>
       </Show>
       <Show when={error()}>
@@ -172,7 +195,7 @@ export default function StorageWorkspace(props: {
               <h2>还没有远端连接</h2>
               <p>连接 WebDAV 或 S3 后浏览远端图片。本地目录可直接建立图片库。</p>
               <button class="button" onClick={props.onAdd}>
-                添加第一个存储源
+                添加第一个网络位置
               </button>
             </div>
           }
@@ -209,6 +232,20 @@ export default function StorageWorkspace(props: {
                 <button class="button small" onClick={() => browse(item)} disabled={!!busy()}>
                   浏览目录
                 </button>
+                <Show when={item.kind !== 'local'}>
+                  <button
+                    class="button small"
+                    onClick={() => writeCheck(item)}
+                    disabled={!!busy()}
+                    title="写入并删除一个测试文件，确认可以安全导入到这里"
+                  >
+                    {item.write_capability === 'verified'
+                      ? '可导入'
+                      : item.write_capability === 'unsupported'
+                        ? '不可导入'
+                        : '测试写入'}
+                  </button>
+                </Show>
                 <button
                   class="icon-button"
                   onClick={() => props.onEdit(item)}
@@ -222,7 +259,7 @@ export default function StorageWorkspace(props: {
                   class="button small"
                   onClick={() => props.onRemove(item)}
                   disabled={!!busy()}
-                  aria-label={`移除存储源 ${item.name}`}
+                  aria-label={`移除位置 ${item.name}`}
                 >
                   移除
                 </button>

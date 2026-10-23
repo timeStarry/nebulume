@@ -101,6 +101,9 @@ async function fixture(
       case 'asset.list':
         result = browserAssetList(assets, call.params as AssetListOptions, paired);
         break;
+      case 'import.batches':
+        result = [];
+        break;
       case 'library.capture_index.status':
         result = capture;
         break;
@@ -477,12 +480,14 @@ test('capture indexing starts explicitly, remains independent of navigation, and
   await expect(page.locator('.photo-grid .thumbnail img')).toHaveCount(8);
   await expect
     .poll(() =>
-      page.locator('.photo-grid .thumbnail img').evaluateAll((images) =>
-        images.every(
-          (image) =>
-            (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0,
+      page
+        .locator('.photo-grid .thumbnail img')
+        .evaluateAll((images) =>
+          images.every(
+            (image) =>
+              (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0,
+          ),
         ),
-      ),
     )
     .toBe(true);
   await settle(page, calls);
@@ -512,7 +517,9 @@ test('capture indexing starts explicitly, remains independent of navigation, and
   await settle(page, calls);
   expect(calls.slice(before).filter((call) => call.command === 'asset.list')).toHaveLength(1);
   expect(
-    calls.slice(before).filter((call) => ['asset.preview', 'asset.histogram'].includes(call.command)),
+    calls
+      .slice(before)
+      .filter((call) => ['asset.preview', 'asset.histogram'].includes(call.command)),
   ).toEqual([]);
   await expect(page.locator('.thumbnail.selected')).toHaveAttribute('aria-label', selected!);
   expect(await nodesUnchanged(page)).toBe(true);

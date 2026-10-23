@@ -548,3 +548,83 @@ fn linked_source_file_is_not_imported() {
     assert!(plan.items.is_empty());
     assert!(!plan.warnings.is_empty());
 }
+
+#[test]
+fn structured_rules_split_types_keep_sidecars_with_raw_and_freeze_import_day() {
+    use neb_ingest::OrganizeRules;
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::create_dir_all(source.path().join("DCIM/100")).unwrap();
+    fs::write(source.path().join("DCIM/100/a.NEF"), b"raw bytes").unwrap();
+    fs::write(source.path().join("DCIM/100/a.xmp"), b"<x/>").unwrap();
+    fs::write(source.path().join("DCIM/100/a.JPG"), b"jpeg bytes").unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let rules: OrganizeRules = serde_json::from_value(serde_json::json!({
+        "date_basis": "import",
+        "date_layout": "Y/Y-M-D",
+        "type_split": "by_kind",
+        "subfolder": "Z8"
+    }))
+    .unwrap();
+    let plan = service
+        .plan_with_rules(source.path(), destination.path(), &rules, true)
+        .unwrap();
+    let day = &plan.import_day;
+    let year = &day[..4];
+    let mut targets: Vec<_> = plan.items.iter().map(|i| i.relative_path.clone()).collect();
+    targets.sort();
+    assert_eq!(
+        targets,
+        [
+            format!("Z8/{year}/{day}/JPG/a.JPG"),
+            format!("Z8/{year}/{day}/RAW/a.NEF"),
+            format!("Z8/{year}/{day}/RAW/a.xmp"),
+        ]
+    );
+    assert!(plan.items.iter().all(|i| i.date_source == "import_date"));
+    assert_eq!(plan.rules, rules);
+    let result = service.execute(&plan.id).unwrap();
+    assert_eq!((result.copied, result.failed), (3, 0));
+    assert!(destination
+        .path()
+        .join(format!("Z8/{year}/{day}/RAW/a.xmp"))
+        .exists());
+    // Originals are retained.
+    assert!(source.path().join("DCIM/100/a.NEF").exists());
+}
+
+#[test]
+fn unknown_capture_dates_stay_unknown_unless_modified_time_is_chosen() {
+    use neb_ingest::OrganizeRules;
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("no-exif.jpg"), b"not really a jpeg").unwrap();
+    let mut service = IngestService::open(state.path()).unwrap();
+    let default = service
+        .plan_with_rules(
+            source.path(),
+            destination.path(),
+            &OrganizeRules::default(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(default.items[0].relative_path, "unknown-date/no-exif.jpg");
+    assert_eq!(default.items[0].date_source, "unknown");
+    let rules: OrganizeRules = serde_json::from_value(
+        serde_json::json!({"date_basis":"capture","unknown_date":"modified_time"}),
+    )
+    .unwrap();
+    let fallback = service
+        .plan_with_rules(source.path(), destination.path(), &rules, true)
+        .unwrap();
+    assert_eq!(fallback.items[0].date_source, "modified_time");
+    assert!(!fallback.items[0].relative_path.starts_with("unknown-date/"));
+    let bad: OrganizeRules =
+        serde_json::from_value(serde_json::json!({"date_basis":"capture","subfolder":"../escape"}))
+            .unwrap();
+    assert!(service
+        .plan_with_rules(source.path(), destination.path(), &bad, true)
+        .is_err());
+}

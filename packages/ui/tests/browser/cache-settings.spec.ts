@@ -90,6 +90,9 @@ async function nativeCache(
         case 'asset.list':
           result = { items: options.remote ? [asset] : [], total: options.remote ? 1 : 0 };
           break;
+        case 'import.batches':
+          result = [];
+          break;
         case 'library.capture_index.status':
           result = {
             library_id: request.params.library_id,

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Asset } from '../src/model';
-import { browserAssetList, variantViewerIds } from '../src/workspace';
+import {
+  availabilityPresentation,
+  browserAssetList,
+  defaultOrganizeRules,
+  organizeExample,
+  subfolderError,
+  variantViewerIds,
+} from '../src/workspace';
 
 const photo = (id: string, name: string, rating = 0, directory = 'photos'): Asset => ({
   id,
@@ -157,5 +164,77 @@ describe('browser catalog mirrors whole-library queries', () => {
     ];
     expect(variantViewerIds(items, 'jpg', 'raw')).toEqual(['before', 'raw', 'after']);
     expect(variantViewerIds(items, 'jpg', 'jpg')).toEqual(['before', 'jpg', 'after']);
+  });
+});
+
+describe('browser catalog flag filter', () => {
+  it('filters picks, unflagged and hides rejects', () => {
+    const items = [
+      { ...photo('a', 'a.jpg'), flag: 'pick' as const },
+      { ...photo('b', 'b.jpg'), flag: 'reject' as const },
+      photo('c', 'c.jpg'),
+    ];
+    const ids = (flag: 'any' | 'pick' | 'none' | 'reject' | 'not_reject') =>
+      browserAssetList(items, { flag, sort_by: 'filename', sort_direction: 'asc' }).items.map(
+        (item) => item.id,
+      );
+    expect(ids('pick')).toEqual(['a']);
+    expect(ids('none')).toEqual(['c']);
+    expect(ids('reject')).toEqual(['b']);
+    expect(ids('not_reject')).toEqual(['a', 'c']);
+    expect(ids('any')).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('location availability presentation', () => {
+  it('keeps online and unchecked usable and explains every unavailable state', () => {
+    const base = { name: 'NAS 照片', source_kind: 'webdav' as const, source_name: '家庭 NAS' };
+    expect(availabilityPresentation({ ...base, availability: 'online' }).usable).toBe(true);
+    expect(availabilityPresentation({ ...base, availability: 'unchecked' }).label).toBe('未连接');
+    const offline = availabilityPresentation({ ...base, availability: 'offline' });
+    expect(offline).toMatchObject({ usable: false, label: '不可达' });
+    expect(offline.detail).toContain('评级与旗标仍可修改');
+    expect(availabilityPresentation({ ...base, availability: 'auth_required' }).action).toEqual({
+      label: '重新登录',
+      section: 'sources',
+    });
+    expect(availabilityPresentation({ ...base, availability: 'trust_required' }).label).toBe(
+      '证书待确认',
+    );
+    const local = availabilityPresentation({
+      name: '外接盘',
+      source_kind: 'local',
+      availability: 'offline',
+    });
+    expect(local).toMatchObject({ label: '未挂载', action: undefined });
+    // Older payloads without availability fall back to the connected flag.
+    expect(availabilityPresentation({ ...base, connected: true }).label).toBe('在线');
+  });
+});
+
+describe('import organization rules', () => {
+  it('previews the same folders neb-ingest produces', () => {
+    const rules = defaultOrganizeRules();
+    expect(organizeExample(rules)).toBe('2026-10-22/DSC_0001.NEF');
+    expect(
+      organizeExample({
+        ...rules,
+        date_layout: 'Y/M/Y-M-D',
+        type_split: 'by_kind',
+        subfolder: 'Z8',
+      }),
+    ).toBe('Z8/2026/10/2026-10-22/RAW/DSC_0001.NEF');
+    expect(organizeExample({ ...rules, date_layout: 'Y/M/D' })).toBe('2026/10/22/DSC_0001.NEF');
+    expect(organizeExample({ ...rules, date_basis: 'none' })).toBe('DSC_0001.NEF');
+    expect(organizeExample({ ...rules, date_basis: 'preserve' })).toBe(
+      'DCIM/100NIKON/DSC_0001.NEF',
+    );
+  });
+
+  it('rejects subfolders the backend would reject', () => {
+    for (const bad of ['../x', '/abs', 'a//b', 'a\\b', 'C:', 'con', 'LPT1', 'a.', 'x?'])
+      expect(subfolderError(bad), bad).not.toBe('');
+    expect(subfolderError('Camera/尼康 Z8')).toBe('');
+    expect(subfolderError('')).toBe('');
   });
 });

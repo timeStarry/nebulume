@@ -57,6 +57,7 @@ fn update_binding_and_remove_only_change_catalog_and_guard_referenced_sources() 
         )
         .unwrap();
     assert_eq!(offline["connected"], false);
+    assert_eq!(offline["availability"], "offline");
     assert_eq!(
         svc.execute("asset.list", json!({"library_id":library["id"]}))
             .unwrap()["items"][0]["rating"],

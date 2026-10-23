@@ -80,9 +80,9 @@ test('keyboard modal focus is trapped and narrow desktop view remains accessible
   await page.goto('/');
   await page
     .getByRole('navigation', { name: '主导航' })
-    .getByRole('button', { name: '存储源', exact: true })
+    .getByRole('button', { name: '位置', exact: true })
     .click();
-  await page.getByRole('button', { name: '添加存储源', exact: true }).click();
+  await page.getByRole('button', { name: '添加网络位置', exact: true }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.getByRole('button', { name: '关闭对话框' })).toBeFocused();
   await page.keyboard.press('Shift+Tab');

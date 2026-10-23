@@ -4,6 +4,7 @@ import {
   createMemo,
   createResource,
   createSignal,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -20,6 +21,10 @@ import {
   type FocusRegion,
 } from './model';
 import Icon from './Icon';
+
+function flagLabel(flag?: Asset['flag']) {
+  return flag === 'pick' ? '，留用' : flag === 'reject' ? '，淘汰' : '';
+}
 
 export function Thumbnail(props: {
   asset: Asset;
@@ -98,7 +103,7 @@ export function Thumbnail(props: {
   return (
     <button
       ref={element}
-      class={`thumbnail ${props.selected ? 'selected' : ''} ${props.compact ? 'compact' : ''}`}
+      class={`thumbnail ${props.selected ? 'selected' : ''} ${props.compact ? 'compact' : ''} flag-${props.asset.flag || 'none'}`}
       onClick={props.onSelect}
       onDblClick={props.onOpen}
       onKeyDown={(event) => {
@@ -108,7 +113,7 @@ export function Thumbnail(props: {
           props.onOpen();
         }
       }}
-      aria-label={`${props.asset.filename}，${props.asset.rating} 星`}
+      aria-label={`${props.asset.filename}，${props.asset.rating} 星${flagLabel(props.asset.flag)}`}
       aria-pressed={!!props.selected}
       title={props.asset.filename}
     >
@@ -136,7 +141,19 @@ export function Thumbnail(props: {
       <Show when={!props.compact}>
         <div class="thumbnail-caption">
           <span>{props.asset.filename}</span>
-          <small>{props.asset.rating ? '★'.repeat(props.asset.rating) : '·'}</small>
+          <small>
+            <Show when={props.asset.flag === 'pick'}>
+              <span class="thumbnail-flag pick" aria-hidden="true">
+                留用
+              </span>
+            </Show>
+            <Show when={props.asset.flag === 'reject'}>
+              <span class="thumbnail-flag reject" aria-hidden="true">
+                淘汰
+              </span>
+            </Show>
+            {props.asset.rating ? '★'.repeat(props.asset.rating) : '·'}
+          </small>
         </div>
       </Show>
     </button>
@@ -154,6 +171,8 @@ export default function PhotoView(props: {
   hasNext: boolean;
   focusEnabled?: boolean;
   focusRegions?: FocusRegion[];
+  /** Each change toggles between fit-to-window and preview-pixel 1:1. */
+  zoomToggle?: number;
   onPreviewStateChange?: (state: {
     key: string;
     loading: boolean;
@@ -246,6 +265,19 @@ export default function PhotoView(props: {
   createEffect(() => {
     if (props.cropMode) fit();
   });
+  createEffect(
+    on(
+      () => props.zoomToggle,
+      () => {
+        if (props.cropMode) return;
+        if (Math.abs(zoom() - 1) < 0.001) {
+          setZoom(1 / fitScale());
+          setPan({ x: 0, y: 0 });
+        } else fit();
+      },
+      { defer: true },
+    ),
+  );
   onMount(() => {
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0].contentRect;
