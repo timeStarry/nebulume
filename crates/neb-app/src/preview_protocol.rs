@@ -326,6 +326,26 @@ mod tests {
     }
 
     #[test]
+    fn handle_rejects_malformed_paths_with_json_400() {
+        for path in ["/a/t9999/0/1", "/%FF/t512/0/1"] {
+            let request = Request::builder()
+                .uri(format!("neb://localhost{path}"))
+                .header(header::ORIGIN, "tauri://localhost")
+                .body(Vec::new())
+                .unwrap();
+            // No service: a malformed path must be rejected before any lookup.
+            let response = handle(&request, None);
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+            assert_eq!(error_code(&response), "E_INVALID", "{path}");
+            assert_eq!(
+                response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+                "tauri://localhost"
+            );
+        }
+    }
+
+    #[test]
     fn cors_allows_only_app_origins() {
         assert_eq!(
             allowed_origin(Some("tauri://localhost")),
