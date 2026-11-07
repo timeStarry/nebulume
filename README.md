@@ -52,5 +52,6 @@ pnpm desktop
 - [实施状态与限制](docs/STATUS.md)
 - [测试策略](docs/TESTING.md)
 - [发布指南](docs/RELEASING.md)
+- [治理与重构设计](docs/REFACTOR_DESIGN.md)
 
 本项目未授予开源许可。
