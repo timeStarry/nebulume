@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from release_lib import (  # noqa: E402
     ReleaseError,
     changelog_notes,
+    compare_release_assets,
     parse_cargo_totals,
     parse_playwright_json,
     parse_vitest_json,
@@ -137,6 +138,28 @@ def load_script(name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class CompareReleaseAssetsTest(unittest.TestCase):
+    def test_compare_release_assets_reports_each_mismatch(self) -> None:
+        local = {"a": {"bytes": 1, "sha256": "x"}, "b": {"bytes": 2, "sha256": "y"}}
+        remote = [
+            {"name": "a", "size": 1, "sha256": "x"},
+            {"name": "b", "size": 3, "sha256": "y"},
+            {"name": "c", "size": 1, "sha256": "z"},
+        ]
+        problems = compare_release_assets(local, remote)
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any("b" in item and "size" in item for item in problems))
+        self.assertTrue(any("c" in item and "extra" in item for item in problems))
+        self.assertFalse(any("'a'" in item for item in problems))
+        missing = compare_release_assets(local, remote[:1])
+        self.assertEqual(missing, ["missing remote asset 'b'"])
+        digest = compare_release_assets(local, [remote[0], {"name": "b", "size": 2, "sha256": "w"}])
+        self.assertEqual(len(digest), 1)
+        self.assertIn("sha256", digest[0])
+        identical = [{"name": "a", "size": 1, "sha256": "x"}, {"name": "b", "size": 2, "sha256": "y"}]
+        self.assertEqual(compare_release_assets(local, identical), [])
 
 
 class PackageReleaseTest(unittest.TestCase):

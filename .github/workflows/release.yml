@@ -1,0 +1,156 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag such as v0.2.0
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    concurrency:
+      group: release-${{ inputs.tag || github.ref_name }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Guard tag, version and existing release
+        id: guard
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAG -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "Tag must be vX.Y.Z: $env:TAG" }
+          $version = $env:TAG.Substring(1)
+          $package = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          if ($package -ne $version) { throw "Tag $env:TAG does not match package.json version $package" }
+          $head = git rev-parse HEAD
+          $tagged = git rev-parse "refs/tags/$env:TAG^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $head -ne $tagged) { throw "Checked-out HEAD $head is not the commit of $env:TAG" }
+          $existing = gh release view $env:TAG --json tagName 2>&1
+          if ($LASTEXITCODE -eq 0) { throw "A release for $env:TAG already exists; nothing is changed" }
+          if ("$existing" -notmatch 'release not found') { throw "Could not read remote release state: $existing" }
+          $global:LASTEXITCODE = 0
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "commit=$head" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+
+      - run: pnpm install --frozen-lockfile
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: pnpm typecheck
+
+      - name: Rust tests
+        run: |
+          cargo test --workspace --locked 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath artifacts/cargo-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: UI unit tests
+        run: pnpm --filter @nebulume/ui exec vitest run --reporter=json --outputFile=../../artifacts/vitest.json
+      - name: Edge workflow tests
+        env:
+          NEBULUME_BROWSER_CHANNEL: msedge
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/artifacts/playwright.json
+        run: pnpm --filter @nebulume/ui test:browser --reporter=json
+
+      - name: Build signed NSIS installer
+        working-directory: crates/neb-app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm exec tauri build --bundles nsis -- --locked
+
+      - name: Check Authenticode signature
+        id: authenticode
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          $installer = "target/release/bundle/nsis/Nebulume_${env:VERSION}_x64-setup.exe"
+          $status = (Get-AuthenticodeSignature -FilePath $installer).Status
+          Write-Output "Authenticode status: $status"
+          $unsigned = if ($status -eq 'Valid') { 'false' } else { 'true' }
+          "unsigned=$unsigned" >> $env:GITHUB_OUTPUT
+
+      - name: Collect validation
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+          COMMIT: ${{ steps.guard.outputs.commit }}
+          UNSIGNED: ${{ steps.authenticode.outputs.unsigned }}
+        run: >-
+          python scripts/collect-validation.py --version $env:VERSION --commit $env:COMMIT
+          --cargo-log artifacts/cargo-test.log --vitest-json artifacts/vitest.json
+          --playwright-json artifacts/playwright.json --unsigned $env:UNSIGNED
+          --output artifacts/release-validation.json
+      - name: Package release
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: >-
+          python scripts/package-release.py --version $env:VERSION --target-dir target
+          --output-dir "artifacts/releases/$env:TAG" --validation artifacts/release-validation.json
+          --notes-from CHANGELOG.md
+
+      - name: Write release notes
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+          UNSIGNED: ${{ steps.authenticode.outputs.unsigned }}
+        shell: python
+        run: |
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from release_lib import changelog_notes
+          notes = changelog_notes(Path("CHANGELOG.md").read_text(encoding="utf-8-sig"), os.environ["VERSION"])
+          signing = "未签名" if os.environ["UNSIGNED"] == "true" else "已签名"
+          footer = (
+              "平台：Windows x64（NSIS 安装器与独立程序 ZIP）。\n"
+              f"Windows 代码签名：{signing}。安装器附带应用内更新所用的更新签名（.sig）。\n"
+              "SHA256SUMS.txt 覆盖其余五份上传文件，可用 Get-FileHash -Algorithm SHA256 核对。\n"
+          )
+          Path("artifacts/release-notes.md").write_text(f"{notes}\n\n---\n\n{footer}", encoding="utf-8")
+
+      - name: Create draft release
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          $dir = "artifacts/releases/$env:TAG"
+          gh release create $env:TAG --draft --verify-tag --title "Nebulume $env:VERSION" --notes-file artifacts/release-notes.md `
+            "$dir/Nebulume_${env:VERSION}_x64-setup.exe" `
+            "$dir/Nebulume_${env:VERSION}_x64-setup.exe.sig" `
+            "$dir/Nebulume_${env:VERSION}_windows_x64.zip" `
+            "$dir/latest.json" `
+            "$dir/manifest.json" `
+            "$dir/SHA256SUMS.txt"
+      - name: Read back draft release
+        run: python scripts/verify-release.py --tag $env:TAG --output-dir "artifacts/releases/$env:TAG"
+
+      - name: Upload workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ inputs.tag || github.ref_name }}
+          path: artifacts/
+          retention-days: 90
+          if-no-files-found: warn

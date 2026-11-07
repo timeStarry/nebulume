@@ -124,3 +124,35 @@ def parse_playwright_json(data: dict) -> tuple[int, int]:
         _count(stats, "expected", "Playwright"),
         _count(stats, "unexpected", "Playwright") + _count(stats, "flaky", "Playwright"),
     )
+
+
+def compare_release_assets(local: dict[str, dict], remote: list[dict]) -> list[str]:
+    """List every difference between local upload records and downloaded remote assets.
+
+    `local` maps file name to `{"bytes", "sha256"}`; `remote` holds `gh release view
+    --json assets` entries (`name`, `size`) augmented with a downloaded `sha256`.
+    """
+    problems: list[str] = []
+    seen: dict[str, dict] = {}
+    for asset in remote:
+        name = asset.get("name")
+        if name in seen:
+            problems.append(f"duplicate remote asset {name!r}")
+            continue
+        seen[name] = asset
+    for name in sorted(local):
+        if name not in seen:
+            problems.append(f"missing remote asset {name!r}")
+            continue
+        expected, actual = local[name], seen[name]
+        if actual.get("size") != expected["bytes"]:
+            problems.append(
+                f"size differs for {name!r}: local {expected['bytes']}, remote {actual.get('size')}"
+            )
+        if actual.get("sha256") != expected["sha256"]:
+            problems.append(
+                f"sha256 differs for {name!r}: local {expected['sha256']}, remote {actual.get('sha256')}"
+            )
+    for name in sorted(set(seen) - set(local), key=str):
+        problems.append(f"extra remote asset {name!r}")
+    return problems
