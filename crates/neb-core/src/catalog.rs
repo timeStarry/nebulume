@@ -1,8 +1,8 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, SystemTime},
 };
 
@@ -18,14 +18,14 @@ use crate::{
     capture_time::{self, CaptureStatus, CaptureTime},
     imaging,
     model::{ScanError, ScanReport},
-    Asset, Crop, Library,
+    Asset, Crop, Library, PreviewImage, PreviewMemory, PreviewTier,
 };
 
 pub struct Core {
     database: Mutex<Connection>,
     // Bounded memory cache, keyed by current source fingerprint and crop recipe.
     // The disk catalog never contains preview data or credentials.
-    previews: Mutex<VecDeque<(String, Value)>>,
+    previews: PreviewMemory,
 }
 
 const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked";
@@ -34,6 +34,8 @@ const LIBRARY_COLUMNS: &str =
 // Bump when inspection semantics change. This lives only in the private cache
 // fingerprint, so old catalogs upgrade on access without rewriting user EXIF.
 const INSPECTION_VERSION: &str = "inspect-v2";
+const PREVIEW_MEMORY_ENTRIES: usize = 256;
+const PREVIEW_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 
 impl Core {
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
@@ -110,7 +112,7 @@ impl Core {
         migration.commit()?;
         Ok(Self {
             database: Mutex::new(database),
-            previews: Mutex::new(VecDeque::new()),
+            previews: PreviewMemory::new(PREVIEW_MEMORY_ENTRIES, PREVIEW_MEMORY_BYTES),
         })
     }
 
@@ -227,16 +229,14 @@ impl Core {
                 #[derive(Deserialize)]
                 struct Preview {
                     id: String,
+                    tier: Option<String>,
                     max_size: Option<u32>,
                     #[serde(default)]
                     uncropped: bool,
                 }
                 let args: Preview = parse(params)?;
-                self.preview(
-                    &self.asset(&args.id)?,
-                    args.max_size.unwrap_or(1600),
-                    args.uncropped,
-                )
+                let tier = preview_tier(args.tier.as_deref(), args.max_size)?;
+                Ok(self.preview_image(&args.id, tier, args.uncropped)?.meta())
             }
             "asset.histogram" => {
                 let asset = self.asset(&id(&params)?)?;
@@ -474,9 +474,7 @@ impl Core {
         transaction.commit()?;
         drop(db);
         if changed_binding {
-            if let Ok(mut previews) = self.previews.lock() {
-                previews.clear();
-            }
+            self.previews.clear();
         }
         Ok(library)
     }
@@ -494,9 +492,7 @@ impl Core {
         transaction.execute("DELETE FROM libraries WHERE id=?1", [id])?;
         transaction.commit()?;
         drop(db);
-        if let Ok(mut previews) = self.previews.lock() {
-            previews.clear();
-        }
+        self.previews.clear();
         Ok(removed)
     }
 
@@ -570,9 +566,7 @@ impl Core {
         self.asset(id)?;
         self.db()?
             .execute("UPDATE assets SET modified_stamp='' WHERE id=?1", [id])?;
-        if let Ok(mut previews) = self.previews.lock() {
-            previews.retain(|(key, _)| !key.starts_with(&format!("{id}:")));
-        }
+        self.previews.remove_prefix(&format!("{id}:"));
         Ok(())
     }
 
@@ -1429,47 +1423,49 @@ impl Core {
         Ok(json!({"items": items, "total": total, "file_total":file_total}))
     }
 
-    fn preview(&self, asset: &Asset, max_size: u32, uncropped: bool) -> Result<Value> {
-        ensure!(
-            (32..=4096).contains(&max_size),
-            "E_INVALID: Preview max_size must be between 32 and 4096"
+    /// Source fingerprint and crop recipe of a preview, without decoding pixels.
+    pub fn preview_fingerprint(&self, id: &str, uncropped: bool) -> Result<String> {
+        let asset = self.asset(id)?;
+        let path = self.checked_asset_path(&asset)?;
+        self.fingerprint(&asset, &path, uncropped)
+    }
+
+    pub fn preview_image(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+    ) -> Result<Arc<PreviewImage>> {
+        let asset = self.asset(id)?;
+        let path = self.checked_asset_path(&asset)?;
+        let key = format!(
+            "{}:{}",
+            self.fingerprint(&asset, &path, uncropped)?,
+            tier.as_str()
         );
-        let path = self.checked_asset_path(asset)?;
-        let info = fs::metadata(&path)?;
+        if let Some(image) = self.previews.get(&key) {
+            return Ok(image);
+        }
+        let crop = if uncropped { None } else { asset.crop };
+        let image = Arc::new(imaging::preview(&path, crop, tier)?);
+        self.previews.put(key, Arc::clone(&image));
+        Ok(image)
+    }
+
+    fn fingerprint(&self, asset: &Asset, path: &Path, uncropped: bool) -> Result<String> {
+        let info = fs::metadata(path)?;
         let stamp = info
             .modified()?
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_nanos();
         let crop = if uncropped { None } else { asset.crop };
-        let key = format!(
-            "{}:{}:{}:{max_size}:{}",
+        Ok(format!(
+            "{}:{}:{}:{}",
             asset.id,
             stamp,
             info.len(),
             serde_json::to_string(&crop)?
-        );
-        if let Ok(mut cache) = self.previews.lock() {
-            if let Some(position) = cache.iter().position(|entry| entry.0 == key) {
-                let entry = cache.remove(position).expect("position from same queue");
-                let result = entry.1.clone();
-                cache.push_back(entry);
-                return Ok(result);
-            }
-        }
-        let value = imaging::preview(&path, crop, max_size)?;
-        if let Ok(mut cache) = self.previews.lock() {
-            cache.push_back((key, value.clone()));
-            while cache.len() > 48
-                || cache
-                    .iter()
-                    .map(|(_, value)| value["data_url"].as_str().map(str::len).unwrap_or(0))
-                    .sum::<usize>()
-                    > 64 * 1024 * 1024
-            {
-                cache.pop_front();
-            }
-        }
-        Ok(value)
+        ))
     }
 }
 
@@ -1491,6 +1487,23 @@ struct PairVariant {
     filename: String,
     extension: String,
     kind: String,
+}
+
+/// `tier` wins; legacy `max_size` maps to the smallest covering tier.
+fn preview_tier(tier: Option<&str>, max_size: Option<u32>) -> Result<PreviewTier> {
+    if let Some(name) = tier {
+        return PreviewTier::parse(name).context("E_INVALID: Unknown preview tier");
+    }
+    match max_size {
+        Some(max_size) => {
+            ensure!(
+                (32..=4096).contains(&max_size),
+                "E_INVALID: Preview max_size must be between 32 and 4096"
+            );
+            Ok(PreviewTier::for_max_size(max_size))
+        }
+        None => Ok(PreviewTier::P2560),
+    }
 }
 
 fn parse<T: serde::de::DeserializeOwned>(params: Value) -> Result<T> {

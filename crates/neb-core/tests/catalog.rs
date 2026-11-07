@@ -1,7 +1,7 @@
 use std::{fs, io::Cursor, path::Path};
 
 use image::{codecs::jpeg::JpegEncoder, Rgb, RgbImage};
-use neb_core::Core;
+use neb_core::{Core, PreviewTier};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -253,8 +253,15 @@ fn crop_export_is_new_file_and_never_changes_original_or_existing_export() {
         (full["width"].as_u64(), full["height"].as_u64()),
         (Some(12), Some(8))
     );
-    let cropped_again = core.dispatch("asset.preview", json!({"id":id})).unwrap();
-    assert_eq!(cropped_again["data_url"], cropped["data_url"]);
+    let id_str = id.as_str().unwrap();
+    let first = core
+        .preview_image(id_str, PreviewTier::P2560, false)
+        .unwrap();
+    let again = core
+        .preview_image(id_str, PreviewTier::P2560, false)
+        .unwrap();
+    assert_eq!(again.jpeg, first.jpeg);
+    assert_eq!((first.width, first.height), (6, 4));
     let exported = photos.join("export.jpg");
     core.dispatch("asset.export", json!({"id":id,"destination":exported}))
         .unwrap();
@@ -451,10 +458,7 @@ fn jpeg_exif_orientation_is_applied_before_crop_and_export() {
     assert_eq!(image::image_dimensions(output).unwrap(), (4, 12));
 }
 
-#[test]
-fn dng_fixture_is_sensor_decoded_not_an_embedded_jpeg() {
-    let (_temp, core, photos, library) = setup();
-    let source = photos.join("sensor.dng");
+fn sensor_dng_tags() -> (Vec<TiffTag>, Vec<u8>) {
     let samples: Vec<u8> = (0..48)
         .flat_map(|i| {
             let color = match ((i / 8) % 2, (i % 8) % 2) {
@@ -499,6 +503,14 @@ fn dng_fixture_is_sensor_decoded_not_an_embedded_jpeg() {
                 .repeat(3),
         ),
     ];
+    (tags, samples)
+}
+
+#[test]
+fn dng_fixture_is_sensor_decoded_not_an_embedded_jpeg() {
+    let (_temp, core, photos, library) = setup();
+    let source = photos.join("sensor.dng");
+    let (tags, samples) = sensor_dng_tags();
     fs::write(&source, simple_tiff(tags, &samples)).unwrap();
     let before = digest(&source);
     let report = scan(&core, &library);
@@ -517,10 +529,12 @@ fn dng_fixture_is_sensor_decoded_not_an_embedded_jpeg() {
         .dispatch("asset.preview", json!({"id":asset["id"]}))
         .unwrap();
     assert_eq!(preview["source"], "raw_demosaic");
-    assert!(preview["data_url"]
-        .as_str()
-        .unwrap()
-        .starts_with("data:image/jpeg;base64,"));
+    assert!(preview.get("data_url").is_none());
+    let grid = core
+        .preview_image(asset["id"].as_str().unwrap(), PreviewTier::T512, false)
+        .unwrap();
+    assert!(grid.jpeg.starts_with(&[0xff, 0xd8]));
+    assert_eq!(grid.source, "raw_demosaic");
     let hist = core
         .dispatch("asset.histogram", json!({"id":asset["id"]}))
         .unwrap();
@@ -530,6 +544,45 @@ fn dng_fixture_is_sensor_decoded_not_an_embedded_jpeg() {
         hist["red"], hist["blue"],
         "Bayer color samples must affect rendered RGB channels"
     );
+    assert_eq!(digest(&source), before);
+}
+
+#[test]
+fn raw_grid_tier_prefers_embedded_preview() {
+    let (_temp, core, photos, library) = setup();
+    let source = photos.join("embedded.dng");
+    let mut embedded = Cursor::new(Vec::new());
+    JpegEncoder::new(&mut embedded)
+        .encode_image(&RgbImage::from_pixel(8, 6, Rgb([30, 90, 160])))
+        .unwrap();
+    let embedded = embedded.into_inner();
+    let (mut tags, samples) = sensor_dng_tags();
+    tags.push(long(513, 0));
+    tags.push(long(514, embedded.len() as u32));
+    tags.sort_by_key(|tag| tag.0);
+    let pointer = 8 + 2 + tags.iter().position(|tag| tag.0 == 513).unwrap() * 12 + 8;
+    let mut bytes = simple_tiff(tags, &samples);
+    let offset = bytes.len() as u32;
+    bytes[pointer..pointer + 4].copy_from_slice(&offset.to_le_bytes());
+    bytes.extend_from_slice(&embedded);
+    fs::write(&source, bytes).unwrap();
+    let before = digest(&source);
+    scan(&core, &library);
+    let asset = only_asset(&core);
+    let id = asset["id"].as_str().unwrap();
+    let grid = core.preview_image(id, PreviewTier::T512, false).unwrap();
+    assert_eq!(grid.source, "embedded_jpeg");
+    assert!(grid.jpeg.starts_with(&[0xff, 0xd8]));
+    let viewer = core.preview_image(id, PreviewTier::P2560, false).unwrap();
+    assert_eq!(viewer.source, "raw_demosaic");
+    let meta = core
+        .dispatch("asset.preview", json!({"id":id,"tier":"t256"}))
+        .unwrap();
+    assert_eq!(meta["source"], "embedded_jpeg");
+    assert!(meta.get("data_url").is_none());
+    assert!(core
+        .dispatch("asset.preview", json!({"id":id,"tier":"t9999"}))
+        .is_err());
     assert_eq!(digest(&source), before);
 }
 

@@ -813,10 +813,9 @@ mod tests {
         let inspection = crate::imaging::inspect(&path).unwrap();
         assert_eq!(inspection.metadata["Sensor Dimensions"], "8 × 6");
         assert!(!inspection.metadata.contains_key("Preview Source"));
-        let rendered = crate::imaging::preview(&path, None, 1600).unwrap();
-        assert_eq!(rendered["source"], "embedded_jpeg");
-        assert_eq!(rendered["width"], 10);
-        assert_eq!(rendered["height"], 16);
+        let rendered = crate::imaging::preview(&path, None, crate::PreviewTier::P2560).unwrap();
+        assert_eq!(rendered.source, "embedded_jpeg");
+        assert_eq!((rendered.width, rendered.height), (10, 16));
         assert_eq!(
             crate::imaging::histogram(&path, None).unwrap()["source"],
             "embedded_jpeg"

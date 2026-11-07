@@ -10,6 +10,7 @@ mod embedded_preview;
 mod focus_points;
 mod imaging;
 mod model;
+pub mod preview;
 mod remote_exif;
 
 pub use cache::{CacheLease, CacheManager, Reservation};
@@ -18,6 +19,7 @@ pub use focus_points::read_from as remote_focus;
 pub use focus_points::{FocusInfo, FocusRegion};
 pub use imaging::remote_preview;
 pub use model::{Asset, Crop, Library};
+pub use preview::{PreviewImage, PreviewMemory, PreviewTier};
 
 pub fn image_kind(extension: &str) -> Option<&'static str> {
     imaging::kind(extension)

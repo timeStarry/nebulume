@@ -294,7 +294,11 @@ impl Service {
             let mut value = if let Some(bytes) = cached {
                 serde_json::from_slice(&bytes).context("E_CACHE: Invalid preview cache")?
             } else {
-                let value = self.core.dispatch("asset.preview", params.clone())?;
+                let value = legacy_preview_value(&*self.core.preview_image(
+                    &asset.id,
+                    neb_core::PreviewTier::for_max_size(max_size as u32),
+                    uncropped,
+                )?);
                 // Disk persistence is best effort for local originals. No remote
                 // slot or cache maintenance may delay returning decoded pixels.
                 let bytes = serde_json::to_vec(&value)?;
@@ -352,7 +356,11 @@ impl Service {
                 Err(error) if Self::may_fallback(&error) => {
                     self.require_automatic_download()?;
                     let _lease = self.original(asset, false)?;
-                    self.core.dispatch("asset.preview", params.clone())?
+                    legacy_preview_value(&*self.core.preview_image(
+                        &asset.id,
+                        neb_core::PreviewTier::for_max_size(max_size as u32),
+                        uncropped,
+                    )?)
                 }
                 Err(error)
                     if matches!(
@@ -367,7 +375,11 @@ impl Service {
                 Err(error) => return Err(error),
             }
         } else {
-            self.core.dispatch("asset.preview", params.clone())?
+            legacy_preview_value(&*self.core.preview_image(
+                &asset.id,
+                neb_core::PreviewTier::for_max_size(max_size as u32),
+                uncropped,
+            )?)
         };
         if let Some(inspection) = value.get("inspection") {
             self.core.record_remote_inspection(&asset.id, inspection)?;
@@ -416,7 +428,13 @@ impl Service {
             asset.size == 0 || identity.length == asset.size,
             "E_CONFLICT: Remote image changed; rescan the library"
         );
-        let result = neb_core::remote_preview(&mut reader, identity.length, crop, max_size);
+        let result = neb_core::remote_preview(
+            &mut reader,
+            identity.length,
+            crop,
+            neb_core::PreviewTier::for_max_size(max_size),
+        )
+        .map(|image| legacy_preview_value(&image));
         // Optional EXIF parsing must not hide a failed/changed transport.
         reader.metadata()?;
         result
@@ -672,6 +690,14 @@ impl Service {
             _ => Err(anyhow!("Unknown command: {command}")),
         }
     }
+}
+
+/// Old-shaped preview JSON with a base64 `data_url`. Removed in Task 2.
+fn legacy_preview_value(image: &neb_core::PreviewImage) -> Value {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let mut value = image.meta();
+    value["data_url"] = format!("data:image/jpeg;base64,{}", STANDARD.encode(&image.jpeg)).into();
+    value
 }
 
 #[cfg(test)]

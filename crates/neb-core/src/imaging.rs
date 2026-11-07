@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
 use exif::{In, Tag};
 use image::{
     codecs::jpeg::JpegEncoder, metadata::Orientation, DynamicImage, ImageDecoder, ImageReader, Rgb,
@@ -14,7 +13,7 @@ use image::{
 };
 use serde_json::{json, Value};
 
-use crate::Crop;
+use crate::{Crop, PreviewImage, PreviewTier};
 
 pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_PIXELS: u64 = 120_000_000;
@@ -270,7 +269,7 @@ pub fn render(
     crop: Option<Crop>,
     max_side: Option<u32>,
 ) -> Result<(DynamicImage, &'static str)> {
-    let frame = render_frame(path, crop, max_side)?;
+    let frame = render_frame(path, crop, max_side, false)?;
     Ok((frame.image, frame.source))
 }
 
@@ -288,7 +287,12 @@ struct RenderedFrame {
     coordinate_mapping: CoordinateMapping,
 }
 
-fn render_frame(path: &Path, crop: Option<Crop>, max_side: Option<u32>) -> Result<RenderedFrame> {
+fn render_frame(
+    path: &Path,
+    crop: Option<Crop>,
+    max_side: Option<u32>,
+    prefers_embedded: bool,
+) -> Result<RenderedFrame> {
     check_file(path)?;
     let (image, source, orientation) = if kind(&extension(path)) == Some("raw") {
         // Keep enough full-frame pixels that a small saved crop can still fill
@@ -299,18 +303,29 @@ fn render_frame(path: &Path, crop: Option<Crop>, max_side: Option<u32>) -> Resul
                 .ceil()
                 .min(f64::from(u32::MAX)) as u32
         });
-        match render_sensor(path, raw_limit) {
-            Ok((image, orientation)) => (image, "raw_demosaic", orientation),
-            Err(raw_error) if max_side.is_some() => {
-                let (preview, orientation) = crate::embedded_preview::read_with_orientation(path).with_context(|| {
+        // Grid thumbnails read the camera JPEG first; it is far cheaper than
+        // demosaicing and exports (max_side None) never use it.
+        let embedded = if prefers_embedded && max_side.is_some() {
+            crate::embedded_preview::read_with_orientation(path).ok()
+        } else {
+            None
+        };
+        if let Some((preview, orientation)) = embedded {
+            (preview, "embedded_jpeg", orientation)
+        } else {
+            match render_sensor(path, raw_limit) {
+                Ok((image, orientation)) => (image, "raw_demosaic", orientation),
+                Err(raw_error) if max_side.is_some() => {
+                    let (preview, orientation) = crate::embedded_preview::read_with_orientation(path).with_context(|| {
                     format!("RAW sensor decoding unavailable ({raw_error:#}); embedded preview fallback failed")
                 })?;
-                (preview, "embedded_jpeg", orientation)
-            }
-            Err(error) => {
-                return Err(error.context(
-                    "RAW 原始解码不可用，不能导出原始分辨率 JPEG；相机内嵌预览仅用于查看。",
-                ))
+                    (preview, "embedded_jpeg", orientation)
+                }
+                Err(error) => {
+                    return Err(error.context(
+                        "RAW 原始解码不可用，不能导出原始分辨率 JPEG；相机内嵌预览仅用于查看。",
+                    ))
+                }
             }
         }
     } else {
@@ -525,22 +540,23 @@ fn develop_raw(raw: &rawloader::RawImage, max_side: Option<u32>) -> Result<Dynam
     Ok(image)
 }
 
-pub fn preview(path: &Path, crop: Option<Crop>, max_size: u32) -> Result<Value> {
-    ensure!(
-        (32..=4096).contains(&max_size),
-        "E_INVALID: Preview max_size must be between 32 and 4096"
-    );
-    let frame = render_frame(path, crop, Some(max_size))?;
-    encode_preview(frame, max_size)
+pub fn preview(path: &Path, crop: Option<Crop>, tier: PreviewTier) -> Result<PreviewImage> {
+    let frame = render_frame(path, crop, Some(tier.pixels()), tier.prefers_embedded())?;
+    encode_preview(frame, tier.pixels())
 }
 
-fn encode_preview(frame: RenderedFrame, max_size: u32) -> Result<Value> {
+fn encode_preview(frame: RenderedFrame, max_size: u32) -> Result<PreviewImage> {
     let image = downsample(frame.image, max_size);
     let mut bytes = Cursor::new(Vec::new());
     JpegEncoder::new_with_quality(&mut bytes, 88).encode_image(&image.to_rgb8())?;
-    Ok(
-        json!({"data_url": format!("data:image/jpeg;base64,{}", STANDARD.encode(bytes.into_inner())), "width": image.width(), "height": image.height(), "source": frame.source, "coordinate_mapping": frame.coordinate_mapping}),
-    )
+    Ok(PreviewImage {
+        jpeg: bytes.into_inner(),
+        width: image.width(),
+        height: image.height(),
+        source: frame.source.to_owned(),
+        coordinate_mapping: Some(serde_json::to_value(&frame.coordinate_mapping)?),
+        extras: serde_json::Map::new(),
+    })
 }
 
 pub fn histogram(path: &Path, crop: Option<Crop>) -> Result<Value> {
@@ -574,12 +590,8 @@ pub fn remote_preview<R: Read + Seek>(
     input: &mut R,
     length: u64,
     crop: Option<Crop>,
-    max_size: u32,
-) -> Result<Value> {
-    ensure!(
-        (32..=4096).contains(&max_size),
-        "E_INVALID: Preview max_size must be between 32 and 4096"
-    );
+    tier: PreviewTier,
+) -> Result<PreviewImage> {
     input.seek(SeekFrom::Start(0))?;
     let (image, orientation) = crate::embedded_preview::read_from(&mut *input, length)?;
     // Decode first: an EXIF parser's optional failure must never swallow a broken
@@ -593,10 +605,13 @@ pub fn remote_preview<R: Read + Seek>(
     let height = image.height();
     let frame = finish_frame(image, "remote_embedded_jpeg", orientation, crop)?;
     let histogram = histogram_image(frame.image.clone(), frame.source)?;
-    let mut value = encode_preview(frame, max_size)?;
-    value["inspection"] = json!({"width":width,"height":height,"metadata":metadata});
-    value["histogram"] = histogram;
-    Ok(value)
+    let mut preview = encode_preview(frame, tier.pixels())?;
+    preview.extras.insert(
+        "inspection".into(),
+        json!({"width":width,"height":height,"metadata":metadata}),
+    );
+    preview.extras.insert("histogram".into(), histogram);
+    Ok(preview)
 }
 
 fn downsample(image: DynamicImage, max_side: u32) -> DynamicImage {
@@ -652,7 +667,9 @@ mod coordinate_tests {
             width: 0.32,
             height: 0.5,
         };
-        let cropped = preview(&path, Some(crop), 32).unwrap();
+        let cropped = preview(&path, Some(crop), PreviewTier::T256)
+            .unwrap()
+            .meta();
         let mapping = &cropped["coordinate_mapping"];
         assert_eq!(mapping["orientation"], 1);
         assert_eq!(mapping["full_width"], 70);
@@ -661,10 +678,10 @@ mod coordinate_tests {
         assert_eq!(mapping["crop"]["y"], 11.0 / 50.0);
         assert_eq!(mapping["crop"]["width"], 23.0 / 70.0);
         assert_eq!(mapping["crop"]["height"], 25.0 / 50.0);
-        let uncropped = preview(&path, None, 32).unwrap();
+        let uncropped = preview(&path, None, PreviewTier::T256).unwrap().meta();
         assert_eq!(uncropped["coordinate_mapping"]["full_width"], 70);
         assert_eq!(uncropped["coordinate_mapping"]["crop"]["width"], 1.0);
-        assert_eq!(uncropped["width"], 32);
+        assert_eq!(uncropped["width"], 70);
     }
 }
 
@@ -805,7 +822,9 @@ mod remote_metadata_tests {
             let bytes = padded_raw(little);
             let length = bytes.len() as u64;
             let mut reader = BudgetReader::new(bytes);
-            let value = remote_preview(&mut reader, length, None, 64).unwrap();
+            let value = remote_preview(&mut reader, length, None, PreviewTier::T256)
+                .unwrap()
+                .meta();
             assert!(!reader.exceeded, "optional EXIF attempted a full RAW read");
             assert!(reader.bytes < 8 * 1024, "reads: {}", reader.bytes);
             assert!(reader
@@ -850,7 +869,7 @@ mod remote_metadata_tests {
         let length = bytes.len() as u64;
         let mut reader = BudgetReader::new(bytes);
         reader.fail_at = Some(24 * 1024 * 1024);
-        let error = remote_preview(&mut reader, length, None, 64).unwrap_err();
+        let error = remote_preview(&mut reader, length, None, PreviewTier::T256).unwrap_err();
         assert!(format!("{error:#}").contains("synthetic remote transport failure"));
         assert!(!reader.exceeded);
     }
@@ -867,7 +886,9 @@ mod remote_metadata_tests {
             }
             let length = bytes.len() as u64;
             let mut reader = BudgetReader::new(bytes);
-            let value = remote_preview(&mut reader, length, None, 64).unwrap();
+            let value = remote_preview(&mut reader, length, None, PreviewTier::T256)
+                .unwrap()
+                .meta();
             let metadata = &value["inspection"]["metadata"];
             assert_eq!(metadata["Camera"], "NIKON Z30");
             assert!(metadata.get("Lens").is_none());
