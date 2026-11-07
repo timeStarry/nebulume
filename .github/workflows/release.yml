@@ -51,9 +51,17 @@ jobs:
           $head = git rev-parse HEAD
           $tagged = git rev-parse "refs/tags/$env:TAG^{commit}"
           if ($LASTEXITCODE -ne 0 -or $head -ne $tagged) { throw "Checked-out HEAD $head is not the commit of $env:TAG" }
-          $existing = gh release view $env:TAG --json tagName 2>&1
-          if ($LASTEXITCODE -eq 0) { throw "A release for $env:TAG already exists; nothing is changed" }
-          if ("$existing" -notmatch 'release not found') { throw "Could not read remote release state: $existing" }
+          $existing = gh release view $env:TAG --json isDraft 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ("$existing" | ConvertFrom-Json).isDraft) { throw "A published release for $env:TAG already exists; nothing is changed" }
+            # A draft left by an earlier failed run is never visible to users. A rebuild
+            # produces different bytes, so the draft is replaced rather than reused.
+            gh release delete $env:TAG --yes
+            if ($LASTEXITCODE -ne 0) { throw "Could not remove the earlier draft for $env:TAG" }
+            Write-Host "Removed the earlier draft for $env:TAG; it is recreated below."
+          } elseif ("$existing" -notmatch 'release not found') {
+            throw "Could not read remote release state: $existing"
+          }
           $global:LASTEXITCODE = 0
           "version=$version" >> $env:GITHUB_OUTPUT
           "commit=$head" >> $env:GITHUB_OUTPUT
