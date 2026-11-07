@@ -166,7 +166,7 @@ export interface AvailableUpdate {
   version: string;
   body?: string;
   date?: string;
-  downloadAndInstall(
+  download(
     onEvent: (
       e:
         | { event: 'Started'; data: { contentLength?: number } }
@@ -174,6 +174,7 @@ export interface AvailableUpdate {
         | { event: 'Finished' },
     ) => void,
   ): Promise<void>;
+  install(): Promise<void>; // on Windows the plugin exits the process inside install
 }
 export interface UpdateEffects {
   support(): Promise<{ supported: boolean; kind: string }>;
@@ -192,22 +193,24 @@ export function createUpdateController(effects: UpdateEffects): {
   subscribe(listener: (state: UpdateState) => void): () => void;
   start(): Promise<void>; // resolves support, schedules first automatic check when readAuto()
   checkNow(): Promise<void>; // manual; ignored while checking/downloading/installing
-  install(): Promise<void>; // only from 'available': downloading → prepare → installing → relaunch
+  install(): Promise<void>; // only from 'available': downloading → download() → prepare() → installing → update.install() → relaunch()
   dismiss(): void; // 'available' → 'idle'; next scheduled check prompts again
   setAuto(value: boolean): void; // persists; cancels or schedules the timer
   dispose(): void;
 };
 ```
 
-Behavior: `check()` resolving `null` → `up-to-date`; throwing → `failed` (message from the error); after any automatic check, the next one is scheduled `CHECK_INTERVAL_MS` later. `install()` failure during download → back to `available` with `error`, nothing relaunched. `prepare()` failure or `timed_out` does not block installation.
+Behavior: `check()` resolving `null` → `up-to-date`; throwing → `failed` (message from the error); after any automatic check, the next one is scheduled `CHECK_INTERVAL_MS` later. `install()` failure during download → back to `available` with `error`, no prepare, no install. `update.install()` failure → back to `available` with `error`, no relaunch. `prepare()` failure or `timed_out` does not block installation. `prepare()` must run before `update.install()` because on Windows tauri-plugin-updater calls `std::process::exit(0)` inside install, so `relaunch()` is only reached on macOS/Linux. A retry after either failure calls `download()` again.
 
 - [ ] **Step 1: Write failing tests** in `update-controller.test.ts` using a fake-effects factory (manual timer queue, controllable `check`). Tests and their assertions:
   - `does not check when unsupported` — `support` → `{supported:false, kind:'portable'}`; after `start()`, `state()` is `{kind:'unsupported', reason:'portable'}`, `check` never called, no timer.
   - `schedules first automatic check after 10 s and then daily` — timer delays recorded equal `[10_000, 86_400_000]` after the first timer fires.
   - `null check result reports up to date without prompting` — final kind `up-to-date`, `checkedAt` equals fake `now()`.
   - `network failure is recorded, not thrown` — `check` rejects `new Error('offline')`; `start()` and the timer run without throwing; state `{kind:'failed', message:'offline'}`.
-  - `install reports progress then prepares and relaunches` — events `Started(contentLength 100)`, `Progress(40)`, `Progress(60)`, `Finished`; observed states include `downloading` with `received` 40 then 100 and `total` 100, then `installing`; `prepare` called before `relaunch`, both once.
-  - `interrupted download returns to available with error` — `downloadAndInstall` rejects `new Error('reset')`; state `available` with `error: 'reset'`; `relaunch` not called; a second `install()` calls `downloadAndInstall` again.
+  - `install reports progress then prepares and relaunches` — events `Started(contentLength 100)`, `Progress(40)`, `Progress(60)`, `Finished`; observed states include `downloading` with `received` 40 then 100 and `total` 100, then `installing`; recorded call order is `download` → `prepare` → `install` → `relaunch`.
+  - `prepare runs before install` — the `install` mock records that `prepare` was already called.
+  - `install failure returns to available without relaunch` — `install` rejects; state `available` with the error; `relaunch` not called; retry calls `download` again.
+  - `interrupted download returns to available with error` — `download` rejects `new Error('reset')`; state `available` with `error: 'reset'`; `prepare`, `install` and `relaunch` not called; a second `install()` calls `download` again.
   - `manual check is ignored while downloading` — `checkNow()` during download does not call `check`.
   - `turning auto off cancels the pending timer and persists` — `writeAuto(false)` called; timer cancel function invoked.
 

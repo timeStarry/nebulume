@@ -8,7 +8,7 @@ import {
   type UpdateState,
 } from '../src/update-controller';
 
-type DownloadEvent = Parameters<Parameters<AvailableUpdate['downloadAndInstall']>[0]>[0];
+type DownloadEvent = Parameters<Parameters<AvailableUpdate['download']>[0]>[0];
 
 interface FakeTimer {
   fn: () => void;
@@ -70,8 +70,17 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-function update(download: AvailableUpdate['downloadAndInstall']): AvailableUpdate {
-  return { version: '0.2.0', body: '修复若干问题', date: '2026-11-07T00:00:00Z', downloadAndInstall: vi.fn(download) };
+function update(
+  download: AvailableUpdate['download'],
+  install: AvailableUpdate['install'] = async () => undefined,
+): AvailableUpdate {
+  return {
+    version: '0.2.0',
+    body: '修复若干问题',
+    date: '2026-11-07T00:00:00Z',
+    download: vi.fn(download),
+    install: vi.fn(install),
+  };
 }
 
 describe('update controller', () => {
@@ -155,12 +164,18 @@ describe('update controller', () => {
   it('install reports progress then prepares and relaunches', async () => {
     const { effects, calls } = fakeEffects({
       check: vi.fn(async () =>
-        update(async (onEvent: (e: DownloadEvent) => void) => {
-          onEvent({ event: 'Started', data: { contentLength: 100 } });
-          onEvent({ event: 'Progress', data: { chunkLength: 40 } });
-          onEvent({ event: 'Progress', data: { chunkLength: 60 } });
-          onEvent({ event: 'Finished' });
-        }),
+        update(
+          async (onEvent: (e: DownloadEvent) => void) => {
+            calls.push('download');
+            onEvent({ event: 'Started', data: { contentLength: 100 } });
+            onEvent({ event: 'Progress', data: { chunkLength: 40 } });
+            onEvent({ event: 'Progress', data: { chunkLength: 60 } });
+            onEvent({ event: 'Finished' });
+          },
+          async () => {
+            calls.push('install');
+          },
+        ),
       ),
     });
     const controller = createUpdateController(effects);
@@ -176,7 +191,7 @@ describe('update controller', () => {
       seen.findIndex((s) => s.kind === 'downloading' && s.received === 100),
     );
     expect(controller.state()).toEqual({ kind: 'installing', version: '0.2.0' });
-    expect(calls).toEqual(['prepare', 'relaunch']);
+    expect(calls).toEqual(['download', 'prepare', 'install', 'relaunch']);
   });
 
   it('prepare failure or timeout does not block installation', async () => {
@@ -207,8 +222,58 @@ describe('update controller', () => {
     expect(controller.state()).toMatchObject({ kind: 'available', version: '0.2.0', error: 'reset' });
     expect(effects.relaunch).not.toHaveBeenCalled();
     expect(effects.prepare).not.toHaveBeenCalled();
+    expect(available.install).not.toHaveBeenCalled();
     await controller.install();
-    expect(available.downloadAndInstall).toHaveBeenCalledTimes(2);
+    expect(available.download).toHaveBeenCalledTimes(2);
+  });
+
+  it('prepare runs before install', async () => {
+    let prepared = false;
+    let preparedBeforeInstall: boolean | null = null;
+    const { effects } = fakeEffects({
+      check: vi.fn(async () =>
+        update(
+          async () => undefined,
+          async () => {
+            preparedBeforeInstall = prepared;
+          },
+        ),
+      ),
+      prepare: vi.fn(async () => {
+        prepared = true;
+        return { cancelled_jobs: 0, pending_writes: 0, timed_out: false };
+      }),
+    });
+    const controller = createUpdateController(effects);
+    await controller.start();
+    await controller.checkNow();
+    await controller.install();
+    expect(preparedBeforeInstall).toBe(true);
+  });
+
+  it('install failure returns to available without relaunch', async () => {
+    const available = update(
+      async () => undefined,
+      async () => {
+        throw new Error('installer failed');
+      },
+    );
+    const { effects } = fakeEffects({ check: vi.fn(async () => available) });
+    const controller = createUpdateController(effects);
+    await controller.start();
+    await controller.checkNow();
+    await expect(controller.install()).resolves.toBeUndefined();
+    expect(controller.state()).toEqual({
+      kind: 'available',
+      version: '0.2.0',
+      notes: '修复若干问题',
+      date: '2026-11-07T00:00:00Z',
+      error: 'installer failed',
+    });
+    expect(effects.prepare).toHaveBeenCalledTimes(1);
+    expect(effects.relaunch).not.toHaveBeenCalled();
+    await controller.install();
+    expect(available.download).toHaveBeenCalledTimes(2);
   });
 
   it('manual check is ignored while downloading', async () => {

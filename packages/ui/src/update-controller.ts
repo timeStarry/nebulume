@@ -19,7 +19,8 @@ export interface AvailableUpdate {
   version: string;
   body?: string;
   date?: string;
-  downloadAndInstall(onEvent: (e: DownloadEvent) => void): Promise<void>;
+  download(onEvent: (e: DownloadEvent) => void): Promise<void>;
+  install(): Promise<void>;
 }
 
 export interface UpdateEffects {
@@ -148,7 +149,7 @@ export function createUpdateController(effects: UpdateEffects) {
       let total: number | undefined;
       set({ kind: 'downloading', version, received, total });
       try {
-        await update.downloadAndInstall((e) => {
+        await update.download((e) => {
           if (disposed) return;
           if (e.event === 'Started') total = e.data.contentLength;
           else if (e.event === 'Progress') received += e.data.chunkLength;
@@ -160,6 +161,7 @@ export function createUpdateController(effects: UpdateEffects) {
       }
       if (disposed) return;
       try {
+        // Must run before install(): on Windows the plugin exits the process inside install.
         // Quiesce is best effort: a failure or timed_out report must not block the install.
         await effects.prepare();
       } catch {
@@ -168,6 +170,14 @@ export function createUpdateController(effects: UpdateEffects) {
       if (disposed) return;
       set({ kind: 'installing', version });
       try {
+        await update.install();
+      } catch (error) {
+        if (!disposed) set({ kind: 'available', version, notes, date, error: errorMessage(error) });
+        return;
+      }
+      if (disposed) return;
+      try {
+        // Only reached on macOS/Linux; on Windows the process has already exited.
         await effects.relaunch();
       } catch (error) {
         if (!disposed) set({ kind: 'available', version, notes, date, error: errorMessage(error) });
