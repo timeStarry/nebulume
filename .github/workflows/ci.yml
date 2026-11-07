@@ -24,8 +24,14 @@ jobs:
           cache: pnpm
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - if: runner.os == 'Linux'
         run: python3 -m unittest discover -s scripts/tests -v
+      # The cache rejects link components; macOS TMPDIR resolves through /var.
+      - if: runner.os == 'macOS'
+        run: echo "TMPDIR=$(cd "$TMPDIR" && pwd -P)/" >> "$GITHUB_ENV"
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
