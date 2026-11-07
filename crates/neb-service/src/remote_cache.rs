@@ -306,6 +306,11 @@ impl Service {
         .any(|code| error.to_string().starts_with(code))
     }
 
+    /// Background local preview writes still in flight.
+    pub fn pending_preview_writes(&self) -> usize {
+        self.preview_writes.load(Ordering::Acquire)
+    }
+
     /// Disk persistence is best effort for local originals. No remote slot or
     /// cache maintenance may delay returning decoded pixels.
     fn persist_local_preview(&self, key: String, image: &Arc<PreviewImage>) {

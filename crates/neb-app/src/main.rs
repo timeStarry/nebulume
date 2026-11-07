@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod file_open;
 mod preview_protocol;
+mod updates;
 mod viewer;
 mod volumes;
 use neb_service::{CommandError, Service};
@@ -59,7 +60,9 @@ fn main() {
             viewer::open_viewer,
             viewer::viewer_context,
             viewer::show_manager,
-            list_volumes
+            list_volumes,
+            updates::update_support,
+            updates::prepare_for_update
         ])
         .build(tauri::generate_context!())
         .expect("Nebulume failed to start")

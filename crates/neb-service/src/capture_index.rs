@@ -169,6 +169,42 @@ impl Service {
         }
         self.capture_index_status(id)
     }
+
+    /// Asks every running job to stop through the per-job cancel path.
+    /// Returns how many jobs were asked; they stop cooperatively.
+    pub(super) fn cancel_all_capture_index(&self) -> Result<usize> {
+        let running = self.running_capture_jobs()?;
+        for (library_id, job_id) in &running {
+            self.cancel_capture_index(library_id, job_id)?;
+        }
+        Ok(running.len())
+    }
+
+    /// Whether any job is still running or stopping.
+    pub(super) fn capture_index_active(&self) -> Result<bool> {
+        Ok(!self.running_capture_jobs()?.is_empty())
+    }
+
+    fn running_capture_jobs(&self) -> Result<Vec<(String, String)>> {
+        let jobs: Vec<_> = self
+            .capture_index
+            .jobs
+            .lock()
+            .map_err(|_| anyhow!("Capture index state unavailable"))?
+            .iter()
+            .map(|(library_id, job)| (library_id.clone(), Arc::clone(job)))
+            .collect();
+        let mut running = Vec::new();
+        for (library_id, job) in jobs {
+            let job = job
+                .lock()
+                .map_err(|_| anyhow!("Capture index state unavailable"))?;
+            if job.running() {
+                running.push((library_id, job.id.clone()));
+            }
+        }
+        Ok(running)
+    }
 }
 
 impl IndexContext {

@@ -122,6 +122,43 @@ impl From<anyhow::Error> for CommandError {
     }
 }
 
+/// Result of stopping background work before an update installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct QuiesceReport {
+    pub cancelled_jobs: usize,
+    pub pending_writes: usize,
+    pub timed_out: bool,
+}
+
+impl Service {
+    /// Cancels running capture-index jobs, then waits (polling every 50 ms)
+    /// until they have stopped and no preview write is pending, or `timeout`.
+    pub fn quiesce(&self, timeout: std::time::Duration) -> Result<QuiesceReport, CommandError> {
+        let deadline = std::time::Instant::now() + timeout;
+        let cancelled_jobs = self.cancel_all_capture_index()?;
+        loop {
+            let pending_writes = self.pending_preview_writes();
+            let jobs_active = self.capture_index_active()?;
+            if pending_writes == 0 && !jobs_active {
+                return Ok(QuiesceReport {
+                    cancelled_jobs,
+                    pending_writes,
+                    timed_out: false,
+                });
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(QuiesceReport {
+                    cancelled_jobs,
+                    pending_writes,
+                    timed_out: true,
+                });
+            }
+            std::thread::sleep((deadline - now).min(std::time::Duration::from_millis(50)));
+        }
+    }
+}
+
 fn string<'a>(params: &'a Value, name: &str) -> Result<&'a str> {
     params
         .get(name)
