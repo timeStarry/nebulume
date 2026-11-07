@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { servePreviewImages } from './fixtures';
 import type { Asset, Crop, FocusInfo, Preview } from '../../src/model';
 
 type Call = { command: string; params: Record<string, unknown> };
@@ -30,7 +31,6 @@ const photo = (id: string): Asset => ({
   metadata: {},
   availability: 'available',
 });
-const image = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#344756"/></svg>')}`;
 
 async function viewerFixture(
   page: Page,
@@ -56,7 +56,7 @@ async function viewerFixture(
           case 'asset.preview': {
             const crop = call.params.uncropped ? full : current?.crop || full;
             result = {
-              data_url: image,
+              tier: 'p2560' as const,
               width: 800 * crop.width,
               height: 600 * crop.height,
               source: 'focus fixture',
@@ -113,6 +113,8 @@ async function viewerFixture(
     Object.assign(window, {
       isTauri: true,
       __TAURI_INTERNALS__: {
+        convertFileSrc: (p: string, s: string) =>
+          'http://' + s + '.localhost/' + encodeURIComponent(p),
         transformCallback: () => 1,
         unregisterCallback: () => {},
         metadata: {
@@ -136,6 +138,7 @@ async function viewerFixture(
       },
     });
   });
+  await servePreviewImages(page);
   await page.goto('/?viewer=1');
   await expect(page.locator('.main-photo')).toBeVisible();
   return calls;
@@ -317,7 +320,7 @@ test('missing, unsupported and incompatible coordinate metadata never creates a 
         ['orientation', 'aspect', 'mapping', 'outside'].includes(String(call.params.id))
       )
         return {
-          data_url: image,
+          tier: 'p2560' as const,
           width: 800,
           height: 600,
           source: 'fixture',
@@ -391,7 +394,7 @@ test('focus stays disabled until the actual preview mapping arrives and then res
   await page.keyboard.press('p');
   await toggle.dispatchEvent('click');
   releasePreview!({
-    data_url: image,
+    tier: 'p2560' as const,
     width: 800,
     height: 600,
     source: 'fixture',

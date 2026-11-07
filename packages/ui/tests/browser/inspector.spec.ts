@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { servePreviewImages } from './fixtures';
 import type { Asset } from '../../src/model';
 
 async function openInspector(
@@ -96,8 +97,7 @@ async function openInspector(
         break;
       case 'asset.preview':
         result = {
-          data_url:
-            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=',
+          tier: 'p2560' as const,
           width: 1,
           height: 1,
           source: options.source || 'test fixture',
@@ -132,6 +132,8 @@ async function openInspector(
     Object.assign(window, {
       isTauri: true,
       __TAURI_INTERNALS__: {
+        convertFileSrc: (p: string, s: string) =>
+          'http://' + s + '.localhost/' + encodeURIComponent(p),
         transformCallback: () => 1,
         unregisterCallback: () => {},
         metadata: {
@@ -151,6 +153,7 @@ async function openInspector(
       },
     });
   });
+  await servePreviewImages(page);
   await page.goto(options.management ? '/' : '/?viewer=1');
   if (options.management) {
     await page

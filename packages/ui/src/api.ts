@@ -5,7 +5,8 @@ import type { Volume } from './model';
 import { createPreviewScheduler, type PreviewRequestOptions } from './concurrency';
 
 export const desktop = isTauri();
-const schedulePreview = createPreviewScheduler();
+/** Shared lanes for preview metadata IPC and `neb` image loads. */
+export const schedulePreview = createPreviewScheduler();
 /** Preview options stay client-side. Signals cancel queued work, never in-flight native IPC. */
 export function execute<T>(
   command: string,

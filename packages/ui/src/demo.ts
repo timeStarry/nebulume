@@ -4,14 +4,16 @@ import {
   type Asset,
   type Crop,
   type Library,
+  TIER_PIXELS,
   type Preview,
+  type PreviewTier,
   type AssetListOptions,
 } from './model';
 import { browserAssetList } from './workspace';
 
 const files = new Map<string, File>();
 const assets = new Map<string, Asset>();
-const previewCache = new Map<string, Preview>();
+const previewCache = new Map<string, Promise<{ url: string; width: number; height: number }>>();
 const browserLibrary: Library = {
   id: 'browser',
   name: '临时图片库',
@@ -133,7 +135,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       if (params.id !== browserLibrary.id || !libraryVisible) throw new Error('图片库不存在。');
       assets.clear();
       files.clear();
-      previewCache.clear();
+      clearDemoPreviews();
       libraryVisible = false;
       result = { id: browserLibrary.id };
       break;
@@ -193,26 +195,17 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       result = { ...asset };
       break;
     case 'asset.preview': {
-      const id = String(params.id);
-      const max = Number(params.max_size || 1800);
+      const tier = demoTier(params);
+      if (!asset || !files.has(asset.id))
+        throw new Error('此图片已不在浏览器会话中，请重新选择文件。');
+      const rendered = demoPreviewSize(asset, tier, !!params.uncropped);
       const crop = params.uncropped ? null : asset?.crop;
-      const key = `${id}:${max}:${JSON.stringify(crop)}`;
-      if (!previewCache.has(key)) {
-        const original = applyCrop(await canvasFor(id), crop);
-        const ratio = Math.min(1, max / Math.max(original.width, original.height));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(original.width * ratio));
-        canvas.height = Math.max(1, Math.round(original.height * ratio));
-        canvas.getContext('2d')!.drawImage(original, 0, 0, canvas.width, canvas.height);
-        previewCache.set(key, {
-          data_url: canvas.toDataURL('image/jpeg', 0.88),
-          width: canvas.width,
-          height: canvas.height,
-          source: crop ? '浏览器真实文件 · 已应用裁剪' : '浏览器真实文件解码',
-        });
-        if (previewCache.size > 200) previewCache.delete(previewCache.keys().next().value!);
-      }
-      result = previewCache.get(key);
+      result = {
+        width: rendered.width,
+        height: rendered.height,
+        tier,
+        source: crop ? '浏览器真实文件 · 已应用裁剪' : '浏览器真实文件解码',
+      } satisfies Preview;
       break;
     }
     case 'asset.histogram': {
@@ -248,4 +241,69 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       throw new Error('此功能需要 Nebulume 桌面版。浏览器演示不会模拟文件系统或远程操作成功。');
   }
   return result as T;
+}
+
+function demoTier(params: Record<string, unknown>): PreviewTier {
+  if (typeof params.tier === 'string' && params.tier in TIER_PIXELS)
+    return params.tier as PreviewTier;
+  const max = Number(params.max_size || 2560);
+  return (Object.keys(TIER_PIXELS) as PreviewTier[]).find((t) => TIER_PIXELS[t] >= max) ?? 'p2560';
+}
+function demoPreviewSize(asset: Asset, tier: PreviewTier, uncropped: boolean) {
+  const crop = uncropped ? null : asset.crop;
+  const width = Math.max(1, Math.round((asset.width || 1) * (crop?.width ?? 1)));
+  const height = Math.max(1, Math.round((asset.height || 1) * (crop?.height ?? 1)));
+  const ratio = Math.min(1, TIER_PIXELS[tier] / Math.max(width, height));
+  return {
+    width: Math.max(1, Math.round(width * ratio)),
+    height: Math.max(1, Math.round(height * ratio)),
+  };
+}
+function clearDemoPreviews() {
+  for (const entry of previewCache.values())
+    void entry.then(({ url }) => URL.revokeObjectURL(url)).catch(() => {});
+  previewCache.clear();
+}
+function renderDemoPreview(id: string, tier: PreviewTier, uncropped: boolean, revision: number) {
+  const crop = uncropped ? null : assets.get(id)?.crop;
+  const key = JSON.stringify([id, tier, uncropped, revision, crop || null]);
+  let entry = previewCache.get(key);
+  if (!entry) {
+    entry = (async () => {
+      const original = applyCrop(await canvasFor(id), crop);
+      const ratio = Math.min(1, TIER_PIXELS[tier] / Math.max(original.width, original.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(original.width * ratio));
+      canvas.height = Math.max(1, Math.round(original.height * ratio));
+      canvas.getContext('2d')!.drawImage(original, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('JPEG 编码失败'))),
+          'image/jpeg',
+          0.88,
+        ),
+      );
+      return { url: URL.createObjectURL(blob), width: canvas.width, height: canvas.height };
+    })();
+    entry.catch(() => previewCache.delete(key));
+    previewCache.set(key, entry);
+    if (previewCache.size > 200) {
+      const oldest = previewCache.keys().next().value!;
+      void previewCache
+        .get(oldest)!
+        .then(({ url }) => URL.revokeObjectURL(url))
+        .catch(() => {});
+      previewCache.delete(oldest);
+    }
+  }
+  return entry;
+}
+/** Browser demo counterpart of the desktop `neb` protocol URL. */
+export async function demoPreviewUrl(
+  id: string,
+  tier: PreviewTier,
+  uncropped = false,
+  revision = 0,
+): Promise<string> {
+  return (await renderDemoPreview(id, tier, uncropped, revision)).url;
 }

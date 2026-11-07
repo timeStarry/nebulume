@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { servePreviewImages } from './fixtures';
 import type { CacheMigration, CacheStats } from '../../src/cache-model';
 import type { Asset } from '../../src/model';
 const GiB = 1024 ** 3;
@@ -105,8 +106,7 @@ async function nativeCache(
           break;
         case 'asset.preview':
           result = {
-            data_url:
-              'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=',
+            tier: 'p2560' as const,
             width: 1,
             height: 1,
             source: 'embedded_jpeg',
@@ -231,6 +231,8 @@ async function nativeCache(
     runtime.isTauri = true;
     runtime.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
     runtime.__TAURI_INTERNALS__ = {
+      convertFileSrc: (p: string, s: string) =>
+        'http://' + s + '.localhost/' + encodeURIComponent(p),
       metadata: { currentWindow: { label: 'cache-test' }, currentWebview: { label: 'cache-test' } },
       transformCallback: () => ++callback,
       unregisterCallback() {},
@@ -253,6 +255,7 @@ async function nativeCache(
       },
     };
   });
+  await servePreviewImages(page);
   await page.goto('/');
   return { state, control, requests };
 }
@@ -315,6 +318,7 @@ for (const width of [1440, 720, 390])
 test('browser settings honestly require desktop without fabricated cache statistics', async ({
   page,
 }) => {
+  await servePreviewImages(page);
   await page.goto('/');
   await settings(page);
   await expect(page.getByText('缓存位置、容量和离线保留需在桌面应用中设置。')).toBeVisible();

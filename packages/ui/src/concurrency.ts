@@ -8,8 +8,8 @@ export interface PreviewRequestOptions extends QueueOptions {
 export function isQueueAbort(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
-function abortError(): Error {
-  const error = new Error('Preview request cancelled before dispatch');
+export function abortError(message = 'Preview request cancelled before dispatch'): Error {
+  const error = new Error(message);
   error.name = 'AbortError';
   return error;
 }

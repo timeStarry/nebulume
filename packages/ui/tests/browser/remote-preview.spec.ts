@@ -1,8 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
+import { servePreviewImages } from './fixtures';
 import type { Asset, Preview } from '../../src/model';
 
 type Call = { command: string; params: Record<string, unknown> };
-const pixels = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#344756"/></svg>')}`;
 const remote = (id: string): Asset => ({
   id,
   library_id: 'remote-preview',
@@ -20,7 +20,7 @@ const remote = (id: string): Asset => ({
 });
 function decoded(asset: Asset): Preview {
   return {
-    data_url: pixels,
+    tier: 'p2560' as const,
     width: 800,
     height: 600,
     source: 'embedded_jpeg',
@@ -118,6 +118,8 @@ async function viewer(
     Object.assign(window, {
       isTauri: true,
       __TAURI_INTERNALS__: {
+        convertFileSrc: (p: string, s: string) =>
+          'http://' + s + '.localhost/' + encodeURIComponent(p),
         metadata: {
           currentWindow: { label: 'remote-preview-test' },
           currentWebview: { label: 'remote-preview-test' },
@@ -140,6 +142,7 @@ async function viewer(
       },
     });
   });
+  await servePreviewImages(page);
   await page.goto('/?viewer=1');
   return { assets, calls, settled, errors };
 }

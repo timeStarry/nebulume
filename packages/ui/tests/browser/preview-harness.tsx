@@ -25,7 +25,12 @@ function Harness() {
       <div style={{ display: 'grid', 'grid-template-columns': 'repeat(4, 160px)', gap: '12px' }}>
         <For each={assets()}>
           {(asset) => (
-            <Thumbnail asset={asset} onSelect={() => {}} onOpen={() => setCurrent(asset)} />
+            <Thumbnail
+              asset={asset}
+              tier="t512"
+              onSelect={() => {}}
+              onOpen={() => setCurrent(asset)}
+            />
           )}
         </For>
       </div>

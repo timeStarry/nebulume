@@ -15,6 +15,7 @@ import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import { Thumbnail } from './PhotoView';
+import { gridTier } from './preview-url';
 import StorageWorkspace from './StorageWorkspace';
 import ImportWorkspace from './ImportWorkspace';
 import Viewer from './Viewer';
@@ -988,6 +989,7 @@ export default function ManagementApp() {
                             <div class="asset-card">
                               <Thumbnail
                                 asset={asset}
+                                tier={gridTier(thumbSize(), window.devicePixelRatio || 1)}
                                 selected={selectedId() === asset.id}
                                 onSelect={() => setSelectedId(asset.id)}
                                 onOpen={() => openAsset(asset)}

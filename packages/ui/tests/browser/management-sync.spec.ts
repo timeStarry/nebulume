@@ -1,10 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { servePreviewImages } from './fixtures';
 import type { Asset, AssetListOptions, CaptureIndexStatus } from '../../src/model';
 import { browserAssetList } from '../../src/workspace';
 
 type Call = { command: string; params: Record<string, unknown> };
-const image =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=';
 async function fixture(
   page: Page,
   count = 410,
@@ -22,6 +21,7 @@ async function fixture(
         contentType: 'application/javascript',
         body: `
       export const desktop = false;
+      export const schedulePreview = (operation) => operation();
       export async function execute(command, params={}) {
         const body = await (await fetch('/__sync_rpc', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command,params})})).json();
         if(body.error) throw body.error;
@@ -141,7 +141,7 @@ async function fixture(
         break;
       }
       case 'asset.preview':
-        result = { data_url: image, width: 100, height: 80, source: 'fixture' };
+        result = { tier: 'p2560' as const, width: 100, height: 80, source: 'fixture' };
         break;
       case 'asset.histogram':
         result = {
@@ -176,6 +176,8 @@ async function fixture(
           }),
         __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
         __TAURI_INTERNALS__: {
+          convertFileSrc: (p: string, s: string) =>
+            'http://' + s + '.localhost/' + encodeURIComponent(p),
           transformCallback: (callback: (event: unknown) => void) => {
             callbacks.set(++nextCallback, callback);
             return nextCallback;
@@ -208,12 +210,20 @@ async function fixture(
     },
     { listenerFailures },
   );
+  const images = await servePreviewImages(page);
   await page.goto('/');
   await page.getByRole('button', { name: '打开图片库 同步图库' }).click();
   await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(
     Math.min(count - (paired ? 1 : 0), 200),
   );
-  return { calls, assets, capture, failRead: () => failedReads++, failList: () => failedLists++ };
+  return {
+    calls,
+    images,
+    assets,
+    capture,
+    failRead: () => failedReads++,
+    failList: () => failedLists++,
+  };
 }
 async function emit(
   page: Page,
@@ -289,12 +299,13 @@ test('repeated blur/focus preserves all loaded pages, detail, selection, scroll 
 test('rating updates fields only; crop and refresh invalidate only the changed asset pixels', async ({
   page,
 }) => {
-  const { calls, assets } = await fixture(page, 8);
+  const { calls, images, assets } = await fixture(page, 8);
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await settle(page, calls);
   await rememberNodes(page);
   let before = calls.length;
+  let imagesBefore = images.length;
   assets[0].rating = 4;
   await emit(page, assets[0], 'rating');
   await expect(page.locator('.thumbnail.selected')).toHaveAttribute(
@@ -302,36 +313,34 @@ test('rating updates fields only; crop and refresh invalidate only the changed a
     'Photo-000.jpg，4 星',
   );
   expect(calls.slice(before)).toEqual([]);
+  expect(images.slice(imagesBefore)).toEqual([]);
   expect(await nodesUnchanged(page)).toBe(true);
   assets[0].crop = { x: 0, y: 0, width: 0.5, height: 1 };
   assets[0].preview_revision = 100;
   before = calls.length;
+  imagesBefore = images.length;
   await emit(page, assets[0], 'crop');
-  await expect
-    .poll(() => calls.slice(before).filter((c) => c.command === 'asset.preview').length)
-    .toBe(1);
+  await expect.poll(() => images.slice(imagesBefore).map((i) => i.revision)).toEqual(['100']);
   await expect
     .poll(() => calls.slice(before).filter((c) => c.command === 'asset.histogram').length)
     .toBe(1);
   expect(
-    calls
-      .slice(before)
-      .every(
-        (c) =>
-          ['asset.preview', 'asset.histogram'].includes(c.command) && c.params.id === 'photo-0',
-      ),
+    calls.slice(before).every((c) => c.command === 'asset.histogram' && c.params.id === 'photo-0'),
   ).toBe(true);
+  expect(images.slice(imagesBefore).every((i) => i.id === 'photo-0')).toBe(true);
   expect(await nodesUnchanged(page)).toBe(true);
   before = calls.length;
+  imagesBefore = images.length;
   assets[0].preview_revision = 200;
   await emit(page, assets[0], 'refresh');
-  await expect
-    .poll(() => calls.slice(before).filter((c) => c.command === 'asset.preview').length)
-    .toBe(1);
+  await expect.poll(() => images.slice(imagesBefore).map((i) => i.revision)).toEqual(['200']);
   await expect
     .poll(() => calls.slice(before).filter((c) => c.command === 'asset.histogram').length)
     .toBe(1);
-  expect(calls.slice(before).every((c) => c.params.id === 'photo-0')).toBe(true);
+  expect(
+    calls.slice(before).every((c) => c.command === 'asset.histogram' && c.params.id === 'photo-0'),
+  ).toBe(true);
+  expect(images.slice(imagesBefore).every((i) => i.id === 'photo-0')).toBe(true);
 });
 test('rating sort reconciles the loaded window in the background without remounting its thumbnails or detail', async ({
   page,
@@ -477,12 +486,14 @@ test('capture indexing starts explicitly, remains independent of navigation, and
   await expect(page.locator('.photo-grid .thumbnail img')).toHaveCount(8);
   await expect
     .poll(() =>
-      page.locator('.photo-grid .thumbnail img').evaluateAll((images) =>
-        images.every(
-          (image) =>
-            (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0,
+      page
+        .locator('.photo-grid .thumbnail img')
+        .evaluateAll((images) =>
+          images.every(
+            (image) =>
+              (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0,
+          ),
         ),
-      ),
     )
     .toBe(true);
   await settle(page, calls);
@@ -512,7 +523,9 @@ test('capture indexing starts explicitly, remains independent of navigation, and
   await settle(page, calls);
   expect(calls.slice(before).filter((call) => call.command === 'asset.list')).toHaveLength(1);
   expect(
-    calls.slice(before).filter((call) => ['asset.preview', 'asset.histogram'].includes(call.command)),
+    calls
+      .slice(before)
+      .filter((call) => ['asset.preview', 'asset.histogram'].includes(call.command)),
   ).toEqual([]);
   await expect(page.locator('.thumbnail.selected')).toHaveAttribute('aria-label', selected!);
   expect(await nodesUnchanged(page)).toBe(true);

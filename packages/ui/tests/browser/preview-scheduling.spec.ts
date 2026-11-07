@@ -1,37 +1,57 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { Asset } from '../../src/model';
+import { servePreviewImages, type ImageRequest } from './fixtures';
 type Call = { command: string; params: Record<string, unknown> };
-const image =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=';
-const asset = (id: string, remote = true): Asset => ({
+const asset = (id: string, remote = true, kind: Asset['kind'] = 'raster'): Asset => ({
   id,
   library_id: 'scheduling',
   filename: `${id}.jpg`,
   path: `/test/${id}.jpg`,
   source_key: remote ? `${id}.jpg` : null,
   extension: 'jpg',
-  kind: 'raster',
+  kind,
   size: 1000,
   modified_at: '',
   metadata: {},
   rating: 0,
   availability: remote ? 'remote' : 'available',
 });
-async function harness(page: Page, held: string[]) {
+async function harness(
+  page: Page,
+  held: string[],
+  options: { realObserver?: boolean; imageDelay?: number; failed?: string[] } = {},
+) {
   const calls: Call[] = [];
   const finished: string[] = [];
   const errors: string[] = [];
   const gates = new Map<string, () => void>();
+  const hold = (id: string) => new Promise<void>((resolve) => gates.set(id, resolve));
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('**/__preview_scheduler_rpc', async (route) => {
     const call = route.request().postDataJSON() as Call;
     calls.push(call);
     const id = String(call.params.id);
-    if (held.includes(id)) await new Promise<void>((resolve) => gates.set(id, resolve));
-    await route.fulfill({ json: { data_url: image, width: 1, height: 1, source: 'fixture' } });
+    if (held.includes(id)) await hold(id);
+    await route.fulfill({
+      json: { width: 1, height: 1, source: 'fixture', tier: call.params.tier },
+    });
     finished.push(id);
   });
-  await page.addInitScript(() => {
+  const images = await servePreviewImages(
+    page,
+    async ({ id, tier }) => {
+      // Viewer IPC is the held step for viewer images; thumbnails are held at the protocol.
+      if (tier !== 'p2560' && held.includes(id)) await hold(id);
+      if (options.failed?.includes(id))
+        return { status: 409, message: 'E_DOWNLOAD_REQUIRED: embedded preview exceeds budget' };
+      return { delay: options.imageDelay };
+    },
+    (id) => finished.push(id),
+  );
+  await page.addInitScript((realObserver) => {
+    if (realObserver) {
+      Object.assign(window, { previewVisibility() {} });
+    }
     const observers = new Map<Element, IntersectionObserverCallback>();
     class VisibilityObserver {
       constructor(private callback: IntersectionObserverCallback) {}
@@ -55,7 +75,7 @@ async function harness(page: Page, held: string[]) {
     }
     Object.assign(window, {
       isTauri: true,
-      IntersectionObserver: VisibilityObserver,
+      ...(realObserver ? {} : { IntersectionObserver: VisibilityObserver }),
       previewVisibility: (filename: string, visible: boolean) => {
         for (const [target, callback] of observers)
           if ((target as HTMLElement).title === filename)
@@ -65,6 +85,8 @@ async function harness(page: Page, held: string[]) {
             );
       },
       __TAURI_INTERNALS__: {
+        convertFileSrc: (p: string, s: string) =>
+          'http://' + s + '.localhost/' + encodeURIComponent(p),
         transformCallback: () => 1,
         unregisterCallback() {},
         metadata: { currentWindow: { label: 'scheduler' }, currentWebview: { label: 'scheduler' } },
@@ -80,11 +102,12 @@ async function harness(page: Page, held: string[]) {
         },
       },
     });
-  });
+  }, !!options.realObserver);
   await page.goto('/tests/browser/preview-harness.html');
   await page.waitForFunction(() => !!window.previewHarness);
   return {
     calls,
+    images,
     finished,
     errors,
     release: (id: string) => {
@@ -97,10 +120,12 @@ async function harness(page: Page, held: string[]) {
     },
   };
 }
-const previews = (calls: Call[], size: number) =>
+const viewerCalls = (calls: Call[]) =>
   calls
-    .filter((call) => call.command === 'asset.preview' && call.params.max_size === size)
+    .filter((call) => call.command === 'asset.preview' && call.params.tier === 'p2560')
     .map((call) => String(call.params.id));
+const thumbs = (images: ImageRequest[]) =>
+  images.filter((image) => image.tier === 't512').map((image) => image.id);
 
 test('four slow remote thumbnails cannot block local viewer or thumbnails and switching cancels queued work', async ({
   page,
@@ -111,7 +136,7 @@ test('four slow remote thumbnails cannot block local viewer or thumbnails and sw
       (assets) => window.previewHarness.thumbnails(assets),
       Array.from({ length: 8 }, (_, i) => asset(`remote-${i}`)),
     );
-    await expect.poll(() => previews(fixture.calls, 420).length).toBe(4);
+    await expect.poll(() => thumbs(fixture.images).length).toBe(4);
     await page.evaluate(
       (photo) => window.previewHarness.photo(photo),
       asset('local-viewer', false),
@@ -124,12 +149,12 @@ test('four slow remote thumbnails cannot block local viewer or thumbnails and sw
     await expect(
       page.getByRole('button', { name: 'local-thumb.jpg，0 星' }).locator('img'),
     ).toBeVisible();
-    expect(previews(fixture.calls, 2400)).toEqual(['local-viewer']);
+    expect(viewerCalls(fixture.calls)).toEqual(['local-viewer']);
     fixture.releaseAll();
     await expect
       .poll(() => fixture.finished.filter((id) => id.startsWith('remote-')).length)
       .toBe(4);
-    expect(previews(fixture.calls, 420).filter((id) => id.startsWith('remote-'))).toHaveLength(4);
+    expect(thumbs(fixture.images).filter((id) => id.startsWith('remote-'))).toHaveLength(4);
     expect(fixture.errors).toEqual([]);
   } finally {
     fixture.releaseAll();
@@ -144,14 +169,14 @@ test('current remote viewer bypasses the thumbnail backlog, offscreen queued wor
       (assets) => window.previewHarness.thumbnails(assets),
       Array.from({ length: 8 }, (_, i) => asset(`remote-${i}`)),
     );
-    await expect.poll(() => previews(fixture.calls, 420).length).toBe(4);
+    await expect.poll(() => thumbs(fixture.images).length).toBe(4);
     await page.evaluate(() => window.previewVisibility('remote-4.jpg', false));
     await page.evaluate((photo) => window.previewHarness.photo(photo), asset('current-remote'));
     await expect(page.locator('.main-photo')).toHaveAttribute('alt', 'current-remote.jpg');
-    expect(previews(fixture.calls, 420)).toHaveLength(4);
+    expect(thumbs(fixture.images)).toHaveLength(4);
     fixture.release('remote-0');
-    await expect.poll(() => previews(fixture.calls, 420)).toContain('remote-7');
-    expect(previews(fixture.calls, 420)).not.toContain('remote-4');
+    await expect.poll(() => thumbs(fixture.images)).toContain('remote-7');
+    expect(thumbs(fixture.images)).not.toContain('remote-4');
     const loaded = page.getByRole('button', { name: 'remote-0.jpg，0 星' }).locator('img');
     await expect(loaded).toBeVisible();
     await page.evaluate(() => {
@@ -159,7 +184,7 @@ test('current remote viewer bypasses the thumbnail backlog, offscreen queued wor
       window.previewVisibility('remote-0.jpg', true);
     });
     await expect(loaded).toBeVisible();
-    expect(previews(fixture.calls, 420).filter((id) => id === 'remote-0')).toHaveLength(1);
+    expect(thumbs(fixture.images).filter((id) => id === 'remote-0')).toHaveLength(1);
     expect(fixture.errors).toEqual([]);
   } finally {
     fixture.releaseAll();
@@ -171,17 +196,51 @@ test('rapid viewer changes cancel an old queued current image without pretending
   const fixture = await harness(page, ['active-a', 'active-b']);
   try {
     await page.evaluate((photo) => window.previewHarness.photo(photo), asset('active-a'));
-    await expect.poll(() => previews(fixture.calls, 2400)).toEqual(['active-a']);
+    await expect.poll(() => viewerCalls(fixture.calls)).toEqual(['active-a']);
     await page.evaluate((photo) => window.previewHarness.photo(photo), asset('active-b'));
-    await expect.poll(() => previews(fixture.calls, 2400)).toEqual(['active-a', 'active-b']);
+    await expect.poll(() => viewerCalls(fixture.calls)).toEqual(['active-a', 'active-b']);
     await page.evaluate((photo) => window.previewHarness.photo(photo), asset('cancelled-c'));
     await page.evaluate((photo) => window.previewHarness.photo(photo), asset('current-d'));
-    expect(previews(fixture.calls, 2400)).toEqual(['active-a', 'active-b']);
+    expect(viewerCalls(fixture.calls)).toEqual(['active-a', 'active-b']);
     fixture.release('active-a');
     await expect(page.locator('.main-photo')).toHaveAttribute('alt', 'current-d.jpg');
-    expect(previews(fixture.calls, 2400)).toEqual(['active-a', 'active-b', 'current-d']);
+    expect(viewerCalls(fixture.calls)).toEqual(['active-a', 'active-b', 'current-d']);
     expect(fixture.errors).toEqual([]);
   } finally {
     fixture.releaseAll();
   }
+});
+test('scrolling away drops queued thumbnail loads so the newest cells get the lanes', async ({
+  page,
+}) => {
+  const fixture = await harness(page, [], { realObserver: true, imageDelay: 400 });
+  const assets = Array.from({ length: 600 }, (_, i) => asset(`cell-${i}`, i % 2 === 0));
+  await page.evaluate((items) => window.previewHarness.thumbnails(items), assets);
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  const last = page.getByRole('button', { name: 'cell-599.jpg，0 星' }).locator('img');
+  await expect(last).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'cell-596.jpg，0 星' }).locator('img'),
+  ).toBeVisible();
+  const firstScreen = new Set(assets.slice(0, 40).map((item) => item.id));
+  const started = new Set(
+    fixture.images.map((image) => image.id).filter((id) => firstScreen.has(id)),
+  );
+  expect(started.size).toBeLessThanOrEqual(8);
+  expect(fixture.images.every((image) => image.tier === 't512')).toBe(true);
+  expect(fixture.calls.filter((call) => call.command === 'asset.preview')).toEqual([]);
+  expect(fixture.errors).toEqual([]);
+});
+test('failed thumbnail shows fallback tile instead of a broken image', async ({ page }) => {
+  const fixture = await harness(page, [], { failed: ['broken-raw'] });
+  await page.evaluate(
+    (items) => window.previewHarness.thumbnails(items),
+    [asset('broken-raw', true, 'raw'), asset('fine', true)],
+  );
+  await expect(page.getByRole('button', { name: 'fine.jpg，0 星' }).locator('img')).toBeVisible();
+  await expect.poll(() => fixture.images.map((image) => image.id)).toContain('broken-raw');
+  const broken = page.getByRole('button', { name: 'broken-raw.jpg，0 星' });
+  await expect(broken.locator('.thumbnail-fallback')).toHaveText('RAW');
+  await expect(broken.locator('img')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
 });

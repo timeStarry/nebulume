@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { servePreviewImages } from './fixtures';
 import type { Asset, Library, StorageConfig } from '../../src/model';
 
 type Call = { command: string; params: Record<string, unknown> };
@@ -47,8 +48,6 @@ const photo: Asset = {
   availability: 'available',
   modified_at: '2026-10-01T10:00:00Z',
 };
-const image =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=';
 
 async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<unknown>) {
   const calls: Call[] = [];
@@ -96,7 +95,7 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
             };
             break;
           case 'asset.preview':
-            result = { data_url: image, width: 1, height: 1, source: 'test fixture' };
+            result = { tier: 'p2560' as const, width: 1, height: 1, source: 'test fixture' };
             break;
           case 'asset.histogram':
             result = {
@@ -161,6 +160,8 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
     Object.assign(window, {
       isTauri: true,
       __TAURI_INTERNALS__: {
+        convertFileSrc: (p: string, s: string) =>
+          'http://' + s + '.localhost/' + encodeURIComponent(p),
         transformCallback: () => 1,
         unregisterCallback: () => {},
         metadata: {
@@ -185,6 +186,7 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
       },
     });
   });
+  await servePreviewImages(page);
   await page.goto('/');
   return calls;
 }
@@ -416,7 +418,7 @@ test('embedded RAW preview is labeled and raw EXIF is disclosed without duplicat
         },
       };
     if (call.command === 'asset.preview')
-      return { data_url: image, width: 1, height: 1, source: 'embedded_jpeg' };
+      return { tier: 'p2560' as const, width: 1, height: 1, source: 'embedded_jpeg' };
     if (call.command === 'asset.histogram')
       return {
         red: Array(256).fill(1),
@@ -427,6 +429,7 @@ test('embedded RAW preview is labeled and raw EXIF is disclosed without duplicat
         source: 'embedded_jpeg',
       };
   });
+  await servePreviewImages(page);
   await page.goto('/?viewer=1');
   await expect(page.locator('.main-photo')).toBeVisible();
   await expect(page.locator('.preview-source')).toHaveCount(0);
@@ -488,6 +491,7 @@ test('library management is the default, metadata is on demand and native viewin
   await expect(page.locator('.immersive-viewer')).not.toBeVisible();
   await page.locator('.breadcrumb-button').click();
   await expect(page.getByRole('region', { name: '图片库管理' })).toBeVisible();
+  await servePreviewImages(page);
   await page.goto('/?viewer=1');
   await expect(page.locator('.main-photo')).toBeVisible();
   await expect(page.locator('.manager-navigation')).not.toBeVisible();
@@ -838,6 +842,7 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
     if (call.command === 'asset.refresh')
       return { ...photo, rating: 4, metadata: { Camera: 'Refreshed camera metadata' } };
   });
+  await servePreviewImages(page);
   await page.goto('/?viewer=1');
   await expect(page.locator('.main-photo')).toBeVisible();
   await page.keyboard.press('i');
@@ -872,4 +877,25 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
     )
     .toEqual(['Mountain.png — Nebulume', 'Second.png — Nebulume']);
   await expect(page).toHaveTitle('Second.png — Nebulume');
+});
+test.describe('high-DPI grid', () => {
+  test.use({ deviceScaleFactor: 2 });
+  test('grid requests tier from slider and dpr', async ({ page }) => {
+    const requested: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().startsWith('http://neb.localhost/')) requested.push(request.url());
+    });
+    await page.addInitScript(() => localStorage.setItem('nebulume.thumbnail-size', '320'));
+    const calls = await fixture(page);
+    await page.getByRole('button', { name: /打开图片库 本地摄影/ }).click();
+    await expect(page.locator('.photo-grid .thumbnail img')).toHaveCount(1);
+    expect(requested.length).toBeGreaterThan(0);
+    expect(requested.every((url) => url.includes('%2Ft1024%2F'))).toBe(true);
+    const before = requested.length;
+    await page.getByLabel('缩略图大小').fill('150');
+    await expect.poll(() => requested.slice(before).length).toBeGreaterThan(0);
+    expect(requested.slice(before).every((url) => url.includes('%2Ft512%2F'))).toBe(true);
+    await expect(page.locator('.photo-grid .thumbnail img')).toHaveAttribute('src', /t512/);
+    expect(calls.filter((call) => call.command === 'asset.preview')).toEqual([]);
+  });
 });

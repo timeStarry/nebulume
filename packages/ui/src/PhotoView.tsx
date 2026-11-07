@@ -8,8 +8,9 @@ import {
   onMount,
   Show,
 } from 'solid-js';
-import { execute } from './api';
+import { execute, schedulePreview } from './api';
 import { isQueueAbort } from './concurrency';
+import { loadImage, previewUrl, type PreviewTier } from './preview-url';
 import {
   cropFromPoints,
   errorMessage,
@@ -21,8 +22,32 @@ import {
 } from './model';
 import Icon from './Icon';
 
+const visibilityTargets = new Map<Element, (visible: boolean) => void>();
+let visibilityObserver: IntersectionObserver | undefined;
+/**
+ * One observer for every grid cell: all entries of a scroll arrive in a single callback, so
+ * every cell that left the viewport cancels its queued or in-flight load before a freed lane
+ * slot can be handed to another stale cell.
+ */
+function observeVisibility(element: Element, onChange: (visible: boolean) => void) {
+  visibilityObserver ??= new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) visibilityTargets.get(entry.target)?.(entry.isIntersecting);
+    },
+    { rootMargin: '200px' },
+  );
+  const observer = visibilityObserver;
+  visibilityTargets.set(element, onChange);
+  observer.observe(element);
+  return () => {
+    visibilityTargets.delete(element);
+    observer.unobserve(element);
+  };
+}
+
 export function Thumbnail(props: {
   asset: Asset;
+  tier: PreviewTier;
   selected?: boolean;
   compact?: boolean;
   onSelect: () => void;
@@ -30,7 +55,7 @@ export function Thumbnail(props: {
 }) {
   let element!: HTMLButtonElement;
   const [visible, setVisible] = createSignal(false);
-  const [preview, setPreview] = createSignal<Preview | null>(null);
+  const [preview, setPreview] = createSignal<string | null>(null);
   const [previewLoading, setPreviewLoading] = createSignal(false);
   let loadedKey = '';
   let displayedKey = '';
@@ -38,9 +63,11 @@ export function Thumbnail(props: {
   let pending: { key: string; controller: AbortController } | undefined;
   function syncPreview() {
     if (disposed) return;
-    const key = imageRequestKey(props.asset);
-    if (displayedKey !== key) {
-      displayedKey = key;
+    const assetKey = imageRequestKey(props.asset);
+    // A tier change keeps the current image on screen until the sharper one has decoded.
+    const key = `${assetKey}:${props.tier}`;
+    if (displayedKey !== assetKey) {
+      displayedKey = assetKey;
       loadedKey = '';
       setPreview(null);
     }
@@ -54,19 +81,24 @@ export function Thumbnail(props: {
     pending = current;
     setPreviewLoading(true);
     let cancelled = false;
-    void execute<Preview>(
-      'asset.preview',
-      { id: props.asset.id, max_size: 420 },
+    const asset = props.asset;
+    const tier = props.tier;
+    void schedulePreview(
+      async () => {
+        const url = await previewUrl(asset, tier);
+        await loadImage(url, current.controller.signal);
+        return url;
+      },
       {
         source: props.asset.source_key ? 'remote' : 'local',
         priority: 'thumbnail',
         signal: current.controller.signal,
       },
     )
-      .then((result) => {
-        if (!disposed && imageRequestKey(props.asset) === key) {
+      .then((url) => {
+        if (!disposed && `${imageRequestKey(props.asset)}:${props.tier}` === key) {
           loadedKey = key;
-          setPreview(result);
+          setPreview(url);
         }
       })
       .catch((error) => {
@@ -86,14 +118,7 @@ export function Thumbnail(props: {
     pending?.controller.abort();
   });
   onMount(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) if (entry.target === element) setVisible(entry.isIntersecting);
-      },
-      { rootMargin: '200px' },
-    );
-    observer.observe(element);
-    onCleanup(() => observer.disconnect());
+    onCleanup(observeVisibility(element, setVisible));
   });
   return (
     <button
@@ -124,7 +149,7 @@ export function Thumbnail(props: {
             </div>
           }
         >
-          {(p) => <img src={p().data_url} alt="" loading="lazy" />}
+          {(url) => <img src={url()} alt="" />}
         </Show>
         <span class="filetype">{props.asset.extension.toUpperCase()}</span>
         <Show when={props.asset.crop}>
@@ -180,24 +205,34 @@ export default function PhotoView(props: {
   const [preview, { refetch }] = createResource(
     () => imageRequestKey(props.asset, props.cropMode),
     async (key) => {
-      const { id, uncropped } = JSON.parse(key);
+      const { id, uncropped, revision } = JSON.parse(key) as {
+        id: string;
+        uncropped: boolean;
+        revision: number;
+      };
       previewController?.abort();
-      previewController = new AbortController();
+      const controller = (previewController = new AbortController());
+      const lane = {
+        source: props.asset.source_key ? ('remote' as const) : ('local' as const),
+        priority: 'viewer' as const,
+        signal: controller.signal,
+      };
       try {
-        return {
-          data: await execute<Preview>(
-            'asset.preview',
-            { id, max_size: 2400, uncropped },
-            {
-              source: props.asset.source_key ? 'remote' : 'local',
-              priority: 'viewer',
-              signal: previewController.signal,
-            },
-          ),
-          error: '',
-        };
+        // IPC carries metadata and errors (E_DOWNLOAD_REQUIRED); pixels come from the protocol.
+        const data = await execute<Preview>(
+          'asset.preview',
+          { id, tier: 'p2560', uncropped },
+          lane,
+        );
+        const url = await previewUrl(
+          { id, preview_revision: revision },
+          data.tier || 'p2560',
+          uncropped,
+        );
+        await schedulePreview(() => loadImage(url, controller.signal), lane);
+        return { data, url, error: '' };
       } catch (error) {
-        return { data: null, error: isQueueAbort(error) ? '' : errorMessage(error) };
+        return { data: null, url: '', error: isQueueAbort(error) ? '' : errorMessage(error) };
       }
     },
   );
@@ -336,7 +371,7 @@ export default function PhotoView(props: {
               >
                 <img
                   class="main-photo"
-                  src={data().data_url}
+                  src={preview()?.url}
                   alt={props.asset.filename}
                   draggable={false}
                 />
@@ -417,7 +452,7 @@ export default function PhotoView(props: {
             适合窗口
           </button>
           <button
-            title="预览像素 1:1（大图预览最长边 2400 px）"
+            title="预览像素 1:1（大图预览最长边 2560 px）"
             onClick={() => {
               setZoom(1 / fitScale());
               setPan({ x: 0, y: 0 });
