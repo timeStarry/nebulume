@@ -24,6 +24,8 @@ import BrandMark from './BrandMark';
 import ThemeControl from './ThemeControl';
 import CacheSettings from './CacheSettings';
 import CaptureIndexControl from './CaptureIndexControl';
+import { AboutPanel, UpdatePrompt } from './UpdatePanel';
+import { updates } from './updates';
 import {
   errorMessage,
   isTextEntry,
@@ -551,6 +553,7 @@ export default function ManagementApp() {
     void drainAssetUpdates();
   }
   onMount(() => {
+    void updates.start();
     const navigationMedia = window.matchMedia('(max-width: 959px)');
     const updateNavigationMode = () => {
       setCompactNavigation(navigationMedia.matches);
@@ -659,6 +662,7 @@ export default function ManagementApp() {
         </For>
       </nav>
       <main class="manager-workspace" aria-label="影像管理工作区">
+        <UpdatePrompt />
         <Show when={syncError()}>
           <div class="workspace-message error app-message" role="alert">
             <span>{syncError()}</span>
@@ -1289,14 +1293,7 @@ function Settings(props: {
           <kbd>Ctrl / ⌘ F</kbd>
         </div>
       </section>
-      <section class="settings-panel">
-        <h2>运行环境</h2>
-        <p>Nebulume 0.1 Alpha · {desktop ? '桌面应用' : '浏览器演示'}</p>
-        <details>
-          <summary>运行时能力与限制</summary>
-          <pre>{JSON.stringify(props.system || { status: '运行信息暂不可用' }, null, 2)}</pre>
-        </details>
-      </section>
+      <AboutPanel system={props.system} />
     </section>
   );
 }

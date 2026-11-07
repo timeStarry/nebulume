@@ -123,6 +123,9 @@ async function openInspector(
       case 'plugin:window|set_title':
         result = null;
         break;
+      case 'update_support':
+        result = { supported: false, kind: 'development' };
+        break;
       default:
         throw new Error(`Unexpected inspector fixture command: ${command}`);
     }

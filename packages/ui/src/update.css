@@ -1,0 +1,53 @@
+.update-row {
+  align-items: flex-start;
+}
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nl-space-3);
+}
+.update-note {
+  color: var(--nl-text-secondary);
+  font-size: var(--nl-text-sm);
+}
+.update-note.error {
+  color: var(--nl-danger);
+}
+.update-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-space-2);
+  font-size: var(--nl-text-sm);
+  white-space: nowrap;
+}
+.update-prompt {
+  flex-shrink: 0;
+  display: grid;
+  gap: var(--nl-space-3);
+  padding: var(--nl-space-4) var(--nl-space-5);
+  border-bottom: 1px solid var(--nl-border);
+  background: var(--nl-surface);
+}
+.update-prompt > h2 {
+  font-size: var(--nl-text-base);
+  font-weight: var(--nl-weight-medium);
+}
+.update-notes {
+  max-height: calc(12 * var(--nl-line-height-body) * 1em);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: var(--nl-text-sm);
+  line-height: var(--nl-line-height-body);
+  color: var(--nl-text-secondary);
+}
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-space-3);
+  font-size: var(--nl-text-sm);
+}
+.update-progress progress {
+  inline-size: 240px;
+  max-inline-size: 100%;
+}
