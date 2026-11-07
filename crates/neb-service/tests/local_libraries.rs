@@ -29,12 +29,20 @@ fn local_directory_creates_library_without_storage_registration_and_survives_res
         .execute("asset.list", json!({"library_id":library["id"]}))
         .unwrap()["items"][0]
         .clone();
-    assert!(svc
+    let preview = svc
         .execute("asset.preview", json!({"id":asset["id"],"max_size":32}))
-        .unwrap()["data_url"]
-        .as_str()
+        .unwrap();
+    assert_eq!(preview["tier"], "t256");
+    assert!(preview.get("data_url").is_none());
+    assert!(svc
+        .preview_image(
+            asset["id"].as_str().unwrap(),
+            neb_core::PreviewTier::T256,
+            false
+        )
         .unwrap()
-        .starts_with("data:image/"));
+        .jpeg
+        .starts_with(&[0xFF, 0xD8]));
     drop(svc);
     let svc = Service::open(data.path()).unwrap();
     let reopened = svc.execute("library.list", json!({})).unwrap();

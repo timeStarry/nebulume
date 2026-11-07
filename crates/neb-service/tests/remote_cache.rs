@@ -1,3 +1,4 @@
+use neb_core::PreviewTier;
 use neb_service::Service;
 use serde_json::{json, Value};
 use std::{
@@ -234,6 +235,13 @@ fn preview(service: &Service, id: &Value) -> Value {
         .execute("asset.preview", json!({"id":id,"max_size":420}))
         .unwrap()
 }
+fn jpeg(service: &Service, id: &Value) -> Vec<u8> {
+    let image = service
+        .preview_image(id.as_str().unwrap(), PreviewTier::T512, false)
+        .unwrap();
+    assert!(image.jpeg.starts_with(&[0xFF, 0xD8]));
+    image.jpeg.clone()
+}
 fn stats(service: &Service) -> Value {
     service.execute("cache.stats", json!({})).unwrap()
 }
@@ -318,27 +326,22 @@ fn allowed_preview_persists_and_restarts_offline_without_saved_credentials() {
     let service = Service::open(data.path()).unwrap();
     let (_library, asset) = remote_library(&service, &server);
     let first = preview(&service, &asset["id"]);
-    assert!(first["data_url"]
-        .as_str()
-        .unwrap()
-        .starts_with("data:image/jpeg;base64,"));
+    assert!(first.get("data_url").is_none());
+    assert_eq!(first["tier"], "t512");
+    let first_jpeg = jpeg(&service, &asset["id"]);
     assert_eq!(first["width"], 2);
     assert_eq!(first["height"], 1);
     assert_eq!(server.full_gets(), 1);
     assert!(stats(&service)["usage"]["previews_bytes"].as_u64().unwrap() > 0);
     let count = server.count();
-    assert_eq!(
-        preview(&service, &asset["id"])["data_url"],
-        first["data_url"]
-    );
+    assert_eq!(preview(&service, &asset["id"])["width"], first["width"]);
+    assert_eq!(jpeg(&service, &asset["id"]), first_jpeg);
     assert_eq!(server.count(), count);
     drop(service);
     server.offline.store(true, Ordering::SeqCst);
     let reopened = Service::open(data.path()).unwrap();
-    assert_eq!(
-        preview(&reopened, &asset["id"])["data_url"],
-        first["data_url"]
-    );
+    assert_eq!(preview(&reopened, &asset["id"])["width"], first["width"]);
+    assert_eq!(jpeg(&reopened, &asset["id"]), first_jpeg);
     assert_eq!(server.count(), count);
     assert_eq!(
         reopened
@@ -479,7 +482,8 @@ fn concurrent_same_asset_previews_share_the_original_and_persisted_result() {
             let id = asset["id"].clone();
             thread::spawn(move || {
                 barrier.wait();
-                preview(&service, &id)["data_url"].clone()
+                assert_eq!(preview(&service, &id)["width"], 2);
+                jpeg(&service, &id)
             })
         })
         .collect();
@@ -521,7 +525,12 @@ fn pinned_snapshot_survives_remote_changes_until_explicit_refresh() {
     let server = Server::new();
     let service = Service::open(data.path()).unwrap();
     let (library, asset) = remote_library(&service, &server);
-    let first = preview(&service, &asset["id"]);
+    preview(&service, &asset["id"]);
+    let first_jpeg = service
+        .preview_image(asset["id"].as_str().unwrap(), PreviewTier::T512, true)
+        .unwrap()
+        .jpeg
+        .clone();
     service
         .execute("asset.offline.set", json!({"id":asset["id"],"pinned":true}))
         .unwrap();
@@ -547,7 +556,14 @@ fn pinned_snapshot_survives_remote_changes_until_explicit_refresh() {
         .unwrap();
     assert_eq!(snapshot["width"], 2);
     assert_eq!(snapshot["height"], 1);
-    assert_eq!(snapshot["data_url"], first["data_url"]);
+    assert!(snapshot.get("data_url").is_none());
+    assert_eq!(
+        service
+            .preview_image(asset["id"].as_str().unwrap(), PreviewTier::T512, true)
+            .unwrap()
+            .jpeg,
+        first_jpeg
+    );
     assert_eq!(snapshot["asset"]["size"], PHOTO.len());
     assert_eq!(snapshot["asset"]["cache_update_available"], true);
     assert_eq!(snapshot["asset"]["rating"], 4);
@@ -817,26 +833,7 @@ fn synthetic_preview_jpeg() -> Vec<u8> {
     let local = fixture_service
         .execute("file.open", json!({"path":local_file}))
         .unwrap();
-    let encoded = preview(&fixture_service, &local["id"]);
-    let encoded = encoded["data_url"]
-        .as_str()
-        .unwrap()
-        .split_once(',')
-        .unwrap()
-        .1;
-    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut jpeg = Vec::new();
-    let (mut accumulator, mut bits) = (0_u32, 0_u32);
-    for byte in encoded.bytes().take_while(|byte| *byte != b'=') {
-        accumulator =
-            (accumulator << 6) | alphabet.iter().position(|item| *item == byte).unwrap() as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            jpeg.push((accumulator >> bits) as u8);
-        }
-    }
-    jpeg
+    jpeg(&fixture_service, &local["id"])
 }
 
 #[test]
@@ -937,6 +934,8 @@ fn large_remote_raw_keeps_small_range_preview_and_far_exif_without_downloading_o
     let (_library, asset) = remote_library(&service, &server);
     let rendered = preview(&service, &asset["id"]);
     assert_eq!(rendered["source"], "remote_embedded_jpeg");
+    assert!(rendered.get("data_url").is_none());
+    assert_eq!(rendered["tier"], "t512");
     assert_eq!(
         (rendered["width"].as_u64(), rendered["height"].as_u64()),
         (Some(1), Some(2))
@@ -988,6 +987,13 @@ fn genuine_range_budget_exhaustion_requires_explicit_original_download() {
     assert_eq!(error.code, "E_DOWNLOAD_REQUIRED");
     assert!(error.message.contains("超出分段读取上限"));
     assert!(!error.message.contains("E_RANGE_LIMIT"));
+    let binary = service
+        .preview_image(asset["id"].as_str().unwrap(), PreviewTier::T256, false)
+        .unwrap_err();
+    assert_eq!(binary.code, "E_DOWNLOAD_REQUIRED");
+    assert!(service
+        .preview_etag(asset["id"].as_str().unwrap(), PreviewTier::T256, false)
+        .is_ok());
     assert_eq!(
         server.full_gets(),
         0,

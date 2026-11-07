@@ -213,10 +213,16 @@ fn webdav_library_roundtrip(
     let preview = svc
         .execute("asset.preview", json!({"id":asset["id"],"max_size":32}))
         .unwrap();
-    assert!(preview["data_url"]
-        .as_str()
+    assert!(preview.get("data_url").is_none());
+    assert!(svc
+        .preview_image(
+            asset["id"].as_str().unwrap(),
+            neb_core::PreviewTier::T256,
+            false
+        )
         .unwrap()
-        .starts_with("data:image/"));
+        .jpeg
+        .starts_with(&[0xFF, 0xD8]));
     assert_eq!(
         svc.execute("asset.get", json!({"id":asset["id"]})).unwrap()["rating"],
         3

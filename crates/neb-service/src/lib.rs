@@ -1,6 +1,6 @@
 //! Shared application commands for the native desktop and headless CLI.
 use anyhow::{anyhow, ensure, Context, Result};
-use neb_core::{CacheManager, Core, Library};
+use neb_core::{CacheManager, Core, Library, PreviewImage, PreviewMemory, PreviewTier};
 use neb_ingest::IngestService;
 use neb_storage::{AddStorageRequest, StorageConfig, StorageRegistry};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,9 @@ use std::{
 
 mod capture_index;
 mod remote_cache;
+
+const PREVIEW_MEMORY_ENTRIES: usize = 256;
+const PREVIEW_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 
 type AssetOperations = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 
@@ -86,6 +89,8 @@ pub struct Service {
     asset_operations: AssetOperations,
     downloads: (Mutex<usize>, Condvar),
     preview_writes: Arc<AtomicUsize>,
+    // Rendered tiers keyed by their `preview-v2:` cache key, local and remote.
+    previews: PreviewMemory,
     data_dir: PathBuf,
     catalog_operations: RwLock<()>,
     capture_index: capture_index::CaptureIndexController,
@@ -142,6 +147,7 @@ impl Service {
             asset_operations: Arc::new(Mutex::new(HashMap::new())),
             downloads: (Mutex::new(0), Condvar::new()),
             preview_writes: Arc::new(AtomicUsize::new(0)),
+            previews: PreviewMemory::new(PREVIEW_MEMORY_ENTRIES, PREVIEW_MEMORY_BYTES),
             data_dir: data_dir.to_path_buf(),
             catalog_operations: RwLock::new(()),
             capture_index: capture_index::CaptureIndexController::default(),
@@ -230,6 +236,46 @@ impl Service {
             None
         };
         self.dispatch(command, params).map_err(Into::into)
+    }
+
+    /// JPEG bytes of one preview tier, through the same locks and cache path
+    /// as `asset.preview`.
+    pub fn preview_image(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+    ) -> Result<Arc<PreviewImage>, CommandError> {
+        self.preview_entry(id, || {
+            self.render_preview(&self.preview_asset(id)?, tier, uncropped)
+        })
+    }
+
+    /// Quoted lowercase hex SHA-256 of the `preview-v2:` cache key. Never
+    /// decodes pixels or contacts remote storage.
+    pub fn preview_etag(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+    ) -> Result<String, CommandError> {
+        // No local re-inspection: the key's file stamp already tracks changes.
+        self.preview_entry(id, || {
+            self.preview_etag_for(&self.core.asset(id)?, tier, uncropped)
+        })
+    }
+
+    fn preview_entry<T>(
+        &self,
+        id: &str,
+        operation: impl FnOnce() -> Result<T>,
+    ) -> Result<T, CommandError> {
+        (|| {
+            let asset = self.core.asset(id)?;
+            let _library = process_library_lock(&self.data_dir, &asset.library_id, false)?;
+            self.with_asset_operation(id, operation)
+        })()
+        .map_err(Into::into)
     }
 
     fn source(&self, id: &str) -> Result<StorageConfig> {

@@ -2753,7 +2753,6 @@ name = "neb-service"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "chrono",
  "hex",
  "neb-core",
