@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { TIER_PIXELS, gridTier, previewTier, previewUrl } from '../src/preview-url';
+import {
+  TIER_PIXELS,
+  gridTier,
+  previewTier,
+  previewUrl,
+  watchDevicePixelRatio,
+} from '../src/preview-url';
 
 const runtime = globalThis as unknown as Record<string, unknown>;
 
@@ -37,5 +43,34 @@ describe('previewUrl', () => {
     expect(previewUrl({ id: 'a1' }, 'p2560', true)).toBe(
       'neb://localhost/' + encodeURIComponent('a1/p2560/1/0'),
     );
+  });
+});
+
+describe('watchDevicePixelRatio', () => {
+  it('reports ratio changes and re-registers a query for the new ratio', () => {
+    const queries: Array<{ media: string; listeners: Set<() => void> }> = [];
+    const win = {
+      devicePixelRatio: 1,
+      matchMedia(media: string) {
+        const query = { media, listeners: new Set<() => void>() };
+        queries.push(query);
+        return {
+          addEventListener: (_: string, listener: () => void) => query.listeners.add(listener),
+          removeEventListener: (_: string, listener: () => void) =>
+            query.listeners.delete(listener),
+        } as unknown as MediaQueryList;
+      },
+    };
+    const seen: number[] = [];
+    const stop = watchDevicePixelRatio((ratio) => seen.push(ratio), win);
+    expect(queries.map((query) => query.media)).toEqual(['(resolution: 1dppx)']);
+    win.devicePixelRatio = 2;
+    [...queries[0].listeners].forEach((listener) => listener());
+    expect(seen).toEqual([2]);
+    expect(queries[0].listeners.size).toBe(0);
+    expect(queries[1].media).toBe('(resolution: 2dppx)');
+    expect(queries[1].listeners.size).toBe(1);
+    stop();
+    expect(queries[1].listeners.size).toBe(0);
   });
 });

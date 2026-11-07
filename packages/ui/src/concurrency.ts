@@ -1,5 +1,10 @@
 export interface QueueOptions {
   signal?: AbortSignal;
+  /**
+   * After dispatch, an abort rejects the caller at once while the operation keeps its slot
+   * until it settles. For image loads whose backend work cannot be interrupted.
+   */
+  rejectInFlightOnAbort?: boolean;
 }
 export interface PreviewRequestOptions extends QueueOptions {
   source?: 'local' | 'remote';
@@ -13,8 +18,8 @@ export function abortError(message = 'Preview request cancelled before dispatch'
   error.name = 'AbortError';
   return error;
 }
-// Cancellation removes only waiting work. Once started, an IPC operation owns its
-// slot until it settles; AbortSignal cannot interrupt an already issued Tauri call.
+// Cancellation removes only waiting work. Once started, an operation owns its slot until it
+// settles; AbortSignal cannot interrupt an already issued Tauri call or protocol render.
 export function createConcurrencyLimit(limit: number) {
   if (!Number.isInteger(limit) || limit < 1) throw new Error('Concurrency limit must be positive');
   let active = 0;
@@ -48,19 +53,26 @@ export function createConcurrencyLimit(limit: number) {
         pending = false;
         signal?.removeEventListener('abort', cancel);
         active++;
+        const detach = () => reject(abortError('Preview request cancelled in flight'));
+        if (options.rejectInFlightOnAbort)
+          signal?.addEventListener('abort', detach, { once: true });
+        const settle = () => {
+          signal?.removeEventListener('abort', detach);
+          release();
+        };
         try {
           Promise.resolve(operation()).then(
             (value) => {
-              release();
+              settle();
               resolve(value);
             },
             (error) => {
-              release();
+              settle();
               reject(error);
             },
           );
         } catch (error) {
-          release();
+          settle();
           reject(error);
         }
       }
@@ -75,6 +87,16 @@ export function createConcurrencyLimit(limit: number) {
       }
     });
   };
+}
+/** Rejects as soon as `signal` aborts; otherwise mirrors `promise`. */
+export function untilAborted<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortError('Preview request cancelled in flight'));
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(abortError('Preview request cancelled in flight'));
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
 }
 export function createPreviewScheduler(limits: { thumbnail?: number; viewer?: number } = {}) {
   const channels = {

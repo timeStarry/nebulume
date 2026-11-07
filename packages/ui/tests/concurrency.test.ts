@@ -125,3 +125,50 @@ it('isolates source and current-viewer channels from a saturated remote thumbnai
   await Promise.all(thumbnails);
   expect(remoteStarted).toBe(6);
 });
+it('an aborted in-flight load rejects its caller at once but keeps the slot until it settles', async () => {
+  const schedule = createPreviewScheduler({ thumbnail: 1 });
+  const request = gate();
+  const controller = new AbortController();
+  let settled = false;
+  const first = schedule(
+    () =>
+      request.promise.then(() => {
+        settled = true;
+        return 'decoded';
+      }),
+    { signal: controller.signal, rejectInFlightOnAbort: true },
+  );
+  let secondStarted = false;
+  const second = schedule(async () => {
+    secondStarted = true;
+  });
+  const rejected = expect(first).rejects.toMatchObject({ name: 'AbortError' });
+  controller.abort();
+  await rejected;
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(secondStarted).toBe(false);
+  request.resolve();
+  await second;
+  expect(settled).toBe(true);
+  expect(secondStarted).toBe(true);
+});
+it('cancels queued work immediately even when in-flight aborts detach', async () => {
+  const limited = createConcurrencyLimit(1);
+  const held = gate();
+  const active = limited(() => held.promise);
+  const controller = new AbortController();
+  let started = false;
+  const queued = limited(
+    async () => {
+      started = true;
+    },
+    { signal: controller.signal, rejectInFlightOnAbort: true },
+  );
+  const rejected = expect(queued).rejects.toMatchObject({ name: 'AbortError' });
+  controller.abort();
+  await rejected;
+  held.resolve();
+  await active;
+  expect(started).toBe(false);
+});

@@ -9,7 +9,7 @@ import {
   Show,
 } from 'solid-js';
 import { execute, schedulePreview } from './api';
-import { isQueueAbort } from './concurrency';
+import { isQueueAbort, untilAborted } from './concurrency';
 import { loadImage, previewUrl, type PreviewTier } from './preview-url';
 import {
   cropFromPoints,
@@ -55,12 +55,38 @@ export function Thumbnail(props: {
 }) {
   let element!: HTMLButtonElement;
   const [visible, setVisible] = createSignal(false);
-  const [preview, setPreview] = createSignal<string | null>(null);
+  /**
+   * Each layer's <img> is its own loader: it joins the DOM hidden (still fetching and decoding)
+   * when the scheduler grants a slot and is revealed in place, so every image is requested once.
+   */
+  type Layer = { key: string; image: HTMLImageElement; request?: Promise<HTMLImageElement> };
+  const [layers, setLayers] = createSignal<Layer[]>([]);
+  const [shown, setShown] = createSignal(false);
   const [previewLoading, setPreviewLoading] = createSignal(false);
+  // Requests that were detached by an abort but have not settled yet, so re-entering the
+  // viewport adopts them instead of issuing the same URL again.
+  const inflight = new Map<string, Layer>();
   let loadedKey = '';
   let displayedKey = '';
   let disposed = false;
   let pending: { key: string; controller: AbortController } | undefined;
+  const dropLayer = (layer: Layer) => setLayers((list) => list.filter((item) => item !== layer));
+  function startLayer(key: string, url: string): Promise<HTMLImageElement> {
+    const image = document.createElement('img');
+    image.alt = '';
+    image.style.visibility = 'hidden';
+    const layer: Layer = { key, image };
+    setLayers((list) => [...list, layer]);
+    const request = loadImage(url, image);
+    layer.request = request;
+    inflight.set(key, layer);
+    const settled = () => {
+      if (inflight.get(key) === layer) inflight.delete(key);
+      if (loadedKey !== key && pending?.key !== key) dropLayer(layer);
+    };
+    request.then(settled, settled);
+    return request;
+  }
   function syncPreview() {
     if (disposed) return;
     const assetKey = imageRequestKey(props.asset);
@@ -69,7 +95,9 @@ export function Thumbnail(props: {
     if (displayedKey !== assetKey) {
       displayedKey = assetKey;
       loadedKey = '';
-      setPreview(null);
+      inflight.clear();
+      setLayers([]);
+      setShown(false);
     }
     if (!visible()) {
       pending?.controller.abort();
@@ -83,23 +111,25 @@ export function Thumbnail(props: {
     let cancelled = false;
     const asset = props.asset;
     const tier = props.tier;
-    void schedulePreview(
-      async () => {
-        const url = await previewUrl(asset, tier);
-        await loadImage(url, current.controller.signal);
-        return url;
-      },
-      {
-        source: props.asset.source_key ? 'remote' : 'local',
-        priority: 'thumbnail',
-        signal: current.controller.signal,
-      },
-    )
-      .then((url) => {
-        if (!disposed && `${imageRequestKey(props.asset)}:${props.tier}` === key) {
-          loadedKey = key;
-          setPreview(url);
-        }
+    const adopted = inflight.get(key);
+    const request = adopted?.request
+      ? untilAborted(adopted.request, current.controller.signal)
+      : schedulePreview(async () => startLayer(key, await previewUrl(asset, tier)), {
+          source: props.asset.source_key ? 'remote' : 'local',
+          priority: 'thumbnail',
+          signal: current.controller.signal,
+          rejectInFlightOnAbort: true,
+        });
+    if (adopted && !layers().includes(adopted)) setLayers((list) => [...list, adopted]);
+    void request
+      .then((image) => {
+        if (disposed || `${imageRequestKey(props.asset)}:${props.tier}` !== key) return;
+        const layer = layers().find((item) => item.image === image);
+        if (!layer) return;
+        loadedKey = key;
+        image.style.visibility = '';
+        setLayers([layer]);
+        setShown(true);
       })
       .catch((error) => {
         cancelled = isQueueAbort(error);
@@ -108,6 +138,10 @@ export function Thumbnail(props: {
         if (disposed || pending !== current) return;
         pending = undefined;
         setPreviewLoading(false);
+        // Drop a failed or detached-and-settled layer that will not be shown.
+        if (loadedKey !== key)
+          for (const layer of layers())
+            if (layer.key === key && inflight.get(key) !== layer) dropLayer(layer);
         // An item can re-enter the viewport before cancellation has settled.
         if (cancelled && visible()) syncPreview();
       });
@@ -138,19 +172,15 @@ export function Thumbnail(props: {
       title={props.asset.filename}
     >
       <div class="thumbnail-image">
-        <Show
-          when={preview()}
-          fallback={
-            <div class="thumbnail-fallback">
-              <Icon name="photo" size={26} />
-              <span>
-                {previewLoading() ? '载入中' : props.asset.kind === 'raw' ? 'RAW' : '无预览'}
-              </span>
-            </div>
-          }
-        >
-          {(url) => <img src={url()} alt="" />}
+        <Show when={!shown()}>
+          <div class="thumbnail-fallback">
+            <Icon name="photo" size={26} />
+            <span>
+              {previewLoading() ? '载入中' : props.asset.kind === 'raw' ? 'RAW' : '无预览'}
+            </span>
+          </div>
         </Show>
+        <For each={layers()}>{(layer) => layer.image}</For>
         <span class="filetype">{props.asset.extension.toUpperCase()}</span>
         <Show when={props.asset.crop}>
           <span class="crop-badge" title="含裁剪配方">
@@ -229,13 +259,25 @@ export default function PhotoView(props: {
           data.tier || 'p2560',
           uncropped,
         );
-        await schedulePreview(() => loadImage(url, controller.signal), lane);
-        return { data, url, error: '' };
+        // The element that decodes is the element shown: one request, one decode.
+        const image = document.createElement('img');
+        image.className = 'main-photo';
+        image.alt = props.asset.filename;
+        image.draggable = false;
+        await schedulePreview(() => loadImage(url, image), {
+          ...lane,
+          rejectInFlightOnAbort: true,
+        });
+        return { data, image, error: '' };
       } catch (error) {
-        return { data: null, url: '', error: isQueueAbort(error) ? '' : errorMessage(error) };
+        return { data: null, image: null, error: isQueueAbort(error) ? '' : errorMessage(error) };
       }
     },
   );
+  createEffect(() => {
+    const image = preview()?.image;
+    if (image) image.alt = props.asset.filename;
+  });
   createEffect(() =>
     props.onPreviewStateChange?.({
       key: imageRequestKey(props.asset, props.cropMode),
@@ -369,12 +411,7 @@ export default function PhotoView(props: {
                   transform: `translate(${pan().x}px, ${pan().y}px)`,
                 }}
               >
-                <img
-                  class="main-photo"
-                  src={preview()?.url}
-                  alt={props.asset.filename}
-                  draggable={false}
-                />
+                {preview()?.image}
                 <Show when={props.cropMode}>
                   <div
                     class="crop-overlay editable"

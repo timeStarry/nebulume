@@ -259,16 +259,26 @@ function demoPreviewSize(asset: Asset, tier: PreviewTier, uncropped: boolean) {
     height: Math.max(1, Math.round(height * ratio)),
   };
 }
+/** Blob URLs may still be on their way into an <img>; revoke them only after a grace period. */
+const REVOKE_GRACE_MS = 30_000;
+function retireDemoPreview(entry: Promise<{ url: string }>) {
+  void entry
+    .then(({ url }) => setTimeout(() => URL.revokeObjectURL(url), REVOKE_GRACE_MS))
+    .catch(() => {});
+}
 function clearDemoPreviews() {
-  for (const entry of previewCache.values())
-    void entry.then(({ url }) => URL.revokeObjectURL(url)).catch(() => {});
+  for (const entry of previewCache.values()) retireDemoPreview(entry);
   previewCache.clear();
 }
 function renderDemoPreview(id: string, tier: PreviewTier, uncropped: boolean, revision: number) {
   const crop = uncropped ? null : assets.get(id)?.crop;
   const key = JSON.stringify([id, tier, uncropped, revision, crop || null]);
   let entry = previewCache.get(key);
-  if (!entry) {
+  if (entry) {
+    // Least-recently handed out goes first.
+    previewCache.delete(key);
+    previewCache.set(key, entry);
+  } else {
     entry = (async () => {
       const original = applyCrop(await canvasFor(id), crop);
       const ratio = Math.min(1, TIER_PIXELS[tier] / Math.max(original.width, original.height));
@@ -285,14 +295,14 @@ function renderDemoPreview(id: string, tier: PreviewTier, uncropped: boolean, re
       );
       return { url: URL.createObjectURL(blob), width: canvas.width, height: canvas.height };
     })();
-    entry.catch(() => previewCache.delete(key));
+    const created = entry;
+    created.catch(() => {
+      if (previewCache.get(key) === created) previewCache.delete(key);
+    });
     previewCache.set(key, entry);
     if (previewCache.size > 200) {
       const oldest = previewCache.keys().next().value!;
-      void previewCache
-        .get(oldest)!
-        .then(({ url }) => URL.revokeObjectURL(url))
-        .catch(() => {});
+      retireDemoPreview(previewCache.get(oldest)!);
       previewCache.delete(oldest);
     }
   }

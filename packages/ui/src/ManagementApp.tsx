@@ -15,7 +15,7 @@ import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import { Thumbnail } from './PhotoView';
-import { gridTier } from './preview-url';
+import { gridTier, watchDevicePixelRatio } from './preview-url';
 import StorageWorkspace from './StorageWorkspace';
 import ImportWorkspace from './ImportWorkspace';
 import Viewer from './Viewer';
@@ -70,6 +70,7 @@ export default function ManagementApp() {
   const [direction, setDirection] =
     createSignal<NonNullable<AssetListOptions['sort_direction']>>('desc');
   const [thumbSize, setThumbSize] = createSignal(readThumbSize());
+  const [devicePixelRatio, setDevicePixelRatio] = createSignal(window.devicePixelRatio || 1);
   const [info, setInfo] = createSignal(false);
   const [ready, setReady] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
@@ -557,6 +558,7 @@ export default function ManagementApp() {
     };
     updateNavigationMode();
     navigationMedia.addEventListener('change', updateNavigationMode);
+    const stopWatchingRatio = watchDevicePixelRatio(setDevicePixelRatio);
     void boot();
     window.addEventListener('keydown', keyboard);
     window.addEventListener('focus', focusRefresh);
@@ -567,6 +569,7 @@ export default function ManagementApp() {
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', focusRefresh);
       navigationMedia.removeEventListener('change', updateNavigationMode);
+      stopWatchingRatio();
     });
   });
   return (
@@ -989,7 +992,7 @@ export default function ManagementApp() {
                             <div class="asset-card">
                               <Thumbnail
                                 asset={asset}
-                                tier={gridTier(thumbSize(), window.devicePixelRatio || 1)}
+                                tier={gridTier(thumbSize(), devicePixelRatio())}
                                 selected={selectedId() === asset.id}
                                 onSelect={() => setSelectedId(asset.id)}
                                 onOpen={() => openAsset(asset)}

@@ -1,5 +1,4 @@
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { abortError } from './concurrency';
 import { demoPreviewUrl } from './demo';
 import { TIER_PIXELS, type Asset, type PreviewTier } from './model';
 
@@ -29,38 +28,43 @@ export function previewUrl(
   if (!isTauri()) return demoPreviewUrl(asset.id, tier, uncropped, revision);
   return convertFileSrc(`${asset.id}/${tier}/${uncropped ? 1 : 0}/${revision}`, 'neb');
 }
-/** Fetches and decodes an image; aborting clears `src` so the webview drops the request. */
-export async function loadImage(
-  url: string | Promise<string>,
-  signal?: AbortSignal,
-): Promise<{ width: number; height: number }> {
-  if (signal?.aborted) throw abortError('Image load cancelled');
-  const resolved = await url;
-  if (signal?.aborted) throw abortError('Image load cancelled');
-  const image = new Image();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const abort = () => {
-      if (settled) return;
-      settled = true;
-      image.src = '';
-      reject(abortError('Image load cancelled'));
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-    image.src = resolved;
-    image.decode().then(
-      () => {
-        signal?.removeEventListener('abort', abort);
-        if (settled) return;
-        settled = true;
-        resolve({ width: image.naturalWidth, height: image.naturalHeight });
-      },
-      () => {
-        signal?.removeEventListener('abort', abort);
-        if (settled) return;
-        settled = true;
-        reject(new Error('E_PREVIEW_LOAD: 预览图像载入失败'));
-      },
-    );
-  });
+/**
+ * Fetches and decodes an image into the element that will be displayed, so each image costs
+ * one request and one decode. Settles only when the request does (load+decode or error):
+ * `src` is never cleared, because that would hide a backend render that keeps running.
+ * Callers that stop caring detach through the scheduler's `rejectInFlightOnAbort`.
+ */
+export function loadImage(
+  url: string,
+  image: HTMLImageElement = new Image(),
+): Promise<HTMLImageElement> {
+  image.decoding = 'async';
+  image.src = url;
+  return image.decode().then(
+    () => image,
+    () => {
+      throw new Error('E_PREVIEW_LOAD: 预览图像载入失败');
+    },
+  );
+}
+/**
+ * Calls `onChange` whenever the device pixel ratio changes (zoom, moving between monitors).
+ * A `resolution` query matches one ratio only, so it is re-registered after every change.
+ */
+export function watchDevicePixelRatio(
+  onChange: (devicePixelRatio: number) => void,
+  win: Pick<Window, 'devicePixelRatio' | 'matchMedia'> = window,
+): () => void {
+  let query: MediaQueryList | undefined;
+  const listen = () => {
+    query?.removeEventListener('change', update);
+    query = win.matchMedia(`(resolution: ${win.devicePixelRatio || 1}dppx)`);
+    query.addEventListener('change', update);
+  };
+  function update() {
+    onChange(win.devicePixelRatio || 1);
+    listen();
+  }
+  listen();
+  return () => query?.removeEventListener('change', update);
 }

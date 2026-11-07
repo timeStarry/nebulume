@@ -142,7 +142,11 @@ describe('update controller', () => {
     const controller = createUpdateController(effects);
     await expect(controller.start()).resolves.toBeUndefined();
     await fireNext();
-    expect(controller.state()).toEqual({ kind: 'failed', checkedAt: 1_700_000_000_000, message: 'offline' });
+    expect(controller.state()).toEqual({
+      kind: 'failed',
+      checkedAt: 1_700_000_000_000,
+      message: 'offline',
+    });
     expect(timers.map((t) => t.ms)).toEqual([FIRST_CHECK_DELAY_MS, CHECK_INTERVAL_MS]);
     await expect(controller.checkNow()).resolves.toBeUndefined();
     expect(controller.state()).toMatchObject({ kind: 'failed', message: 'offline' });
@@ -185,8 +189,18 @@ describe('update controller', () => {
     await controller.checkNow();
     await controller.install();
     const downloads = seen.filter((s) => s.kind === 'downloading');
-    expect(downloads).toContainEqual({ kind: 'downloading', version: '0.2.0', received: 40, total: 100 });
-    expect(downloads).toContainEqual({ kind: 'downloading', version: '0.2.0', received: 100, total: 100 });
+    expect(downloads).toContainEqual({
+      kind: 'downloading',
+      version: '0.2.0',
+      received: 40,
+      total: 100,
+    });
+    expect(downloads).toContainEqual({
+      kind: 'downloading',
+      version: '0.2.0',
+      received: 100,
+      total: 100,
+    });
     expect(seen.findIndex((s) => s.kind === 'installing')).toBeGreaterThan(
       seen.findIndex((s) => s.kind === 'downloading' && s.received === 100),
     );
@@ -219,7 +233,11 @@ describe('update controller', () => {
     await controller.start();
     await controller.checkNow();
     await expect(controller.install()).resolves.toBeUndefined();
-    expect(controller.state()).toMatchObject({ kind: 'available', version: '0.2.0', error: 'reset' });
+    expect(controller.state()).toMatchObject({
+      kind: 'available',
+      version: '0.2.0',
+      error: 'reset',
+    });
     expect(effects.relaunch).not.toHaveBeenCalled();
     expect(effects.prepare).not.toHaveBeenCalled();
     expect(available.install).not.toHaveBeenCalled();
@@ -291,7 +309,9 @@ describe('update controller', () => {
   });
 
   it('dismiss returns to idle and the next scheduled check prompts again', async () => {
-    const { effects, fireNext } = fakeEffects({ check: vi.fn(async () => update(async () => undefined)) });
+    const { effects, fireNext } = fakeEffects({
+      check: vi.fn(async () => update(async () => undefined)),
+    });
     const controller = createUpdateController(effects);
     await controller.start();
     await fireNext();

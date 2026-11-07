@@ -244,3 +244,49 @@ test('failed thumbnail shows fallback tile instead of a broken image', async ({ 
   await expect(broken.locator('img')).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
 });
+test('each thumbnail and the viewer image are requested exactly once on first display', async ({
+  page,
+}) => {
+  const fixture = await harness(page, []);
+  const items = Array.from({ length: 6 }, (_, i) => asset(`once-${i}`, i % 2 === 0));
+  await page.evaluate((list) => window.previewHarness.thumbnails(list), items);
+  for (const item of items)
+    await expect(
+      page.getByRole('button', { name: `${item.id}.jpg，0 星` }).locator('img'),
+    ).toBeVisible();
+  await page.evaluate((photo) => window.previewHarness.photo(photo), asset('once-viewer'));
+  await expect(page.locator('.main-photo')).toHaveJSProperty('naturalWidth', 1);
+  await page.waitForTimeout(200);
+  const counts = new Map<string, number>();
+  for (const image of fixture.images) counts.set(image.url, (counts.get(image.url) ?? 0) + 1);
+  expect([...counts.values()].every((count) => count === 1)).toBe(true);
+  expect(thumbs(fixture.images).sort()).toEqual(items.map((item) => item.id).sort());
+  expect(fixture.images.filter((image) => image.tier === 'p2560').map((image) => image.id)).toEqual(
+    ['once-viewer'],
+  );
+  expect(fixture.errors).toEqual([]);
+});
+test('a thumbnail that leaves the viewport mid-request keeps its lane slot until the request settles', async ({
+  page,
+}) => {
+  const fixture = await harness(page, ['slow-0', 'slow-1', 'slow-2', 'slow-3']);
+  try {
+    await page.evaluate(
+      (list) => window.previewHarness.thumbnails(list),
+      Array.from({ length: 5 }, (_, i) => asset(`slow-${i}`)),
+    );
+    await expect.poll(() => thumbs(fixture.images).length).toBe(4);
+    await page.evaluate(() => window.previewVisibility('slow-0.jpg', false));
+    await page.waitForTimeout(200);
+    expect(thumbs(fixture.images)).not.toContain('slow-4');
+    fixture.release('slow-0');
+    await expect.poll(() => thumbs(fixture.images)).toContain('slow-4');
+    await page.evaluate(() => window.previewVisibility('slow-0.jpg', true));
+    await expect(
+      page.getByRole('button', { name: 'slow-0.jpg，0 星' }).locator('img'),
+    ).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+  } finally {
+    fixture.releaseAll();
+  }
+});
