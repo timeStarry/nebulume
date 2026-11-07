@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [{"label":"main","title":"Nebulume · 星雾","width":1440,"height":960,"minWidth":720,"minHeight":600,"visible":false,"dragDropEnabled":false}],
-    "security": {"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'"}
+    "security": {"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: neb: http://neb.localhost; connect-src ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'"}
   },
   "bundle": {
     "active":true,"targets":"all","icon":["icons/icon.png","icons/icon.ico","icons/icon.icns"],

@@ -9,12 +9,17 @@ name = "nebulume"
 path = "src/main.rs"
 
 [dependencies]
+neb-core = { path = "../neb-core" }
 neb-service = { path = "../neb-service" }
+percent-encoding = "=2.3.2"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "=2.8.1"
 tauri-plugin-single-instance = "=2.4.3"
 serde_json.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

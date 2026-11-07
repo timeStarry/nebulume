@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod file_open;
+mod preview_protocol;
 mod viewer;
 mod volumes;
 use neb_service::{CommandError, Service};
@@ -33,7 +34,7 @@ async fn execute(
 fn main() {
     let startup_paths = file_open::startup_paths(std::env::args_os().skip(1));
     let open_from_command_line = !startup_paths.is_empty();
-    tauri::Builder::default()
+    preview_protocol::register(tauri::Builder::default())
         .manage(viewer::ViewerSessions::default())
         .manage(file_open::OpenRequests::default())
         // Register first: a secondary instance must exit before opening shared state.
