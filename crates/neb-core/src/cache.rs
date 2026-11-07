@@ -1731,6 +1731,8 @@ fn available_space(path: &Path) -> Result<u64> {
         "E_CACHE_SPACE: Cannot query destination free space"
     );
     let stat = unsafe { stat.assume_init() };
+    // statvfs field widths differ across Unix targets.
+    #[allow(clippy::unnecessary_cast)]
     Ok((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
 }
 #[cfg(not(any(windows, unix)))]
