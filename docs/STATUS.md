@@ -23,7 +23,7 @@
 
 - RAW 使用 rawloader 基础传感器渲染，支持范围受机型限制。解码失败时可回退标准 TIFF 内嵌 JPEG，仅用于查看和直方图，不能替代 RAW 全尺寸导出。
 - 不支持 CR3、HEIC/HEIF、AVIF。完整相机样本覆盖、专业去马赛克、ICC 色彩管理和完整分辨率瓦片尚未实现。
-- 查看器最长边 2400px，1:1 对应预览像素。JPEG 导出不保留源 EXIF/ICC，原文件不修改。
+- 查看器最长边 2560px（`p2560`），1:1 对应预览像素。网格缩略图读取 RAW 时优先使用相机内嵌 JPEG，以缩短首屏时间；查看器仍优先传感器解码。JPEG 导出不保留源 EXIF/ICC，原文件不修改。
 - 对焦区域限于标准 JPEG EXIF/TIFF 中部分 Nikon Type3 MakerNote 2.10/2.11、AFInfo2 0300/0301 的明确坐标，不推断点位编号；选定区域不保证合焦成功。
 - 拍摄时间补索引只读取 JPEG APP1 EXIF 或经典 TIFF 主图 EXIF，不保证所有 RAW。无时区记录按相机当地日期时间排序，不推断时区或统一换算为 UTC。
 
@@ -44,6 +44,13 @@
 - Windows 系统凭据库有实际验证；macOS Keychain、Linux Secret Service 尚无本版本实机验收。
 - Windows 包未签名。安装/卸载、系统默认文件关联，以及 macOS/Linux 发布包仍需单独验收。
 - 大规模目录、峰值内存和长期运行仍需专项性能验证。
+
+## 待验证
+
+预览协议与分档（未发布）已通过自动化检查，以下仍需手工完成：
+
+- 实际目录基准：在含至少 200 个 NEF/ARW 的约 1,000 文件本地图库上，用 release 构建运行 `node scripts/bench-preview.mjs --data-dir <数据目录> --library <库ID> --tier t512 --count 200`，与 `main` 对照并记录两行 JSON 及机器配置。
+- 桌面手工检查（Windows 与 macOS 开发构建）：网格滚动正常出图；查看器打开与缩放；裁剪模式显示未裁剪全图；超出预算的远端 RAW 显示下载入口；DevTools 网络面板可见 `neb` 请求且再次访问为 304；控制台无 CSP 违规。
 
 ## 验证与接口
 
