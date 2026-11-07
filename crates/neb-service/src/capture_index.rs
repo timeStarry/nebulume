@@ -147,6 +147,13 @@ impl Service {
     }
 
     pub(super) fn cancel_capture_index(&self, id: &str, job_id: &str) -> Result<Value> {
+        self.request_capture_stop(id, job_id)?;
+        self.capture_index_status(id)
+    }
+
+    /// Moves the named job to `stopping`. Returns whether it was still
+    /// running (or already stopping) and so is actually being stopped.
+    fn request_capture_stop(&self, id: &str, job_id: &str) -> Result<bool> {
         let job = self
             .capture_index
             .jobs
@@ -163,21 +170,37 @@ impl Service {
                 job.id == job_id,
                 "E_CONFLICT: Capture index task changed; refresh its state"
             );
-            if job.running() {
-                job.status = "stopping".into();
+            if !job.running() {
+                return Ok(false);
             }
+            job.status = "stopping".into();
         }
-        self.capture_index_status(id)
+        Ok(true)
     }
 
     /// Asks every running job to stop through the per-job cancel path.
     /// Returns how many jobs were asked; they stop cooperatively.
     pub(super) fn cancel_all_capture_index(&self) -> Result<usize> {
         let running = self.running_capture_jobs()?;
-        for (library_id, job_id) in &running {
-            self.cancel_capture_index(library_id, job_id)?;
+        self.stop_capture_jobs(&running)
+    }
+
+    /// A snapshotted job may finish, or be replaced by a new job on the same
+    /// library, before it is cancelled; such a job has nothing left to stop.
+    fn stop_capture_jobs(&self, jobs: &[(String, String)]) -> Result<usize> {
+        let mut stopped = 0;
+        for (library_id, job_id) in jobs {
+            match self.request_capture_stop(library_id, job_id) {
+                Ok(true) => stopped += 1,
+                Ok(false) => {}
+                Err(error)
+                    if ["E_CONFLICT", "E_NOT_FOUND"]
+                        .iter()
+                        .any(|code| error.to_string().starts_with(code)) => {}
+                Err(error) => return Err(error),
+            }
         }
-        Ok(running.len())
+        Ok(stopped)
     }
 
     /// Whether any job is still running or stopping.
@@ -408,4 +431,51 @@ fn remote_connection_failed(error: &anyhow::Error) -> bool {
     }
     let message = error.to_string();
     message.contains("Remote file request failed") || message.contains("E_CREDENTIAL")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_job(service: &Service, library_id: &str, job_id: &str, status: &str) {
+        service.capture_index.jobs.lock().unwrap().insert(
+            library_id.into(),
+            Arc::new(Mutex::new(CaptureJob {
+                id: job_id.into(),
+                library_id: library_id.into(),
+                status: status.into(),
+                total: 1,
+                processed: 0,
+                found: 0,
+                missing: 0,
+                failed: 0,
+                error: None,
+            })),
+        );
+    }
+
+    fn status(service: &Service, library_id: &str) -> String {
+        let jobs = service.capture_index.jobs.lock().unwrap();
+        let job = jobs[library_id].lock().unwrap();
+        job.status.clone()
+    }
+
+    #[test]
+    fn stale_snapshot_entries_are_skipped_not_fatal() {
+        let data = tempfile::tempdir().unwrap();
+        let service = Service::open(data.path()).unwrap();
+        insert_job(&service, "replaced", "new-job", "running");
+        insert_job(&service, "finished", "done-job", "completed");
+        insert_job(&service, "live", "live-job", "running");
+        let snapshot = [
+            ("replaced".to_owned(), "old-job".to_owned()),
+            ("removed".to_owned(), "gone-job".to_owned()),
+            ("finished".to_owned(), "done-job".to_owned()),
+            ("live".to_owned(), "live-job".to_owned()),
+        ];
+        assert_eq!(service.stop_capture_jobs(&snapshot).unwrap(), 1);
+        assert_eq!(status(&service, "replaced"), "running");
+        assert_eq!(status(&service, "finished"), "completed");
+        assert_eq!(status(&service, "live"), "stopping");
+    }
 }

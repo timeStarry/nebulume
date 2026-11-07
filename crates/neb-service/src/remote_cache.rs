@@ -40,6 +40,15 @@ impl Drop for DownloadSlot<'_> {
     }
 }
 
+/// Releases one reserved `preview_writes` slot when dropped.
+struct PendingWrite(Arc<AtomicUsize>);
+
+impl Drop for PendingWrite {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl Service {
     fn download_slot(&self) -> Result<DownloadSlot<'_>> {
         let mut count = self
@@ -338,8 +347,10 @@ impl Service {
         if std::thread::Builder::new()
             .name("local-preview-cache".into())
             .spawn(move || {
+                // Released on unwind too, so a panicking write cannot leave
+                // quiesce waiting for a write that will never finish.
+                let _pending = PendingWrite(pending);
                 let _ = cache.preview_put(&key, &image.to_envelope());
-                pending.fetch_sub(1, Ordering::AcqRel);
             })
             .is_err()
         {
@@ -793,5 +804,42 @@ mod pinned_capture_tests {
                 (String::new(), "pending")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod pending_write_tests {
+    use super::*;
+
+    #[test]
+    fn pending_write_is_released_when_the_writer_panics() {
+        let pending = Arc::new(AtomicUsize::new(1));
+        let guard = PendingWrite(Arc::clone(&pending));
+        let result = std::thread::spawn(move || {
+            let _pending = guard;
+            panic!("preview write failed");
+        })
+        .join();
+        assert!(result.is_err());
+        assert_eq!(pending.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn quiesce_times_out_while_a_preview_write_is_held() {
+        let data = tempfile::tempdir().unwrap();
+        let service = Service::open(data.path()).unwrap();
+        service.preview_writes.fetch_add(1, Ordering::AcqRel);
+        let held = PendingWrite(Arc::clone(&service.preview_writes));
+        let report = service
+            .quiesce(std::time::Duration::from_millis(120))
+            .unwrap();
+        assert!(report.timed_out);
+        assert_eq!(report.pending_writes, 1);
+        drop(held);
+        let report = service
+            .quiesce(std::time::Duration::from_millis(120))
+            .unwrap();
+        assert!(!report.timed_out);
+        assert_eq!(report.pending_writes, 0);
     }
 }
