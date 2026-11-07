@@ -2,6 +2,27 @@
 
 本指南用于从已提交源码构建和发布 Windows x64 包。macOS/Linux 的工作流配置不等于已完成发布验收；只有对应版本具备构建、测试和实机证据时才提供平台包。
 
+正式发布由 `.github/workflows/release.yml` 完成：推送 `v<版本>` 标签后，流水线在 Windows 上运行全部检查、构建并签名 NSIS 安装器、打包、创建草稿 Release 并回读核对，由人工确认后转为正式发布。下文的本地步骤在流水线不可用时作为备用路径，规则相同。
+
+## 更新签名密钥
+
+应用内更新要求每个安装器带有更新签名（`.sig`），签名校验无法关闭。密钥与 Windows 代码签名无关；未做代码签名只会触发 SmartScreen 提示，不影响更新。
+
+- 生成：`pnpm --dir crates/neb-app exec tauri signer generate -w ~/.tauri/nebulume-updater.key`。公钥内容写入 `crates/neb-app/tauri.conf.json` 的 `plugins.updater.pubkey`。
+- 保管：私钥文件和密码存入密码管理器，另存一份离线备份，并配置为 GitHub Secrets `TAURI_SIGNING_PRIVATE_KEY`（文件内容）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。私钥不得进入仓库、日志或 `.env` 文件。
+- 丢失私钥后，已安装的用户无法再收到任何更新，只能手动安装新版本。
+- 轮换：先用旧私钥签名发布一个携带新 `pubkey` 的版本，用户更新到该版本后，后续版本改用新私钥。
+
+## 流水线发布
+
+1. 按“准备源码”完成版本对齐和 `CHANGELOG.md`（需有 `## <版本> · YYYY-MM-DD` 小节，作为更新说明），提交并推送。
+2. 推送标签：`git tag v<版本> && git push origin v<版本>`。也可在 Actions 页面手动运行并填写已存在的标签。
+3. 流水线拒绝标签与 `package.json` 版本不符、标签不指向检出提交，或同名 Release 已正式发布的情况。同名草稿视为上一次失败留下，删除后重建。
+4. 草稿创建后流水线下载全部资产并核对名称、大小、SHA-256 及 `latest.json` 中的签名和地址。失败时检查 Actions 日志与保存 90 天的 `release-<标签>` 工件后重跑。
+5. 人工检查草稿说明和资产后发布：`gh release edit v<版本> --draft=false`。已安装客户端只读取 `releases/latest` 指向的正式发布，草稿不会被拉到。
+
+首个带更新器的版本需要用户手动安装一次；0.1.x 没有更新器，无法自动升级到它。便携 ZIP 不支持自动更新。
+
 ## 准备源码
 
 1. 对齐根 `Cargo.toml` 的 `workspace.package.version`、`package.json`、`packages/ui/package.json`、`crates/neb-app/tauri.conf.json` 和 `Cargo.lock` 的 workspace 包版本。
@@ -34,13 +55,18 @@ Microsoft Edge 需已安装；不指定浏览器时需要 Playwright 对应的 C
 在 `crates/neb-app` 运行：
 
 ```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw <私钥文件>
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '<密码>'
 pnpm exec tauri build --bundles nsis -- --locked
 ```
+
+签名变量必须在当前 shell 中设置，`.env` 文件不会生效。
 
 默认产物为：
 
 - `target/release/nebulume.exe`
 - `target/release/bundle/nsis/Nebulume_<版本>_x64-setup.exe`
+- `target/release/bundle/nsis/Nebulume_<版本>_x64-setup.exe.sig`
 
 设置 `CARGO_TARGET_DIR` 时输出随之改变。Tauri 的 `beforeBuildCommand` 会构建前端，需确认打包使用当前提交的前端资源。
 
@@ -74,17 +100,23 @@ pnpm exec tauri build --bundles nsis -- --locked
 在仓库根目录执行：
 
 ```powershell
-python scripts/package-release.py --version 0.1.0 --target-dir target --output-dir artifacts/releases/v0.1.0 --validation artifacts/release-validation-v0.1.0.json
+python scripts/package-release.py --version 0.1.0 --target-dir target --output-dir artifacts/releases/v0.1.0 --validation artifacts/release-validation-v0.1.0.json --notes-from CHANGELOG.md
 ```
+
+验证 JSON 可由 `scripts/collect-validation.py` 根据 cargo 测试日志、Vitest 与 Playwright 的 JSON 报告生成，流水线即使用此方式。
 
 `--target-dir` 必须对应构建使用的目录。脚本核对版本、Cargo.lock、提交、工作区、验证记录、产物格式、构建输入时间及复制前后摘要。输出目录必须全新，失败后保留部分输出供排查。
 
-上传目录仅包含以下四份文件：
+上传目录仅包含以下六份文件：
 
 - `Nebulume_<版本>_x64-setup.exe`
+- `Nebulume_<版本>_x64-setup.exe.sig`
 - `Nebulume_<版本>_windows_x64.zip`
+- `latest.json`
 - `manifest.json`
 - `SHA256SUMS.txt`
+
+`latest.json` 只列出 `windows-x86_64`。任何一个平台条目格式错误都会让所有平台的更新失败，因此只写入已验收的平台，脚本拒绝写出版本、签名或日期不合规的清单。`SHA256SUMS.txt` 覆盖其余五份文件。
 
 ZIP 内仅有独立程序、使用说明、运行清单和校验表。独立程序仍使用系统应用数据目录，不在程序旁保存图库。清单记录版本、源码提交、验证和产物摘要；脚本检查 ZIP CRC、成员大小、SHA-256 及上传文件白名单，不读取应用数据或替换运行进程。
 
@@ -96,7 +128,7 @@ ZIP 内仅有独立程序、使用说明、运行清单和校验表。独立程�
 
 Release 标题为 `Nebulume <版本>`。说明应概括实际功能及关键限制，附平台、签名状态和校验文件用途。
 
-上传后通过 GitHub API 或 CLI 回读并核对：
+上传后通过 `python scripts/verify-release.py --tag v<版本> --output-dir <上传目录>` 或 GitHub CLI 回读并核对：
 
 - 正式发布状态、版本、日期、标签和目标提交。
 - 资产名称、数量、大小与本地白名单一致，上传全部完成。
