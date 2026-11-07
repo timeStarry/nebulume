@@ -2712,8 +2712,10 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs 6.0.0",
+ "neb-core",
  "neb-service",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

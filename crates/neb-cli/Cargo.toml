@@ -9,8 +9,12 @@ name = "neb"
 path = "src/main.rs"
 
 [dependencies]
+neb-core = { path = "../neb-core" }
 neb-service = { path = "../neb-service" }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 serde_json.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
