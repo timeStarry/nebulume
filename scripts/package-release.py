@@ -17,6 +17,10 @@ import tomllib
 from typing import BinaryIO
 import zipfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from release_lib import ReleaseError, changelog_notes, updater_manifest  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_PACKAGES = {
@@ -30,10 +34,6 @@ ROOT_INPUTS = {
     "Cargo.toml", "Cargo.lock", "package.json", "pnpm-lock.yaml",
     "pnpm-workspace.yaml", "rust-toolchain", "rust-toolchain.toml",
 }
-
-
-class ReleaseError(Exception):
-    pass
 
 
 def require(condition: bool, message: str) -> None:
@@ -205,6 +205,21 @@ def check_executable(path: Path, newest_input: int) -> dict[str, int | str]:
     return info(path)
 
 
+def read_signature(path: Path, newest_input: int) -> tuple[str, dict[str, int | str]]:
+    require(path.is_file() and not path.is_symlink(), f"Missing regular updater signature: {path}")
+    require(path.stat().st_mtime_ns >= newest_input, f"Updater signature predates tracked production inputs: {path}")
+    raw = path.read_bytes()
+    text = raw.decode("ascii")
+    require(len(text.strip().splitlines()) == 1, f"Updater signature must be a single line: {path}")
+    return text.strip(), {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def latest_json(
+    version: str, installer_name: str, signature: str, notes: str, pub_date: str
+) -> bytes:
+    return json_bytes(updater_manifest(version, installer_name, signature, notes, pub_date))
+
+
 def resolve_path(value: str) -> Path:
     path = Path(value)
     return (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
@@ -232,6 +247,9 @@ def package(args: argparse.Namespace) -> dict:
     check_versions(args.version, tracked)
     validation_path = resolve_path(args.validation)
     verification, validation_sha = read_validation(validation_path, args.version, identity["commit"])
+    notes_path = resolve_path(args.notes_from)
+    notes_raw = notes_path.read_bytes()
+    notes = changelog_notes(notes_raw.decode("utf-8-sig"), args.version)
     inputs = source_inputs(tracked)
     newest_input = max(int(value["mtime_ns"]) for value in inputs.values())
     inputs_sha = hashlib.sha256(
@@ -243,6 +261,9 @@ def package(args: argparse.Namespace) -> dict:
     installer_source = target / "bundle/nsis" / installer_name
     exe_record = check_executable(exe_source, newest_input)
     installer_record = check_executable(installer_source, newest_input)
+    signature_name = f"{installer_name}.sig"
+    signature_source = installer_source.with_name(signature_name)
+    signature, signature_record = read_signature(signature_source, newest_input)
     raw_output = Path(args.output_dir)
     if not raw_output.is_absolute():
         raw_output = ROOT / raw_output
@@ -252,12 +273,22 @@ def package(args: argparse.Namespace) -> dict:
     require(
         not validation_path.is_relative_to(output)
         and not exe_source.is_relative_to(output)
-        and not installer_source.is_relative_to(output),
+        and not installer_source.is_relative_to(output)
+        and not signature_source.is_relative_to(output)
+        and not notes_path.is_relative_to(output),
         "Output must not contain source artifacts or the validation input",
     )
     archive_name = f"Nebulume_{args.version}_windows_x64.zip"
-    names = {installer_name, archive_name, "manifest.json", "SHA256SUMS.txt"}
-    created = datetime.now(timezone.utc).isoformat()
+    names = {
+        installer_name, signature_name, archive_name,
+        "latest.json", "manifest.json", "SHA256SUMS.txt",
+    }
+    now = datetime.now(timezone.utc)
+    created = now.isoformat()
+    latest = latest_json(
+        args.version, installer_name, signature, notes, now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    latest_record = {"bytes": len(latest), "sha256": hashlib.sha256(latest).hexdigest()}
     runtime = {
         "schema_version": 1,
         "product": "Nebulume",
@@ -305,6 +336,15 @@ def package(args: argparse.Namespace) -> dict:
     with installer_source.open("rb") as source, installer.open("xb") as destination:
         shutil.copyfileobj(source, destination, length=1024 * 1024)
     require(info(installer) == installer_record == info(installer_source), "Installer changed during copy")
+    signature_copy = output / signature_name
+    with signature_source.open("rb") as source, signature_copy.open("xb") as destination:
+        shutil.copyfileobj(source, destination)
+    require(
+        info(signature_copy) == signature_record == info(signature_source),
+        "Updater signature changed during copy",
+    )
+    exclusive_write(output / "latest.json", latest)
+    require(info(output / "latest.json") == latest_record, "latest.json changed after writing")
     archive = output / archive_name
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
         bundle.write(exe_source, "nebulume.exe")
@@ -337,14 +377,21 @@ def package(args: argparse.Namespace) -> dict:
         "artifacts": {
             "application": {"archive_member": "nebulume.exe", **exe_record},
             "installer": {"filename": installer_name, **installer_record},
+            "updater_signature": {"filename": signature_name, **signature_record},
             "portable_archive": {"filename": archive_name, **archive_record},
+        },
+        "updater": {
+            "signature_file": signature_name,
+            "latest_json_sha256": latest_record["sha256"],
         },
         "not_verified": ["installation_and_uninstallation", "macos_linux_release_acceptance"],
     }
     exclusive_write(output / "manifest.json", json_bytes(manifest))
     upload_records = {
         installer_name: installer_record,
+        signature_name: signature_record,
         archive_name: archive_record,
+        "latest.json": latest_record,
         "manifest.json": info(output / "manifest.json"),
     }
     sums = checksums(upload_records)
@@ -355,6 +402,8 @@ def package(args: argparse.Namespace) -> dict:
         require(info(output / name) == record, f"Final upload artifact changed: {name}")
     require((output / "SHA256SUMS.txt").read_bytes() == sums, "Final checksum list changed")
     require(info(installer_source) == installer_record, "Installer source changed while packaging")
+    require(info(signature_source) == signature_record, "Updater signature source changed while packaging")
+    require(notes_path.read_bytes() == notes_raw, "Release notes source changed while packaging")
     require(info(exe_source) == exe_record, "Application source changed while packaging")
     require(digest(validation_path) == validation_sha, "Validation changed while packaging")
     assert_clean()
@@ -379,6 +428,7 @@ def main() -> int:
     parser.add_argument("--target-dir", required=True, help="Cargo target directory, relative to repository root")
     parser.add_argument("--output-dir", required=True, help="New, never previously created upload directory")
     parser.add_argument("--validation", required=True, help="Validation JSON for the exact HEAD and version")
+    parser.add_argument("--notes-from", required=True, help="CHANGELOG.md holding a dated section for --version")
     args = parser.parse_args()
     try:
         result = package(args)
