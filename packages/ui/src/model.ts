@@ -54,6 +54,11 @@ export interface AssetListOptions {
   library_id?: string;
   flag?: FlagFilter;
   import_batch_id?: string;
+  camera?: string;
+  lens?: string;
+  /** Inclusive camera-local capture dates, YYYY-MM-DD. */
+  captured_from?: string;
+  captured_to?: string;
   query?: string;
   rating?: number;
   format?: 'all' | 'raw' | 'jpeg';
@@ -61,6 +66,11 @@ export interface AssetListOptions {
   sort_direction?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+}
+export interface AssetFacets {
+  cameras: { value: string; count: number }[];
+  lenses: { value: string; count: number }[];
+  captured: { first: string | null; last: string | null };
 }
 export interface AssetListResult {
   items: Asset[];

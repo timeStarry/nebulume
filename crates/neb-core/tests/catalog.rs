@@ -825,3 +825,95 @@ fn photos_indexed_before_v9_get_a_quick_hash_on_the_next_scan_and_can_then_move(
     let moved = core.asset(asset["id"].as_str().unwrap()).unwrap();
     assert_eq!((moved.filename.as_str(), moved.rating), ("moved.png", 4));
 }
+
+#[test]
+fn camera_lens_and_capture_date_filters_combine_with_facets() {
+    let (temp, core, photos, library) = setup();
+    for name in ["a.png", "b.png", "c.png", "d.png"] {
+        png(&photos.join(name), 12, 8);
+    }
+    scan(&core, &library);
+    drop(core);
+    // Inject EXIF fields directly: the fixture PNGs carry none.
+    let database = rusqlite::Connection::open(temp.path().join("catalog/catalog.sqlite3")).unwrap();
+    for (name, camera, lens, captured) in [
+        (
+            "a.png",
+            "NIKON Z 6",
+            "NIKKOR Z 24-70mm",
+            "2026-03-01T10:00:00.000000000",
+        ),
+        (
+            "b.png",
+            "NIKON Z 6",
+            "NIKKOR Z 50mm",
+            "2026-03-15T10:00:00.000000000",
+        ),
+        ("c.png", "X-T5", "XF23mm", "2026-04-02T10:00:00.000000000"),
+        ("d.png", "NIKON Z 6", "NIKKOR Z 24-70mm", ""),
+    ] {
+        database
+            .execute(
+                "UPDATE assets SET metadata_json=?1, captured_at=?2 WHERE filename=?3",
+                rusqlite::params![
+                    json!({"Camera": camera, "Lens": lens}).to_string(),
+                    captured,
+                    name
+                ],
+            )
+            .unwrap();
+    }
+    let core = Core::open(temp.path().join("catalog")).unwrap();
+    let names = |params: Value| -> Vec<String> {
+        let mut params = params;
+        params["library_id"] = json!(library);
+        let list = core.dispatch("asset.list", params).unwrap();
+        let mut names: Vec<String> = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["filename"].as_str().unwrap().to_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(json!({"camera":"NIKON Z 6"})),
+        ["a.png", "b.png", "d.png"]
+    );
+    assert_eq!(
+        names(json!({"camera":"NIKON Z 6","lens":"NIKKOR Z 24-70mm"})),
+        ["a.png", "d.png"]
+    );
+    // Photos without a capture time never match a date range.
+    assert_eq!(
+        names(json!({"captured_from":"2026-03-10","captured_to":"2026-04-02"})),
+        ["b.png", "c.png"]
+    );
+    assert_eq!(names(json!({"captured_to":"2026-03-01"})), ["a.png"]);
+    assert_eq!(
+        names(json!({"camera":"NIKON Z 6","captured_from":"2026-03-02"})),
+        ["b.png"]
+    );
+    let error = core
+        .dispatch(
+            "asset.list",
+            json!({"library_id":library,"captured_from":"2026-3-1"}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.starts_with("E_INVALID"), "{error}");
+    let facets = core
+        .dispatch("asset.facets", json!({"library_id":library}))
+        .unwrap();
+    assert_eq!(facets["cameras"][0], json!({"value":"NIKON Z 6","count":3}));
+    assert_eq!(facets["cameras"][1], json!({"value":"X-T5","count":1}));
+    assert_eq!(
+        facets["lenses"][0],
+        json!({"value":"NIKKOR Z 24-70mm","count":2})
+    );
+    assert_eq!(
+        facets["captured"],
+        json!({"first":"2026-03-01","last":"2026-04-02"})
+    );
+}

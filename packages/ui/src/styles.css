@@ -2481,3 +2481,13 @@ kbd {
 .drop-overlay-card span {
   color: var(--nl-text-secondary);
 }
+.date-range {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-space-1);
+}
+.date-range input {
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: var(--nl-text-xs);
+}

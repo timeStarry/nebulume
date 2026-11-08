@@ -1,4 +1,5 @@
 import type {
+  AssetFacets,
   Availability,
   Asset,
   AssetListOptions,
@@ -85,6 +86,32 @@ export function matchesFlag(flag: Flag, filter: FlagFilter = 'any'): boolean {
 }
 
 /** The browser's explicit in-memory catalog mirrors query order before pagination. */
+/** Browser-mode `asset.facets`: cameras and lenses by frequency, and the capture-date span. */
+export function browserAssetFacets(items: Asset[], libraryId: string): AssetFacets {
+  const inLibrary = items.filter(
+    (item) => item.library_id === libraryId && item.availability !== 'missing',
+  );
+  const count = (key: 'Camera' | 'Lens') => {
+    const counts = new Map<string, number>();
+    for (const item of inLibrary) {
+      const value = item.metadata[key];
+      if (value) counts.set(value, (counts.get(value) || 0) + 1);
+    }
+    return [...counts]
+      .map(([value, count]) => ({ value, count }))
+      .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
+      .slice(0, 200);
+  };
+  const days = inLibrary
+    .map((item) => item.captured_at?.slice(0, 10))
+    .filter((day): day is string => !!day)
+    .sort();
+  return {
+    cameras: count('Camera'),
+    lenses: count('Lens'),
+    captured: { first: days[0] ?? null, last: days.at(-1) ?? null },
+  };
+}
 export function browserAssetList(
   items: Asset[],
   options: AssetListOptions,
@@ -100,6 +127,12 @@ export function browserAssetList(
       `${item.filename} ${Object.values(item.metadata).join(' ')}`.toLowerCase().includes(query)) &&
     item.rating >= (options.rating || 0) &&
     matchesFlag(item.flag || 'none', options.flag) &&
+    (!options.camera || item.metadata.Camera === options.camera) &&
+    (!options.lens || item.metadata.Lens === options.lens) &&
+    (!options.captured_from ||
+      (!!item.captured_at && item.captured_at.slice(0, 10) >= options.captured_from)) &&
+    (!options.captured_to ||
+      (!!item.captured_at && item.captured_at.slice(0, 10) <= options.captured_to)) &&
     (options.format === 'raw'
       ? item.kind === 'raw'
       : options.format === 'jpeg'

@@ -296,6 +296,14 @@ impl Core {
                 Ok(serde_json::to_value(self.scan(&args.library_id)?)?)
             }
             "asset.list" => self.list_assets(parse(params)?),
+            "asset.facets" => {
+                #[derive(Deserialize)]
+                struct Facets {
+                    library_id: String,
+                }
+                let args: Facets = parse(params)?;
+                self.asset_facets(&args.library_id)
+            }
             "file.open" => {
                 #[derive(Deserialize)]
                 struct Open {
@@ -1684,7 +1692,38 @@ impl Core {
         library.context("E_INVALID: A batch must contain 1 to 1000 assets")
     }
 
+    /// Camera models and lenses present in a library, most common first, for filter menus.
+    fn asset_facets(&self, library_id: &str) -> Result<Value> {
+        self.library(library_id)?;
+        let db = self.db()?;
+        let facet = |key: &str| -> Result<Vec<Value>> {
+            let mut statement = db.prepare(&format!(
+                "SELECT json_extract(metadata_json,'$.{key}') AS value,COUNT(*) FROM assets WHERE library_id=?1 AND availability<>'missing' AND value IS NOT NULL AND value<>'' GROUP BY value ORDER BY COUNT(*) DESC,value LIMIT 200"
+            ))?;
+            let rows = statement
+                .query_map([library_id], |row| {
+                    Ok(json!({"value": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)?}))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        };
+        let cameras = facet("Camera")?;
+        let lenses = facet("Lens")?;
+        let (first, last): (Option<String>, Option<String>) = db.query_row(
+            "SELECT MIN(substr(captured_at,1,10)),MAX(substr(captured_at,1,10)) FROM assets WHERE library_id=?1 AND captured_at<>'' AND availability<>'missing'",
+            [library_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(
+            json!({"cameras": cameras, "lenses": lenses, "captured": {"first": first, "last": last}}),
+        )
+    }
+
     fn list_assets(&self, args: AssetQuery) -> Result<Value> {
+        ensure!(
+            valid_day(&args.captured_from) && valid_day(&args.captured_to),
+            "E_INVALID: captured_from and captured_to must be YYYY-MM-DD dates"
+        );
         let limit = args.limit.unwrap_or(200);
         ensure!(
             (1..=1000).contains(&limit),
@@ -1738,7 +1777,7 @@ impl Core {
             .collect::<Vec<_>>()
             .join(" AND ");
         let scope_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
-        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7)");
+        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7) AND (?8 IS NULL OR json_extract(metadata_json,'$.Camera')=?8) AND (?9 IS NULL OR json_extract(metadata_json,'$.Lens')=?9) AND (?10 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)>=?10)) AND (?11 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)<=?11))");
         let db = self.db()?;
         // Determine ambiguity from the unfiltered library. Only thin identity
         // fields are read globally; large metadata blobs are loaded for the page.
@@ -1799,7 +1838,11 @@ impl Core {
                     },
                     format,
                     flag,
-                    args.import_batch_id
+                    args.import_batch_id,
+                    args.camera,
+                    args.lens,
+                    args.captured_from,
+                    args.captured_to
                 ],
                 |row| row.get::<_, String>(0),
             )?
@@ -1910,6 +1953,19 @@ struct AssetQuery {
     sort_direction: Option<String>,
     flag: Option<String>,
     import_batch_id: Option<String>,
+    /// Exact EXIF camera model, as listed by `asset.facets`.
+    camera: Option<String>,
+    /// Exact EXIF lens, as listed by `asset.facets`.
+    lens: Option<String>,
+    /// Inclusive capture-date bounds, `YYYY-MM-DD`, compared with the camera's local date.
+    captured_from: Option<String>,
+    captured_to: Option<String>,
+}
+
+fn valid_day(day: &Option<String>) -> bool {
+    day.as_deref().is_none_or(|day| {
+        day.len() == 10 && chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok()
+    })
 }
 
 #[derive(Deserialize)]

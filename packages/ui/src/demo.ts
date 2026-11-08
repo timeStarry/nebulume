@@ -10,7 +10,7 @@ import {
   type AssetListOptions,
   type Flag,
 } from './model';
-import { browserAssetList } from './workspace';
+import { browserAssetFacets, browserAssetList } from './workspace';
 
 const files = new Map<string, File>();
 const assets = new Map<string, Asset>();
@@ -143,6 +143,9 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       break;
     case 'storage.list':
       result = [];
+      break;
+    case 'asset.facets':
+      result = browserAssetFacets([...assets.values()], String(params.library_id));
       break;
     case 'asset.list': {
       result = browserAssetList(

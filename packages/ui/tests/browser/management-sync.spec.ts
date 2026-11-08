@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { servePreviewImages } from './fixtures';
 import type { Asset, AssetListOptions, CaptureIndexStatus } from '../../src/model';
-import { browserAssetList } from '../../src/workspace';
+import { browserAssetFacets, browserAssetList } from '../../src/workspace';
 
 type Call = { command: string; params: Record<string, unknown> };
 async function fixture(
@@ -11,6 +11,7 @@ async function fixture(
   paired = false,
   browserMode = false,
   capturePending = false,
+  customize?: (assets: Asset[]) => void,
 ) {
   const calls: Call[] = [];
   let failedReads = 0;
@@ -49,6 +50,7 @@ async function fixture(
     capture_status: capturePending ? 'pending' : 'available',
     modified_at: `2026-10-${String(25 - (i % 20)).padStart(2, '0')}`,
   }));
+  customize?.(assets);
   const capture: CaptureIndexStatus = {
     library_id: 'library',
     total: count,
@@ -194,6 +196,9 @@ async function fixture(
         };
         break;
       }
+      case 'asset.facets':
+        result = browserAssetFacets(assets, 'library');
+        break;
       default:
         result = null;
     }
@@ -995,4 +1000,41 @@ test('dropping only unsupported files explains why nothing happened', async ({ p
   await fixture(page, 2);
   await drag(page, 'drop', ['/tmp/notes.txt']);
   await expect(page.getByRole('alert')).toContainText('不是文件夹或支持的影像文件');
+});
+
+test('camera, lens and date filters are sent with every page and clear with the filters', async ({
+  page,
+}) => {
+  const { calls, assets } = await fixture(page, 6, 0, false, false, false, (assets) => {
+    assets.forEach((asset, index) => {
+      asset.metadata = {
+        Camera: index < 4 ? 'NIKON Z 6' : 'X-T5',
+        Lens: index % 2 ? 'NIKKOR Z 50mm' : 'NIKKOR Z 24-70mm',
+      };
+      asset.captured_at = `2026-10-${String(10 + index).padStart(2, '0')}T00:00:00`;
+    });
+  });
+  expect(assets).toHaveLength(6);
+  const lastList = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
+  const camera = page.getByLabel('机身筛选');
+  await expect(camera.locator('option')).toHaveText(['所有机身', 'NIKON Z 6（4）', 'X-T5（2）']);
+  await camera.selectOption('NIKON Z 6');
+  await expect.poll(lastList).toMatchObject({ camera: 'NIKON Z 6' });
+  await page.getByLabel('镜头筛选').selectOption('NIKKOR Z 50mm');
+  await page.getByLabel('拍摄日期起').fill('2026-10-11');
+  await page.getByLabel('拍摄日期止').fill('2026-10-13');
+  await expect.poll(lastList).toMatchObject({
+    camera: 'NIKON Z 6',
+    lens: 'NIKKOR Z 50mm',
+    captured_from: '2026-10-11',
+    captured_to: '2026-10-13',
+  });
+  await expect(page.locator('.collection-status')).toContainText('已载入 2 / 2');
+  await page.getByLabel('拍摄日期起').fill('2026-10-20');
+  await expect(page.getByRole('heading', { name: '没有匹配的照片' })).toBeVisible();
+  await page.getByRole('button', { name: '清除筛选' }).click();
+  await expect.poll(lastList).toEqual(expect.not.objectContaining({ camera: expect.anything() }));
+  await expect(camera).toHaveValue('');
+  await expect(page.getByLabel('拍摄日期起')).toHaveValue('');
+  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
 });

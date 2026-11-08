@@ -129,6 +129,9 @@ async function openInspector(
       case 'update_support':
         result = { supported: false, kind: 'development' };
         break;
+      case 'asset.facets':
+        result = { cameras: [], lenses: [], captured: { first: null, last: null } };
+ break;
       default:
         throw new Error(`Unexpected inspector fixture command: ${command}`);
     }

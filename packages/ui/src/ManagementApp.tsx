@@ -36,6 +36,7 @@ import {
   errorMessage,
   isTextEntry,
   type Asset,
+  type AssetFacets,
   type AssetListOptions,
   type AssetListResult,
   type Flag,
@@ -90,6 +91,11 @@ export default function ManagementApp() {
   const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
   const [flag, setFlag] = createSignal<FlagFilter>('any');
   const [batchId, setBatchId] = createSignal('');
+  const [camera, setCamera] = createSignal('');
+  const [lens, setLens] = createSignal('');
+  const [capturedFrom, setCapturedFrom] = createSignal('');
+  const [capturedTo, setCapturedTo] = createSignal('');
+  const [facets, setFacets] = createSignal<AssetFacets>();
   const [batches, setBatches] = createSignal<ImportBatch[]>([]);
   const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('captured_at');
   const [direction, setDirection] =
@@ -150,7 +156,17 @@ export default function ManagementApp() {
   );
   const selected = createMemo(() => assets().find((asset) => asset.id === selectedId()));
   const filtered = () =>
-    !!(query() || rating() || format() !== 'all' || flag() !== 'any' || batchId());
+    !!(
+      query() ||
+      rating() ||
+      format() !== 'all' ||
+      flag() !== 'any' ||
+      batchId() ||
+      camera() ||
+      lens() ||
+      capturedFrom() ||
+      capturedTo()
+    );
   const [detail, { mutate: mutateDetail, refetch: refetchDetail }] = createResource(
     () => info() && section() === 'libraries' && selected()?.id,
     async (id): Promise<{ asset: Asset | null; error: string }> => {
@@ -206,6 +222,10 @@ export default function ManagementApp() {
       format: format(),
       flag: flag() === 'any' ? undefined : flag(),
       import_batch_id: batchId() || undefined,
+      camera: camera() || undefined,
+      lens: lens() || undefined,
+      captured_from: capturedFrom() || undefined,
+      captured_to: capturedTo() || undefined,
       sort_by: sort(),
       sort_direction: direction(),
     };
@@ -271,6 +291,10 @@ export default function ManagementApp() {
     format();
     flag();
     batchId();
+    camera();
+    lens();
+    capturedFrom();
+    capturedTo();
     sort();
     direction();
     const initialized = ready();
@@ -319,6 +343,9 @@ export default function ManagementApp() {
     setFlag('any');
     setBatchId('');
     setBatches([]);
+    clearMetadataFilters();
+    setFacets(undefined);
+    void loadFacets(library.id);
     setInfo(false);
     setLibraryId(library.id);
     if (desktop)
@@ -328,6 +355,20 @@ export default function ManagementApp() {
     setSection('libraries');
     setError('');
     setNotice('');
+  }
+  function clearMetadataFilters() {
+    setCamera('');
+    setLens('');
+    setCapturedFrom('');
+    setCapturedTo('');
+  }
+  async function loadFacets(id: string) {
+    try {
+      const result = await execute<AssetFacets>('asset.facets', { library_id: id });
+      if (libraryId() === id) setFacets(result);
+    } catch {
+      // Filters stay usable without suggestions; the date inputs still work.
+    }
   }
   function newLibrary(source?: StorageConfig, prefix = '', root?: string) {
     setEditingLibrary(undefined);
@@ -1378,6 +1419,57 @@ export default function ManagementApp() {
                     <option value="raw">RAW</option>
                     <option value="jpeg">JPEG</option>
                   </select>
+                  <Show when={facets()?.cameras.length}>
+                    <select
+                      value={camera()}
+                      onChange={(event) => setCamera(event.currentTarget.value)}
+                      aria-label="机身筛选"
+                    >
+                      <option value="">所有机身</option>
+                      <For each={facets()!.cameras}>
+                        {(item) => (
+                          <option value={item.value}>
+                            {item.value}（{item.count}）
+                          </option>
+                        )}
+                      </For>
+                    </select>
+                  </Show>
+                  <Show when={facets()?.lenses.length}>
+                    <select
+                      value={lens()}
+                      onChange={(event) => setLens(event.currentTarget.value)}
+                      aria-label="镜头筛选"
+                    >
+                      <option value="">所有镜头</option>
+                      <For each={facets()!.lenses}>
+                        {(item) => (
+                          <option value={item.value}>
+                            {item.value}（{item.count}）
+                          </option>
+                        )}
+                      </For>
+                    </select>
+                  </Show>
+                  <div class="date-range" role="group" aria-label="拍摄日期范围">
+                    <input
+                      type="date"
+                      value={capturedFrom()}
+                      min={facets()?.captured.first ?? undefined}
+                      max={capturedTo() || facets()?.captured.last || undefined}
+                      onChange={(event) => setCapturedFrom(event.currentTarget.value)}
+                      aria-label="拍摄日期起"
+                    />
+                    <span aria-hidden="true">–</span>
+                    <input
+                      type="date"
+                      value={capturedTo()}
+                      min={capturedFrom() || facets()?.captured.first || undefined}
+                      max={facets()?.captured.last ?? undefined}
+                      onChange={(event) => setCapturedTo(event.currentTarget.value)}
+                      aria-label="拍摄日期止"
+                    />
+                  </div>
                   <select
                     value={sort()}
                     title={
@@ -1541,7 +1633,8 @@ export default function ManagementApp() {
                                       setRating(0),
                                       setFormat('all'),
                                       setFlag('any'),
-                                      setBatchId(''))
+                                      setBatchId(''),
+                                      clearMetadataFilters())
                                     : desktop
                                       ? scan(library())
                                       : fileInput.click()
