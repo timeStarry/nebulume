@@ -2397,3 +2397,16 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.skeleton-card {
+  aspect-ratio: 1 / 0.86;
+  border-radius: var(--nl-radius-sm);
+  background: var(--nl-skeleton);
+}
+.load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nl-space-3);
+  font-size: var(--nl-text-sm);
+  color: var(--nl-text-muted);
+}

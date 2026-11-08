@@ -89,6 +89,8 @@ export default function ManagementApp() {
   const [info, setInfo] = createSignal(false);
   const [ready, setReady] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
+  // Stops automatic paging after a failure so a scroll cannot retry in a loop.
+  const [autoPagingFailed, setAutoPagingFailed] = createSignal(false);
   const [busy, setBusy] = createSignal('');
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
@@ -241,6 +243,7 @@ export default function ManagementApp() {
           if (token === request && scrollElement.isConnected) scrollElement.scrollTop = scrollTop;
         });
     } catch (e) {
+      if (token === request && append) setAutoPagingFailed(true);
       if (token === request && !preserveLoaded) setError(errorMessage(e));
       if (preserveLoaded && token === request) throw e;
     } finally {
@@ -259,6 +262,7 @@ export default function ManagementApp() {
     direction();
     const initialized = ready();
     if (active !== 'libraries' || !libraryId() || !initialized) return;
+    setAutoPagingFailed(false);
     request++;
     setLoading(true);
     const timeout = setTimeout(() => void loadAssets(), 120);
@@ -1152,41 +1156,57 @@ export default function ManagementApp() {
                     <Show
                       when={assets().length}
                       fallback={
-                        <div class="workspace-empty">
-                          <Icon name="photo" size={32} />
-                          <h2>
-                            {loading()
-                              ? '正在读取图片…'
-                              : filtered()
-                                ? '没有匹配的照片'
-                                : '图片库尚无照片'}
-                          </h2>
-                          <p>
-                            {filtered()
-                              ? '调整搜索词、评级、旗标或文件格式筛选。'
-                              : desktop
-                                ? '扫描此目录建立索引，照片在原位置保留。'
-                                : '选择本地图片开始体验。'}
-                          </p>
-                          <Show when={!loading()}>
-                            <button
-                              class="button"
-                              onClick={() =>
-                                filtered()
-                                  ? (setQuery(''),
-                                    setRating(0),
-                                    setFormat('all'),
-                                    setFlag('any'),
-                                    setBatchId(''))
-                                  : desktop
-                                    ? scan(library())
-                                    : fileInput.click()
-                              }
+                        <Show
+                          when={!loading()}
+                          fallback={
+                            <div
+                              class="photo-grid skeleton-grid"
+                              style={{ '--thumbnail-size': `${thumbSize()}px` }}
+                              role="status"
+                              aria-label="正在读取图片…"
                             >
-                              {filtered() ? '清除筛选' : desktop ? '扫描图片库' : '选择本地图片'}
-                            </button>
-                          </Show>
-                        </div>
+                              <For each={Array.from({ length: 12 }, (_, index) => index)}>
+                                {() => <div class="skeleton-card" aria-hidden="true" />}
+                              </For>
+                            </div>
+                          }
+                        >
+                          <div class="workspace-empty">
+                            <Icon name="photo" size={32} />
+                            <h2>
+                              {loading()
+                                ? '正在读取图片…'
+                                : filtered()
+                                  ? '没有匹配的照片'
+                                  : '图片库尚无照片'}
+                            </h2>
+                            <p>
+                              {filtered()
+                                ? '调整搜索词、评级、旗标或文件格式筛选。'
+                                : desktop
+                                  ? '扫描此目录建立索引，照片在原位置保留。'
+                                  : '选择本地图片开始体验。'}
+                            </p>
+                            <Show when={!loading()}>
+                              <button
+                                class="button"
+                                onClick={() =>
+                                  filtered()
+                                    ? (setQuery(''),
+                                      setRating(0),
+                                      setFormat('all'),
+                                      setFlag('any'),
+                                      setBatchId(''))
+                                    : desktop
+                                      ? scan(library())
+                                      : fileInput.click()
+                                }
+                              >
+                                {filtered() ? '清除筛选' : desktop ? '扫描图片库' : '选择本地图片'}
+                              </button>
+                            </Show>
+                          </div>
+                        </Show>
                       }
                     >
                       <div class="photo-grid" style={{ '--thumbnail-size': `${thumbSize()}px` }}>
@@ -1229,12 +1249,38 @@ export default function ManagementApp() {
                         </For>
                       </div>
                       <Show when={assets().length < total()}>
-                        <div class="load-more">
+                        <div
+                          class="load-more"
+                          ref={(element) => {
+                            const observer = new IntersectionObserver(
+                              (entries) => {
+                                if (
+                                  entries.some((entry) => entry.isIntersecting) &&
+                                  !loading() &&
+                                  !autoPagingFailed() &&
+                                  assets().length < total()
+                                )
+                                  void loadAssets(true);
+                              },
+                              { root: collectionScroll, rootMargin: '800px 0px' },
+                            );
+                            observer.observe(element);
+                            onCleanup(() => observer.disconnect());
+                          }}
+                        >
+                          <span class="load-more-status" aria-live="polite">
+                            {loading()
+                              ? '正在载入更多照片…'
+                              : `已载入 ${assets().length} / ${total()}`}
+                          </span>
                           <button
-                            class="button"
+                            class="button small"
                             aria-label={`载入更多（${assets().length} / ${total()}）`}
                             disabled={loading()}
-                            onClick={() => loadAssets(true)}
+                            onClick={() => {
+                              setAutoPagingFailed(false);
+                              void loadAssets(true);
+                            }}
                           >
                             载入更多
                           </button>

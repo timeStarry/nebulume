@@ -245,7 +245,15 @@ for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
     await page.getByLabel('排序字段').selectOption(sortBy);
     await page.getByRole('button', { name: /^排序方向：降序/ }).click();
     const matching = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
-    await expect.poll(matching).toMatchObject({
+    const firstPage = () =>
+      calls.find(
+        (call) =>
+          call.command === 'asset.list' &&
+          call.params.sort_direction === 'asc' &&
+          call.params.format === 'jpeg' &&
+          call.params.offset === 0,
+      )?.params;
+    await expect.poll(firstPage).toMatchObject({
       library_id: local.id,
       rating: 3,
       format: 'jpeg',
@@ -259,7 +267,7 @@ for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
       'aria-label',
       'Zulu.jpg，4 星',
     );
-    await page.getByRole('button', { name: '载入更多（2 / 3）' }).click();
+    // The next page loads automatically once the end of the grid is near.
     await expect.poll(matching).toMatchObject({
       rating: 3,
       format: 'jpeg',
@@ -273,13 +281,23 @@ for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
     );
     await page.getByRole('button', { name: /^排序方向：升序/ }).click();
     await page.getByLabel('文件格式筛选').selectOption('raw');
-    await expect.poll(matching).toMatchObject({
-      rating: 3,
-      format: 'raw',
-      sort_by: sortBy,
-      sort_direction: 'desc',
-      offset: 0,
-    });
+    await expect
+      .poll(
+        () =>
+          calls.find(
+            (call) =>
+              call.command === 'asset.list' &&
+              call.params.format === 'raw' &&
+              call.params.offset === 0,
+          )?.params,
+      )
+      .toMatchObject({
+        rating: 3,
+        format: 'raw',
+        sort_by: sortBy,
+        sort_direction: 'desc',
+        offset: 0,
+      });
     await page.setViewportSize({ width: 1024, height: 768 });
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),

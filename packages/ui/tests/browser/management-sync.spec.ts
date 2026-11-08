@@ -690,3 +690,30 @@ test('failed background membership reconciliation remains retryable after the as
   expect(calls.slice(before).filter((call) => call.command === 'asset.get')).toHaveLength(0);
   await expect(page.getByText('影像变更尚未同步', { exact: false })).toHaveCount(0);
 });
+
+test('scrolling near the end loads the next page automatically and a failed page stops until retried', async ({
+  page,
+}) => {
+  const { calls, failList } = await fixture(page);
+  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(200);
+  const pages = () =>
+    calls.filter((call) => call.command === 'asset.list' && Number(call.params.offset) > 0);
+  failList();
+  await page
+    .locator('.collection-scroll')
+    .evaluate((element) => (element.scrollTop = element.scrollHeight));
+  await expect.poll(() => pages().length).toBe(1);
+  await expect(page.getByRole('alert')).toContainText('Synthetic unavailable index');
+  await page
+    .locator('.collection-scroll')
+    .evaluate((element) => (element.scrollTop = element.scrollHeight - 1));
+  await page.waitForTimeout(300);
+  expect(pages()).toHaveLength(1);
+  await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
+  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(400);
+  await page
+    .locator('.collection-scroll')
+    .evaluate((element) => (element.scrollTop = element.scrollHeight));
+  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(410);
+  await expect(page.getByRole('button', { name: /载入更多/ })).toHaveCount(0);
+});
