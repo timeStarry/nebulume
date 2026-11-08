@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, SystemTime},
@@ -11,6 +12,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -48,7 +50,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 8,
+            version <= 9,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -220,6 +222,15 @@ impl Core {
                     failed INTEGER NOT NULL DEFAULT 0);
                  CREATE INDEX import_batches_library ON import_batches(library_id,started_at);
                  PRAGMA user_version=8;",
+            )?;
+        }
+        if version < 9 {
+            // Partial-content fingerprint for move and rename detection during
+            // scans only; import de-duplication keeps using sha256.
+            migration.execute_batch(
+                "ALTER TABLE assets ADD COLUMN quick_hash TEXT;
+                 CREATE INDEX assets_quick_hash ON assets(library_id,size,quick_hash);
+                 PRAGMA user_version=9;",
             )?;
         }
         migration.commit()?;
@@ -1248,6 +1259,15 @@ impl Core {
             "E_PATH: Library root now resolves to a different directory"
         );
         let mut report = ScanReport::default();
+        // Rows that exist before this scan; anything else was indexed by it.
+        let existing: HashSet<String> = {
+            let db = self.db()?;
+            let mut statement = db.prepare("SELECT id FROM assets WHERE library_id=?1")?;
+            let ids = statement
+                .query_map([library_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<HashSet<_>>>()?;
+            ids
+        };
         for entry in WalkDir::new(root)
             .follow_links(false)
             .into_iter()
@@ -1301,22 +1321,82 @@ impl Core {
         // Permission errors are not treated as deletion.
         let known = {
             let db = self.db()?;
-            let mut statement = db.prepare("SELECT id,path FROM assets WHERE library_id=?1")?;
+            let mut statement = db.prepare(
+                "SELECT id,path,size,quick_hash FROM assets WHERE library_id=?1 AND source_key IS NULL",
+            )?;
             let rows = statement
                 .query_map([library_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows
         };
-        for (id, path) in known {
-            match fs::metadata(&path) {
+        let mut missing: Vec<(String, u64, Option<String>)> = Vec::new();
+        for (id, path, size, hash) in &known {
+            match fs::metadata(path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     self.db()?
                         .execute("UPDATE assets SET availability='missing' WHERE id=?1", [id])?;
+                    missing.push((id.clone(), *size, hash.clone()));
                 }
                 _ => {}
             }
+        }
+        // A missing photo whose size and quick_hash match exactly one photo first
+        // indexed by this scan was moved or renamed. Keep the original asset (id,
+        // rating, flag, crop, batch) and point it at the new file.
+        if !missing.is_empty() {
+            const FILE_COLUMNS: &str = "path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked,key,quick_hash,sha256";
+            let mut db = self.db()?;
+            let transaction = db.transaction()?;
+            for (old_id, size, hash) in &missing {
+                let Some(hash) = hash else { continue };
+                let candidates: Vec<String> = {
+                    let mut find = transaction.prepare_cached(
+                        "SELECT id FROM assets WHERE library_id=?1 AND size=?2 AND quick_hash=?3 AND availability<>'missing' AND source_key IS NULL",
+                    )?;
+                    let ids = find
+                        .query_map(params![library_id, size, hash], |row| {
+                            row.get::<_, String>(0)
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    ids
+                };
+                let fresh: Vec<&String> = candidates
+                    .iter()
+                    .filter(|id| !existing.contains(*id))
+                    .collect();
+                // Two copies of the same file are ambiguous; leave both untouched.
+                let [new_id] = fresh.as_slice() else { continue };
+                let values: Vec<rusqlite::types::Value> = transaction.query_row(
+                    &format!("SELECT {FILE_COLUMNS} FROM assets WHERE id=?1"),
+                    [new_id],
+                    |row| (0..19).map(|index| row.get(index)).collect(),
+                )?;
+                transaction.execute("DELETE FROM assets WHERE id=?1", [new_id])?;
+                let assignments = FILE_COLUMNS
+                    .split(',')
+                    .enumerate()
+                    .map(|(index, column)| format!("{column}=?{}", index + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut bound: Vec<&dyn rusqlite::ToSql> = values
+                    .iter()
+                    .map(|value| value as &dyn rusqlite::ToSql)
+                    .collect();
+                bound.push(old_id);
+                transaction.execute(
+                    &format!("UPDATE assets SET {assignments} WHERE id=?20"),
+                    bound.as_slice(),
+                )?;
+                report.moved += 1;
+            }
+            transaction.commit()?;
         }
         Ok(report)
     }
@@ -1366,21 +1446,21 @@ impl Core {
                 .to_owned(),
         };
         let key = path_key(&path_string);
-        let old: Option<(String, u64, String, String, bool)> = if let Some(asset) =
+        let old: Option<(String, u64, String, String, bool, bool)> = if let Some(asset) =
             registered_remote
         {
             Some(self.db()?.query_row(
-                "SELECT id,size,modified_stamp,availability,captured_at_checked FROM assets WHERE id=?1 AND library_id=?2 AND path=?3 AND source_key=?4",
+                "SELECT id,size,modified_stamp,availability,captured_at_checked,quick_hash IS NULL FROM assets WHERE id=?1 AND library_id=?2 AND path=?3 AND source_key=?4",
                 params![asset.id, library.id, path_string, asset.source_key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             ).optional()?.context("E_CONFLICT: Remote cache changed while reading; retry the image")?)
         } else {
             self.db()?.query_row(
-                "SELECT id,size,modified_stamp,availability,captured_at_checked FROM assets WHERE library_id=?1 AND path_key=?2",
-                params![library.id, key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                "SELECT id,size,modified_stamp,availability,captured_at_checked,quick_hash IS NULL FROM assets WHERE library_id=?1 AND path_key=?2",
+                params![library.id, key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             ).optional()?
         };
-        if let Some((old_id, size, old_stamp, availability, capture_checked)) = &old {
+        if let Some((old_id, size, old_stamp, availability, capture_checked, hash_missing)) = &old {
             if *size == info.len()
                 && *old_stamp == stamp
                 && matches!(availability.as_str(), "available" | "unsupported")
@@ -1391,6 +1471,16 @@ impl Core {
                         "UPDATE assets SET created_at=?1,created_at_checked=1 WHERE id=?2 AND source_key IS NULL AND (created_at<>?1 OR created_at_checked=0)",
                         params![created_at, old_id],
                     )?;
+                }
+                if *hash_missing && registered_remote.is_none() {
+                    // One-time backfill for assets indexed before v9, so moves of
+                    // existing photos can be recognised on later scans.
+                    if let Some(hash) = quick_hash(&path, info.len()) {
+                        self.db()?.execute(
+                            "UPDATE assets SET quick_hash=?1 WHERE id=?2 AND quick_hash IS NULL",
+                            params![hash, old_id],
+                        )?;
+                    }
                 }
                 if !capture_checked {
                     // Upgrade old unchanged inspections with a bounded EXIF-only
@@ -1468,17 +1558,18 @@ impl Core {
             return Ok((true, error));
         }
         self.db()?.execute(
-            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked,key)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,?18)
+            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked,key,quick_hash)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,?18,?19)
              ON CONFLICT(library_id,path_key) DO UPDATE SET path=excluded.path,key=excluded.key,
              sha256=CASE WHEN assets.size=excluded.size AND assets.modified_stamp=excluded.modified_stamp THEN assets.sha256 ELSE NULL END,
+             quick_hash=CASE WHEN assets.size=excluded.size AND assets.modified_stamp=excluded.modified_stamp THEN assets.quick_hash ELSE excluded.quick_hash END,
              filename=excluded.filename,extension=excluded.extension,
              kind=excluded.kind,size=excluded.size,modified_at=excluded.modified_at,modified_stamp=excluded.modified_stamp,
              width=excluded.width,height=excluded.height,metadata_json=excluded.metadata_json,availability=excluded.availability,
              captured_at=excluded.captured_at,captured_at_checked=excluded.captured_at_checked,
              created_at=CASE WHEN assets.source_key IS NULL THEN excluded.created_at ELSE assets.created_at END,
              created_at_checked=CASE WHEN assets.source_key IS NULL THEN 1 ELSE assets.created_at_checked END",
-            params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability, file_created_at(&info), captured_at, capture_checked, location_key(&library.source_prefix, Path::new(&library.root), &path)],
+            params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability, file_created_at(&info), captured_at, capture_checked, location_key(&library.source_prefix, Path::new(&library.root), &path), quick_hash(&path, info.len())],
         )?;
         Ok((true, error))
     }
@@ -1950,6 +2041,29 @@ fn location_row(row: &Row<'_>) -> rusqlite::Result<Location> {
         implicit: row.get(8)?,
         created_at: row.get(9)?,
     })
+}
+
+/// SHA-256 of the first 64 KiB + last 64 KiB + file size as LE bytes.
+/// For files smaller than 128 KiB, hashes the full content + size.
+/// Returns None on any I/O error (the file may be locked or gone).
+fn quick_hash(path: &Path, size: u64) -> Option<String> {
+    const CHUNK: u64 = 64 * 1024;
+    let mut file = fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    if size <= CHUNK * 2 {
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).ok()?;
+        hasher.update(&buf);
+    } else {
+        let mut buf = [0u8; 64 * 1024];
+        let n = file.read(&mut buf).ok()?;
+        hasher.update(&buf[..n]);
+        file.seek(SeekFrom::End(-(CHUNK as i64))).ok()?;
+        let n = file.read(&mut buf).ok()?;
+        hasher.update(&buf[..n]);
+    }
+    hasher.update(size.to_le_bytes());
+    Some(hex::encode(hasher.finalize()))
 }
 
 pub(crate) fn path_key(path: &str) -> String {

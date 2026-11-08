@@ -182,7 +182,7 @@ fn simultaneous_catalog_initialization_keeps_one_complete_schema() {
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        8
+        9
     );
 }
 
@@ -696,4 +696,132 @@ fn simple_tiff(mut tags: Vec<TiffTag>, samples: &[u8]) -> Vec<u8> {
     bytes.extend_from_slice(&extra);
     bytes.extend_from_slice(samples);
     bytes
+}
+
+fn assets_by_name(core: &Core) -> Vec<Value> {
+    let list = core.dispatch("asset.list", json!({"limit":100})).unwrap();
+    list["items"].as_array().unwrap().clone()
+}
+
+#[test]
+fn moved_and_renamed_photos_keep_identity_rating_flag_and_crop() {
+    let (_temp, core, photos, library) = setup();
+    png(&photos.join("a.png"), 12, 8);
+    png(&photos.join("b.png"), 10, 9);
+    scan(&core, &library);
+    let before = assets_by_name(&core);
+    let a = before
+        .iter()
+        .find(|item| item["filename"] == "a.png")
+        .unwrap()
+        .clone();
+    let b = before
+        .iter()
+        .find(|item| item["filename"] == "b.png")
+        .unwrap()
+        .clone();
+    core.dispatch("asset.rate", json!({"id":a["id"],"rating":4}))
+        .unwrap();
+    core.dispatch("asset.flag", json!({"id":a["id"],"flag":"pick"}))
+        .unwrap();
+    core.dispatch(
+        "asset.crop",
+        json!({"id":a["id"],"x":0.1,"y":0.1,"width":0.5,"height":0.5}),
+    )
+    .unwrap();
+    core.dispatch("asset.rate", json!({"id":b["id"],"rating":2}))
+        .unwrap();
+    // a.png moves into a subfolder; b.png is renamed in place.
+    fs::create_dir(photos.join("2026")).unwrap();
+    fs::rename(photos.join("a.png"), photos.join("2026/a.png")).unwrap();
+    fs::rename(photos.join("b.png"), photos.join("b-renamed.png")).unwrap();
+    let report = scan(&core, &library);
+    assert_eq!(report["moved"], 2, "{report:#}");
+    let after = assets_by_name(&core);
+    assert_eq!(after.len(), 2, "no orphaned missing rows remain");
+    let moved = core.asset(a["id"].as_str().unwrap()).unwrap();
+    assert!(moved.path.ends_with("2026/a.png") || moved.path.ends_with("2026\\a.png"));
+    assert_eq!(moved.availability, "available");
+    assert_eq!((moved.rating, moved.flag.as_str()), (4, "pick"));
+    assert_eq!(moved.crop.unwrap().width, 0.5);
+    let renamed = core.asset(b["id"].as_str().unwrap()).unwrap();
+    assert_eq!(renamed.filename, "b-renamed.png");
+    assert_eq!(renamed.rating, 2);
+    // A later scan is stable: nothing else moves or goes missing.
+    let again = scan(&core, &library);
+    assert_eq!(again["moved"], 0);
+    assert_eq!(assets_by_name(&core).len(), 2);
+}
+
+#[test]
+fn ambiguous_duplicates_are_not_merged() {
+    let (_temp, core, photos, library) = setup();
+    png(&photos.join("original.png"), 12, 8);
+    scan(&core, &library);
+    let original = only_asset(&core);
+    core.dispatch("asset.rate", json!({"id":original["id"],"rating":5}))
+        .unwrap();
+    // The file disappears and two identical copies appear: which one it became is unknown.
+    fs::copy(photos.join("original.png"), photos.join("copy-1.png")).unwrap();
+    fs::copy(photos.join("original.png"), photos.join("copy-2.png")).unwrap();
+    fs::remove_file(photos.join("original.png")).unwrap();
+    let report = scan(&core, &library);
+    assert_eq!(report["moved"], 0);
+    let kept = core.asset(original["id"].as_str().unwrap()).unwrap();
+    assert_eq!(kept.availability, "missing");
+    assert_eq!(kept.rating, 5);
+    let copies: Vec<_> = assets_by_name(&core)
+        .into_iter()
+        .filter(|item| item["filename"].as_str().unwrap().starts_with("copy-"))
+        .collect();
+    assert_eq!(copies.len(), 2);
+    assert!(copies.iter().all(|item| item["rating"] == 0));
+}
+
+#[test]
+fn edited_content_at_a_new_path_is_a_new_photo() {
+    let (_temp, core, photos, library) = setup();
+    png(&photos.join("a.png"), 12, 8);
+    scan(&core, &library);
+    let original = only_asset(&core);
+    core.dispatch("asset.rate", json!({"id":original["id"],"rating":3}))
+        .unwrap();
+    fs::remove_file(photos.join("a.png")).unwrap();
+    png(&photos.join("different.png"), 20, 4);
+    let report = scan(&core, &library);
+    assert_eq!(report["moved"], 0);
+    assert_eq!(
+        core.asset(original["id"].as_str().unwrap())
+            .unwrap()
+            .availability,
+        "missing"
+    );
+}
+
+#[test]
+fn photos_indexed_before_v9_get_a_quick_hash_on_the_next_scan_and_can_then_move() {
+    let (temp, core, photos, library) = setup();
+    png(&photos.join("legacy.png"), 12, 8);
+    scan(&core, &library);
+    let asset = only_asset(&core);
+    core.dispatch("asset.rate", json!({"id":asset["id"],"rating":4}))
+        .unwrap();
+    drop(core);
+    let database = rusqlite::Connection::open(temp.path().join("catalog/catalog.sqlite3")).unwrap();
+    database
+        .execute_batch("UPDATE assets SET quick_hash=NULL;")
+        .unwrap();
+    let core = Core::open(temp.path().join("catalog")).unwrap();
+    // Unchanged file: the scan only fills the missing fingerprint.
+    let report = scan(&core, &library);
+    assert_eq!(report["indexed"], 0);
+    let hashed: Option<String> = database
+        .query_row("SELECT quick_hash FROM assets", [], |row| row.get(0))
+        .unwrap();
+    assert!(hashed.is_some_and(|hash| hash.len() == 64));
+    fs::rename(photos.join("legacy.png"), photos.join("moved.png")).unwrap();
+    let report = scan(&core, &library);
+    assert_eq!(report["moved"], 1);
+    let moved = core.asset(asset["id"].as_str().unwrap()).unwrap();
+    assert_eq!((moved.filename.as_str(), moved.rating), ("moved.png", 4));
 }

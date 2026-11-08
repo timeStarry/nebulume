@@ -195,6 +195,8 @@ export interface StorageCheck {
 export interface ScanResult {
   indexed: number;
   skipped: number;
+  /** Missing photos matched to a moved or renamed file; their marks were kept. Local scans only. */
+  moved?: number;
   errors: { path: string; message: string }[];
 }
 export interface TlsCertificate {

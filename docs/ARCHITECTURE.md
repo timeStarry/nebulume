@@ -37,7 +37,7 @@ flowchart TD
 
 SQLite 保存图库、来源绑定、资产和编辑配方。图库绑定本地目录或远端来源前缀；一个存储源可提供多个图库。资产用稳定 ID 关联评级和裁剪，远端 `source_key` 保留原始键，与缓存路径分开。
 
-schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v8：v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
+schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v9：v9 新增 `assets.quick_hash`（文件首尾各 64 KiB 加文件大小的 SHA-256，小于 128 KiB 的文件取全文），只用于扫描时识别移动和改名，导入去重仍用完整 `sha256`；升级不读原件，旧资产在下次扫描遇到未变化的文件时补算。此前 v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
 
 文件创建、修改和 EXIF 拍摄时间分别保存。拍摄时间来自 DateTimeOriginal，按相机记录的日期、时间和子秒排序；保留已有时区但不推断缺失时区，不用文件或缓存时间补值。未知值在两个排序方向下均置后。
 
@@ -67,6 +67,8 @@ schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并�
 公网连接使用标准 HTTPS。局域网可使用 HTTP，或经用户确认、按源固定 SHA-256 的设备证书。信任某个源不改变其他连接的校验；证书变化或过期会拒绝访问。
 
 凭据默认保存在 Windows Credential Manager、macOS Keychain 或 Linux Secret Service，按配置和来源位置隔离，也支持显式会话凭据。启动时不连接远端，首次操作按需恢复凭据；凭据库不可用时明确报错，不降级为明文保存。配置、SQLite、日志及 UI 响应不包含秘密。
+
+本地扫描结束时，本次未找到的旧资产标为 missing。若某个 missing 资产与本次扫描新索引的唯一一个文件大小和 `quick_hash` 都相同，视为移动或改名：保留原资产 id、评级、旗标、裁剪与导入批次，改指新路径，并删除新建的那条记录，同一事务完成。出现多个相同副本时无法判断，保持原状不合并；内容已变的文件按新照片处理。远端库不做此判断。
 
 远端扫描只枚举并索引属性，不下载图片正文。列举受条目、目录和页数上限约束，不完整结果不标记资产丢失。当前同路径同大小的远端内容替换需显式重新读取原图。
 

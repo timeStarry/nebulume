@@ -125,5 +125,6 @@ pub struct ScanError {
 pub struct ScanReport {
     pub indexed: usize,
     pub skipped: usize,
+    pub moved: usize,
     pub errors: Vec<ScanError>,
 }

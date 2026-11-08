@@ -373,7 +373,7 @@ export default function ManagementApp() {
       if (library.id === libraryId()) await loadAssets();
       await refreshLibraries();
       setNotice(
-        `扫描完成：索引 ${result.indexed} 项，跳过 ${result.skipped} 项${result.errors.length ? `，${result.errors.length} 项异常` : ''}。`,
+        `扫描完成：索引 ${result.indexed} 项，跳过 ${result.skipped} 项${result.moved ? `，识别 ${result.moved} 张移动或改名的照片并保留标记` : ''}${result.errors.length ? `，${result.errors.length} 项异常` : ''}。`,
       );
       if (result.errors.length)
         setError(
