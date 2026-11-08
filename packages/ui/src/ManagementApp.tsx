@@ -27,6 +27,7 @@ import CacheSettings from './CacheSettings';
 import CaptureIndexControl from './CaptureIndexControl';
 import OverflowMenu from './OverflowMenu';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
+import VirtualGrid, { type VirtualGridApi } from './VirtualGrid';
 import { AboutPanel, UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
@@ -126,6 +127,7 @@ export default function ManagementApp() {
   let navigationButton: HTMLButtonElement | undefined;
   let navigationElement: HTMLElement | undefined;
   let collectionScroll: HTMLDivElement | undefined;
+  let photoGrid: VirtualGridApi | undefined;
   let request = 0;
   const revisions = new Map<string, number>();
   const recentUpdates = new Map<string, { sequence: number; asset: Asset }>();
@@ -743,10 +745,7 @@ export default function ManagementApp() {
   }
   /** Columns in the rendered grid, read from layout so it follows the size slider. */
   function gridColumns() {
-    const grid = collectionScroll?.querySelector<HTMLElement>('.photo-grid:not(.skeleton-grid)');
-    if (!grid) return 1;
-    const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length;
-    return Math.max(1, columns);
+    return photoGrid?.columns() ?? 1;
   }
   function gridStep(key: string, index: number): number | undefined {
     const last = assets().length - 1;
@@ -754,10 +753,7 @@ export default function ManagementApp() {
     if (index < 0)
       return ['ArrowRight', 'ArrowDown', 'Home', 'PageDown'].includes(key) ? 0 : undefined;
     const columns = gridColumns();
-    const page = Math.max(
-      columns,
-      columns * Math.floor((collectionScroll?.clientHeight || 0) / Math.max(1, thumbSize())),
-    );
+    const page = columns * (photoGrid?.rowsPerPage() ?? 1);
     switch (key) {
       case 'ArrowRight':
         return Math.min(last, index + 1);
@@ -780,14 +776,18 @@ export default function ManagementApp() {
     }
   }
   function focusThumbnail(id: string) {
-    queueMicrotask(() => {
+    // Move DOM focus only when the grid already owns it (or lost it because the
+    // focused cell scrolled out and unmounted), so toolbar shortcuts keep focus.
+    const owned =
+      collectionScroll?.contains(document.activeElement) ||
+      document.activeElement === document.body;
+    photoGrid?.scrollToIndex(assets().findIndex((asset) => asset.id === id));
+    // The target row may only mount after the scroll is measured.
+    requestAnimationFrame(() => {
       const element = collectionScroll?.querySelector<HTMLElement>(
         `[data-asset-id="${CSS.escape(id)}"]`,
       );
-      // Only move DOM focus when the grid already owns it, so shortcuts used
-      // from the toolbar do not steal focus.
-      if (element && collectionScroll?.contains(document.activeElement)) element.focus();
-      element?.scrollIntoView({ block: 'nearest' });
+      if (element && owned) element.focus({ preventScroll: true });
     });
   }
   function queueAssetUpdate(update: AssetUpdated) {
@@ -1493,51 +1493,53 @@ export default function ManagementApp() {
                         </Show>
                       }
                     >
-                      <div class="photo-grid" style={{ '--thumbnail-size': `${thumbSize()}px` }}>
-                        <For each={assets()}>
-                          {(asset) => (
-                            <div class="asset-card">
-                              <Thumbnail
-                                asset={asset}
-                                tier={gridTier(thumbSize(), devicePixelRatio())}
-                                selected={selectedIds().includes(asset.id)}
-                                focused={selectedId() === asset.id}
-                                tabbable={
-                                  selectedId() === asset.id ||
-                                  (!selectedIds().length && asset.id === assets()[0]?.id)
-                                }
-                                onSelect={(event) => selectAsset(asset.id, event)}
-                                onOpen={() => openAsset(asset)}
-                                onMenu={(point) => openAssetMenu(asset, point)}
-                              />
-                              <Show when={asset.variants?.length}>
-                                <div
-                                  class="asset-variants"
-                                  aria-label={`${asset.filename} 配对文件`}
-                                >
-                                  <For each={asset.variants}>
-                                    {(variant) => (
-                                      <button
-                                        class="button small"
-                                        aria-label={`打开 ${variant.filename} ${variant.kind === 'raw' ? 'RAW' : 'JPEG'}`}
-                                        title={variant.filename}
-                                        onClick={() =>
-                                          openAsset(
-                                            variant,
-                                            variantViewerIds(assets(), asset.id, variant.id),
-                                          )
-                                        }
-                                      >
-                                        {variant.kind === 'raw' ? 'RAW' : 'JPEG'}
-                                      </button>
-                                    )}
-                                  </For>
-                                </div>
-                              </Show>
-                            </div>
-                          )}
-                        </For>
-                      </div>
+                      <VirtualGrid
+                        items={assets()}
+                        itemSize={thumbSize()}
+                        scroller={() => collectionScroll}
+                        class="photo-grid"
+                        style={{ '--thumbnail-size': `${thumbSize()}px` }}
+                        ref={(api) => (photoGrid = api)}
+                      >
+                        {(asset) => (
+                          <div class="asset-card">
+                            <Thumbnail
+                              asset={asset}
+                              tier={gridTier(thumbSize(), devicePixelRatio())}
+                              selected={selectedIds().includes(asset.id)}
+                              focused={selectedId() === asset.id}
+                              tabbable={
+                                selectedId() === asset.id ||
+                                (!selectedIds().length && asset.id === assets()[0]?.id)
+                              }
+                              onSelect={(event) => selectAsset(asset.id, event)}
+                              onOpen={() => openAsset(asset)}
+                              onMenu={(point) => openAssetMenu(asset, point)}
+                            />
+                            <Show when={asset.variants?.length}>
+                              <div class="asset-variants" aria-label={`${asset.filename} 配对文件`}>
+                                <For each={asset.variants}>
+                                  {(variant) => (
+                                    <button
+                                      class="button small"
+                                      aria-label={`打开 ${variant.filename} ${variant.kind === 'raw' ? 'RAW' : 'JPEG'}`}
+                                      title={variant.filename}
+                                      onClick={() =>
+                                        openAsset(
+                                          variant,
+                                          variantViewerIds(assets(), asset.id, variant.id),
+                                        )
+                                      }
+                                    >
+                                      {variant.kind === 'raw' ? 'RAW' : 'JPEG'}
+                                    </button>
+                                  )}
+                                </For>
+                              </div>
+                            </Show>
+                          </div>
+                        )}
+                      </VirtualGrid>
                       <Show when={assets().length < total()}>
                         <div
                           class="load-more"

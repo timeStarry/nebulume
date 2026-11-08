@@ -2444,3 +2444,11 @@ kbd {
   margin: var(--nl-space-1) var(--nl-space-2);
   background: var(--nl-border);
 }
+.virtual-grid {
+  position: relative;
+}
+.virtual-grid > .photo-grid {
+  position: absolute;
+  inset: 0 0 auto;
+  will-change: transform;
+}

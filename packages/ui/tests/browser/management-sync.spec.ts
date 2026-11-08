@@ -231,9 +231,11 @@ async function fixture(
   const images = await servePreviewImages(page);
   await page.goto('/');
   await page.getByRole('button', { name: '打开图片库 同步图库' }).click();
-  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(
-    Math.min(count - (paired ? 1 : 0), 200),
+  // The grid is virtualized: count what is loaded, not what is mounted.
+  await expect(page.locator('.collection-status')).toContainText(
+    `已载入 ${Math.min(count - (paired ? 1 : 0), 200)} / `,
   );
+  await expect(page.locator('.photo-grid .thumbnail').first()).toBeVisible();
   return {
     calls,
     images,
@@ -291,7 +293,7 @@ test('repeated blur/focus preserves all loaded pages, detail, selection, scroll 
 }) => {
   const { calls } = await fixture(page);
   await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(400);
+  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = 700));
@@ -369,7 +371,7 @@ test('rating sort reconciles the loaded window in the background without remount
     .poll(() => calls.filter((c) => c.command === 'asset.list').at(-1)?.params.sort_by)
     .toBe('rating');
   await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(400);
+  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = 600));
@@ -384,7 +386,7 @@ test('rating sort reconciles the loaded window in the background without remount
     'aria-label',
     'Photo-090.jpg，5 星',
   );
-  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(400);
+  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
   expect(calls.slice(before).filter((c) => c.command === 'asset.list')).toHaveLength(1);
   expect(calls.slice(before).find((c) => c.command === 'asset.list')?.params.limit).toBe(400);
   expect(
@@ -710,7 +712,7 @@ test('scrolling near the end loads the next page automatically and a failed page
   page,
 }) => {
   const { calls, failList } = await fixture(page);
-  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(200);
+  await expect(page.locator('.collection-status')).toContainText('已载入 200 / ');
   const pages = () =>
     calls.filter((call) => call.command === 'asset.list' && Number(call.params.offset) > 0);
   failList();
@@ -725,11 +727,11 @@ test('scrolling near the end loads the next page automatically and a failed page
   await page.waitForTimeout(300);
   expect(pages()).toHaveLength(1);
   await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(400);
+  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
   await page
     .locator('.collection-scroll')
     .evaluate((element) => (element.scrollTop = element.scrollHeight));
-  await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(410);
+  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
   await expect(page.getByRole('button', { name: /载入更多/ })).toHaveCount(0);
 });
 
@@ -864,4 +866,61 @@ test('the context menu opens from the keyboard, closes on Escape and returns foc
   await expect(menu).toHaveCount(0);
   await expect(cells.nth(1)).toBeFocused();
   await expect(page.locator('.asset-inspector')).toHaveCount(0);
+});
+
+test('the grid mounts only rows near the viewport however many photos are loaded', async ({
+  page,
+}) => {
+  const { images } = await fixture(page, 2000);
+  const status = page.locator('.collection-status');
+  const scroller = page.locator('.collection-scroll');
+  const mounted = () => page.locator('.photo-grid .thumbnail').count();
+  const firstLabel = await page
+    .locator('.photo-grid .thumbnail')
+    .first()
+    .getAttribute('aria-label');
+  for (const loaded of [400, 600, 800]) {
+    await scroller.evaluate((element) => (element.scrollTop = element.scrollHeight));
+    await expect(status).toContainText(`已载入 ${loaded} / `);
+  }
+  const atEnd = await mounted();
+  expect(atEnd).toBeGreaterThan(0);
+  expect(atEnd).toBeLessThan(150);
+  // The spacer keeps the full scroll height, so the scrollbar spans every loaded row.
+  const { scrollHeight, clientHeight } = await scroller.evaluate((element) => ({
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  }));
+  expect(scrollHeight).toBeGreaterThan(clientHeight * 10);
+  await scroller.evaluate((element) => (element.scrollTop = 0));
+  await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
+    'aria-label',
+    firstLabel!,
+  );
+  expect(await mounted()).toBeLessThan(150);
+  // Unmounted cells never requested images.
+  expect(new Set(images.map((image) => image.id)).size).toBeLessThan(400);
+});
+
+test('keyboard moves past the rendered rows scroll the focused photo into view', async ({
+  page,
+}) => {
+  await fixture(page, 600);
+  const cells = page.locator('.photo-grid .thumbnail');
+  const firstId = await cells.first().getAttribute('data-asset-id');
+  await cells.first().click();
+  await page.keyboard.press('End');
+  const focused = page.locator('.photo-grid .thumbnail.focused');
+  await expect(focused).toBeFocused();
+  await expect(focused).toBeInViewport();
+  // End reaches the last loaded photo, which was not mounted before the jump.
+  expect(await focused.getAttribute('data-asset-id')).not.toBe(firstId);
+  await expect(page.locator(`.photo-grid .thumbnail[data-asset-id="${firstId}"]`)).toHaveCount(0);
+  await page.keyboard.press('Home');
+  const first = page.locator(`.photo-grid .thumbnail[data-asset-id="${firstId}"]`);
+  await expect(first).toBeFocused();
+  await expect(first).toBeInViewport();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('PageDown');
+  await expect(focused).toBeFocused();
+  await expect(focused).toBeInViewport();
 });
