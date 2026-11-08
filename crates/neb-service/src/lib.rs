@@ -515,7 +515,8 @@ impl Service {
                 {
                     destination.to_owned()
                 } else {
-                    fs::canonicalize(destination)
+                    // Match the catalog's path form: no Windows verbatim prefix.
+                    dunce::canonicalize(destination)
                         .ok()?
                         .to_string_lossy()
                         .into_owned()

@@ -8,6 +8,7 @@ license.workspace = true
 neb-core = { path = "../neb-core" }
 neb-storage = { path = "../neb-storage" }
 neb-ingest = { path = "../neb-ingest" }
+dunce = "1"
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

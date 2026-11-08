@@ -2761,6 +2761,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "dunce",
  "hex",
  "neb-core",
  "neb-ingest",

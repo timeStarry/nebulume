@@ -170,7 +170,7 @@ fn remote_library_is_unchecked_until_a_real_operation_and_offline_after_failure(
     let source = svc
         .execute(
             "storage.add",
-            json!({"name":"NAS","kind":"webdav","endpoint":"http://127.0.0.1:9/dav/"}),
+            json!({"name":"NAS","kind":"webdav","endpoint":"http://127.0.0.1:9/dav/","remember_credentials":false}),
         )
         .unwrap();
     let library = svc
@@ -206,7 +206,7 @@ fn locations_list_folder_and_remote_libraries_with_availability() {
     let source = svc
         .execute(
             "storage.add",
-            json!({"name":"NAS","kind":"webdav","endpoint":"http://127.0.0.1:9/dav/"}),
+            json!({"name":"NAS","kind":"webdav","endpoint":"http://127.0.0.1:9/dav/","remember_credentials":false}),
         )
         .unwrap();
     let remote = svc
