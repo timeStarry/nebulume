@@ -2410,3 +2410,26 @@ kbd {
   font-size: var(--nl-text-sm);
   color: var(--nl-text-muted);
 }
+.selection-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nl-space-3);
+  padding: var(--nl-space-2) var(--nl-space-6);
+  border-bottom: 1px solid var(--nl-border);
+  background: var(--nl-selected-bg);
+  color: var(--nl-selected-text);
+  font-size: var(--nl-text-sm);
+}
+.selection-bar strong {
+  font-weight: var(--nl-weight-medium);
+}
+.selection-bar-group {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-space-1);
+}
+.thumbnail.selected:not(.focused) {
+  border-color: var(--nl-selected-border);
+  opacity: 0.92;
+}

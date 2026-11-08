@@ -54,8 +54,10 @@ export function Thumbnail(props: {
   asset: Asset;
   tier: PreviewTier;
   selected?: boolean;
+  /** The photo that keyboard actions and the detail panel follow. */
+  focused?: boolean;
   compact?: boolean;
-  onSelect: () => void;
+  onSelect: (event: MouseEvent) => void;
   onOpen: () => void;
 }) {
   let element!: HTMLButtonElement;
@@ -162,8 +164,8 @@ export function Thumbnail(props: {
   return (
     <button
       ref={element}
-      class={`thumbnail ${props.selected ? 'selected' : ''} ${props.compact ? 'compact' : ''} flag-${props.asset.flag || 'none'}`}
-      onClick={props.onSelect}
+      class={`thumbnail ${props.selected ? 'selected' : ''} ${props.focused ? 'focused' : ''} ${props.compact ? 'compact' : ''} flag-${props.asset.flag || 'none'}`}
+      onClick={(event) => props.onSelect(event)}
       onDblClick={props.onOpen}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {

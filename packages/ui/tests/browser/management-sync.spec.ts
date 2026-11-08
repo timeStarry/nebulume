@@ -143,6 +143,21 @@ async function fixture(
         result = asset;
         break;
       }
+      case 'asset.flag': {
+        const asset = assets.find((a) => a.id === call.params.id)!;
+        asset.flag = call.params.flag as Asset['flag'];
+        result = asset;
+        break;
+      }
+      case 'asset.mark_batch': {
+        const ids = call.params.ids as string[];
+        for (const asset of assets.filter((a) => ids.includes(a.id))) {
+          if (call.params.rating !== undefined) asset.rating = Number(call.params.rating);
+          if (call.params.flag !== undefined) asset.flag = call.params.flag as Asset['flag'];
+        }
+        result = { updated: ids.length };
+        break;
+      }
       case 'asset.preview':
         result = { tier: 'p2560' as const, width: 100, height: 80, source: 'fixture' };
         break;
@@ -716,4 +731,57 @@ test('scrolling near the end loads the next page automatically and a failed page
     .evaluate((element) => (element.scrollTop = element.scrollHeight));
   await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(410);
   await expect(page.getByRole('button', { name: /载入更多/ })).toHaveCount(0);
+});
+
+test('shift and ctrl clicks build a selection that is rated and flagged in one batch', async ({
+  page,
+}) => {
+  const { calls, assets } = await fixture(page, 12);
+  const cells = page.locator('.photo-grid .thumbnail');
+  await expect(cells).toHaveCount(12);
+  await cells.nth(1).click();
+  await cells.nth(4).click({ modifiers: ['Shift'] });
+  await cells.nth(7).click({ modifiers: ['ControlOrMeta'] });
+  const bar = page.getByRole('toolbar', { name: '批量操作' });
+  await expect(bar).toContainText('已选 5 张');
+  await page.keyboard.press('4');
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.mark_batch')?.params)
+    .toMatchObject({ rating: 4 });
+  const batch = calls.find((call) => call.command === 'asset.mark_batch')!;
+  expect((batch.params.ids as string[]).sort()).toEqual(
+    [1, 2, 3, 4, 7].map((index) => assets[index].id).sort(),
+  );
+  expect(calls.some((call) => call.command === 'asset.rate')).toBe(false);
+  await bar.getByRole('button', { name: '淘汰' }).click();
+  await expect
+    .poll(() => calls.filter((call) => call.command === 'asset.mark_batch').length)
+    .toBe(2);
+  expect(calls.filter((call) => call.command === 'asset.mark_batch').at(-1)!.params).toMatchObject({
+    flag: 'reject',
+  });
+  await page.keyboard.press('Escape');
+  await expect(bar).toHaveCount(0);
+  await expect(page.locator('.photo-grid .thumbnail.selected')).toHaveCount(1);
+});
+
+test('select all marks every loaded photo and a plain click returns to one photo', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page, 6);
+  const cells = page.locator('.photo-grid .thumbnail');
+  await expect(cells).toHaveCount(6);
+  await cells.first().click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await expect(page.getByRole('toolbar', { name: '批量操作' })).toContainText('已选 6 张');
+  await page.keyboard.press('p');
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.mark_batch')?.params.flag)
+    .toBe('pick');
+  await cells.nth(2).click();
+  await expect(page.getByRole('toolbar', { name: '批量操作' })).toHaveCount(0);
+  await page.keyboard.press('3');
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.rate')?.params.rating)
+    .toBe(3);
 });

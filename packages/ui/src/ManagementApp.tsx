@@ -34,6 +34,7 @@ import {
   type Asset,
   type AssetListOptions,
   type AssetListResult,
+  type Flag,
   type FlagFilter,
   type ImportBatch,
   type Library,
@@ -75,6 +76,10 @@ export default function ManagementApp() {
   const [total, setTotal] = createSignal(0);
   const [fileTotal, setFileTotal] = createSignal<number>();
   const [selectedId, setSelectedId] = createSignal<string>();
+  // Extra photos chosen with Ctrl/Cmd or Shift. The focused photo (selectedId)
+  // always counts as selected, so single selection keeps working unchanged.
+  const [picked, setPicked] = createSignal<ReadonlySet<string>>(new Set());
+  let selectionAnchor: string | undefined;
   const [query, setQuery] = createSignal('');
   const [rating, setRating] = createSignal(0);
   const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
@@ -298,6 +303,8 @@ export default function ManagementApp() {
     setAssets([]);
     setTotal(0);
     setSelectedId(undefined);
+    setPicked(new Set<string>());
+    selectionAnchor = undefined;
     setQuery('');
     setRating(0);
     setFormat('all');
@@ -379,6 +386,8 @@ export default function ManagementApp() {
     setTotal(0);
     setFileTotal(undefined);
     setSelectedId(undefined);
+    setPicked(new Set<string>());
+    selectionAnchor = undefined;
     setInfo(false);
     mutateDetail({ asset: null, error: '' });
     setLoading(true);
@@ -409,6 +418,77 @@ export default function ManagementApp() {
     // Keep a failed membership/order reconciliation pending even after the
     // asset fields themselves have already been patched successfully.
     if (libraryId() && dirtyLibraries.has(libraryId()!)) await loadAssets(false, true);
+  }
+  const selectedIds = createMemo(() => {
+    const ids = new Set(picked());
+    if (selectedId()) ids.add(selectedId()!);
+    return assets()
+      .filter((asset) => ids.has(asset.id))
+      .map((asset) => asset.id);
+  });
+  function clearPicked() {
+    if (picked().size) setPicked(new Set<string>());
+  }
+  function selectAsset(
+    id: string,
+    event?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean },
+  ) {
+    const items = assets();
+    if (event?.shiftKey && (selectionAnchor ?? selectedId())) {
+      const anchor = selectionAnchor ?? selectedId()!;
+      const from = items.findIndex((asset) => asset.id === anchor);
+      const to = items.findIndex((asset) => asset.id === id);
+      if (from >= 0 && to >= 0) {
+        const [start, end] = from < to ? [from, to] : [to, from];
+        setPicked(new Set(items.slice(start, end + 1).map((asset) => asset.id)));
+        setSelectedId(id);
+        return;
+      }
+    }
+    if (event?.ctrlKey || event?.metaKey) {
+      const next = new Set(selectedIds());
+      if (next.has(id) && next.size > 1) {
+        next.delete(id);
+        setPicked(next);
+        if (selectedId() === id) setSelectedId([...next].at(-1));
+      } else {
+        next.add(id);
+        setPicked(next);
+        setSelectedId(id);
+      }
+      selectionAnchor = id;
+      return;
+    }
+    clearPicked();
+    selectionAnchor = id;
+    setSelectedId(id);
+  }
+  async function markSelection(mark: { rating?: number; flag?: Flag }) {
+    const ids = selectedIds();
+    if (!ids.length || busy()) return;
+    if (ids.length === 1) {
+      const id = ids[0];
+      await action(mark.flag !== undefined ? '保存旗标…' : '保存评级…', async () => {
+        await acceptAsset(
+          mark.flag !== undefined
+            ? await execute<Asset>('asset.flag', { id, flag: mark.flag })
+            : await execute<Asset>('asset.rate', { id, rating: mark.rating }),
+          mark.flag !== undefined ? 'flag' : 'rating',
+        );
+      });
+      return;
+    }
+    await action(`正在标记 ${ids.length} 张照片…`, async () => {
+      for (let start = 0; start < ids.length; start += 1000) {
+        await execute('asset.mark_batch', { ids: ids.slice(start, start + 1000), ...mark });
+      }
+      setAssets((items) =>
+        items.map((item) => (ids.includes(item.id) ? { ...item, ...mark } : item)),
+      );
+      if (libraryId()) dirtyLibraries.add(libraryId()!);
+      await loadAssets(false, true);
+      setNotice(`已标记 ${ids.length} 张照片。`);
+    });
   }
   async function rate(value: number) {
     if (!selected() || busy()) return;
@@ -548,6 +628,18 @@ export default function ManagementApp() {
       searchInput?.focus();
       return;
     }
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === 'a' &&
+      section() === 'libraries' &&
+      libraryId() &&
+      assets().length
+    ) {
+      event.preventDefault();
+      setPicked(new Set(assets().map((asset) => asset.id)));
+      if (!selectedId()) setSelectedId(assets()[0].id);
+      return;
+    }
     if (event.ctrlKey || event.metaKey || event.altKey || section() !== 'libraries' || !libraryId())
       return;
     const index = assets().findIndex((asset) => asset.id === selectedId());
@@ -562,9 +654,15 @@ export default function ManagementApp() {
     )
       void openAsset(selected()!);
     else if (event.key.toLowerCase() === 'i') setInfo((value) => !value);
-    else if (/^[0-5]$/.test(event.key)) void rate(Number(event.key));
-    else if (event.key === 'Escape') setInfo(false);
-    else if (event.shiftKey && event.key.toLowerCase() === 'c' && assets().length) {
+    else if (/^[0-5]$/.test(event.key)) void markSelection({ rating: Number(event.key) });
+    else if (event.key.toLowerCase() === 'p' && !event.shiftKey)
+      void markSelection({ flag: 'pick' });
+    else if (event.key.toLowerCase() === 'x') void markSelection({ flag: 'reject' });
+    else if (event.key.toLowerCase() === 'u') void markSelection({ flag: 'none' });
+    else if (event.key === 'Escape') {
+      if (picked().size) clearPicked();
+      else setInfo(false);
+    } else if (event.shiftKey && event.key.toLowerCase() === 'c' && assets().length) {
       event.preventDefault();
       void startCulling();
     }
@@ -1157,6 +1255,60 @@ export default function ManagementApp() {
                     />
                   </label>
                 </div>
+                <Show when={selectedIds().length > 1}>
+                  <div class="selection-bar" role="toolbar" aria-label="批量操作">
+                    <strong>已选 {selectedIds().length} 张</strong>
+                    <div class="selection-bar-group" aria-label="批量评级">
+                      <For each={[1, 2, 3, 4, 5]}>
+                        {(value) => (
+                          <button
+                            class="button small"
+                            disabled={!!busy()}
+                            aria-label={`将所选照片评为 ${value} 星`}
+                            onClick={() => void markSelection({ rating: value })}
+                          >
+                            {value}
+                          </button>
+                        )}
+                      </For>
+                      <button
+                        class="button small"
+                        disabled={!!busy()}
+                        aria-label="清除所选照片评级"
+                        onClick={() => void markSelection({ rating: 0 })}
+                      >
+                        0
+                      </button>
+                    </div>
+                    <div class="selection-bar-group" aria-label="批量旗标">
+                      <button
+                        class="button small"
+                        disabled={!!busy()}
+                        onClick={() => void markSelection({ flag: 'pick' })}
+                      >
+                        留用
+                      </button>
+                      <button
+                        class="button small"
+                        disabled={!!busy()}
+                        onClick={() => void markSelection({ flag: 'reject' })}
+                      >
+                        淘汰
+                      </button>
+                      <button
+                        class="button small"
+                        disabled={!!busy()}
+                        onClick={() => void markSelection({ flag: 'none' })}
+                      >
+                        清除旗标
+                      </button>
+                    </div>
+                    <span class="collection-controls-spacer" />
+                    <button class="button small" onClick={clearPicked}>
+                      取消选择
+                    </button>
+                  </div>
+                </Show>
                 <div class="collection-body">
                   <div class="collection-scroll" ref={collectionScroll}>
                     <Show
@@ -1222,8 +1374,9 @@ export default function ManagementApp() {
                               <Thumbnail
                                 asset={asset}
                                 tier={gridTier(thumbSize(), devicePixelRatio())}
-                                selected={selectedId() === asset.id}
-                                onSelect={() => setSelectedId(asset.id)}
+                                selected={selectedIds().includes(asset.id)}
+                                focused={selectedId() === asset.id}
+                                onSelect={(event) => selectAsset(asset.id, event)}
                                 onOpen={() => openAsset(asset)}
                               />
                               <Show when={asset.variants?.length}>
