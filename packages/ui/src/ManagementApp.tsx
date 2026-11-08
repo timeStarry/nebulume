@@ -96,6 +96,7 @@ export default function ManagementApp() {
   const [capturedFrom, setCapturedFrom] = createSignal('');
   const [capturedTo, setCapturedTo] = createSignal('');
   const [facets, setFacets] = createSignal<AssetFacets>();
+  const [filtersOpen, setFiltersOpen] = createSignal(readFiltersOpen());
   const [batches, setBatches] = createSignal<ImportBatch[]>([]);
   const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('captured_at');
   const [direction, setDirection] =
@@ -355,6 +356,50 @@ export default function ManagementApp() {
     setSection('libraries');
     setError('');
     setNotice('');
+  }
+  function toggleFilters() {
+    const next = !filtersOpen();
+    setFiltersOpen(next);
+    try {
+      localStorage.setItem(FILTERS_OPEN_KEY, String(next));
+    } catch {
+      // The choice still applies for this session.
+    }
+  }
+  const FLAG_LABELS: Record<string, string> = {
+    pick: '留用',
+    none: '未标记',
+    reject: '淘汰',
+    not_reject: '隐藏淘汰',
+  };
+  /** Active filters as removable chips, so a closed panel never hides what is applied. */
+  const activeFilters = createMemo(() => {
+    const chips: { label: string; clear: () => void }[] = [];
+    if (rating())
+      chips.push({ label: `${'★'.repeat(rating())} 及以上`, clear: () => setRating(0) });
+    if (flag() !== 'any')
+      chips.push({ label: FLAG_LABELS[flag()] || flag(), clear: () => setFlag('any') });
+    if (format() !== 'all')
+      chips.push({ label: format().toUpperCase(), clear: () => setFormat('all') });
+    if (camera()) chips.push({ label: camera(), clear: () => setCamera('') });
+    if (lens()) chips.push({ label: lens(), clear: () => setLens('') });
+    if (capturedFrom() || capturedTo())
+      chips.push({
+        label: `${capturedFrom() || '…'} – ${capturedTo() || '…'}`,
+        clear: () => {
+          setCapturedFrom('');
+          setCapturedTo('');
+        },
+      });
+    if (batchId()) chips.push({ label: '本次导入', clear: () => setBatchId('') });
+    return chips;
+  });
+  function clearAllFilters() {
+    setRating(0);
+    setFlag('any');
+    setFormat('all');
+    setBatchId('');
+    clearMetadataFilters();
   }
   function clearMetadataFilters() {
     setCamera('');
@@ -1359,149 +1404,71 @@ export default function ManagementApp() {
                       </button>
                     </Show>
                   </div>
-                  <select
-                    value={rating()}
-                    onChange={(event) => setRating(Number(event.currentTarget.value))}
-                    aria-label="最低评级筛选"
+                  <button
+                    class={`button small filter-toggle ${filtersOpen() ? 'active' : ''}`}
+                    aria-expanded={filtersOpen()}
+                    aria-controls="collection-filters"
+                    onClick={() => toggleFilters()}
                   >
-                    <option value="0">所有评级</option>
-                    <For each={[1, 2, 3, 4, 5]}>
-                      {(value) => (
-                        <option value={value}>
-                          {'★'.repeat(value)}
-                          {value < 5 ? ' 及以上' : ''}
-                        </option>
+                    <Icon name="filter" size={14} />
+                    筛选
+                    <Show when={activeFilters().length}>
+                      <span class="filter-count">{activeFilters().length}</span>
+                    </Show>
+                  </button>
+                  <div class="filter-chips" aria-label="当前筛选">
+                    <For each={activeFilters()}>
+                      {(chip) => (
+                        <span class="filter-chip">
+                          {chip.label}
+                          <button
+                            class="filter-chip-remove"
+                            aria-label={`移除筛选：${chip.label}`}
+                            onClick={chip.clear}
+                          >
+                            <Icon name="close" size={11} />
+                          </button>
+                        </span>
                       )}
                     </For>
-                  </select>
-                  <Show when={batches().length}>
-                    <select
-                      value={batchId()}
-                      onChange={(event) => setBatchId(event.currentTarget.value)}
-                      aria-label="导入批次"
-                    >
-                      <option value="" selected={!batchId()}>
-                        所有导入
-                      </option>
-                      <For each={batches()}>
-                        {(batch) => (
-                          // Options are rebuilt when the batch list reloads; mark selection
-                          // per option so the chosen batch survives that refresh.
-                          <option value={batch.id} selected={batch.id === batchId()}>
-                            {batch.started_at.slice(0, 16).replace('T', ' ')} · {batch.asset_count}{' '}
-                            张
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                  </Show>
-                  <select
-                    value={flag()}
-                    onChange={(event) => setFlag(event.currentTarget.value as FlagFilter)}
-                    aria-label="旗标筛选"
-                  >
-                    <option value="any">所有旗标</option>
-                    <option value="pick">留用</option>
-                    <option value="none">未标记</option>
-                    <option value="reject">淘汰</option>
-                    <option value="not_reject">隐藏淘汰</option>
-                  </select>
-                  <select
-                    value={format()}
-                    onChange={(event) =>
-                      setFormat(
-                        event.currentTarget.value as NonNullable<AssetListOptions['format']>,
-                      )
-                    }
-                    aria-label="文件格式筛选"
-                  >
-                    <option value="all">所有格式</option>
-                    <option value="raw">RAW</option>
-                    <option value="jpeg">JPEG</option>
-                  </select>
-                  <Show when={facets()?.cameras.length}>
-                    <select
-                      value={camera()}
-                      onChange={(event) => setCamera(event.currentTarget.value)}
-                      aria-label="机身筛选"
-                    >
-                      <option value="">所有机身</option>
-                      <For each={facets()!.cameras}>
-                        {(item) => (
-                          <option value={item.value}>
-                            {item.value}（{item.count}）
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                  </Show>
-                  <Show when={facets()?.lenses.length}>
-                    <select
-                      value={lens()}
-                      onChange={(event) => setLens(event.currentTarget.value)}
-                      aria-label="镜头筛选"
-                    >
-                      <option value="">所有镜头</option>
-                      <For each={facets()!.lenses}>
-                        {(item) => (
-                          <option value={item.value}>
-                            {item.value}（{item.count}）
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                  </Show>
-                  <div class="date-range" role="group" aria-label="拍摄日期范围">
-                    <input
-                      type="date"
-                      value={capturedFrom()}
-                      min={facets()?.captured.first ?? undefined}
-                      max={capturedTo() || facets()?.captured.last || undefined}
-                      onChange={(event) => setCapturedFrom(event.currentTarget.value)}
-                      aria-label="拍摄日期起"
-                    />
-                    <span aria-hidden="true">–</span>
-                    <input
-                      type="date"
-                      value={capturedTo()}
-                      min={capturedFrom() || facets()?.captured.first || undefined}
-                      max={facets()?.captured.last ?? undefined}
-                      onChange={(event) => setCapturedTo(event.currentTarget.value)}
-                      aria-label="拍摄日期止"
-                    />
                   </div>
-                  <select
-                    value={sort()}
-                    title={
-                      sort() === 'captured_at'
-                        ? '按相机当地记录的拍摄时间排序；待索引或无有效时间的照片置后。'
-                        : sort() === 'created_at'
-                          ? '源文件创建时间；未提供时间的照片置后。旧远端库可扫描更新以补充。'
-                          : undefined
-                    }
-                    onChange={(event) =>
-                      setSort(event.currentTarget.value as NonNullable<AssetListOptions['sort_by']>)
-                    }
-                    aria-label="排序字段"
-                  >
-                    <option value="captured_at">拍摄时间</option>
-                    <option value="created_at">文件创建时间</option>
-                    <option value="modified_at">文件修改时间</option>
-                    <option value="filename">文件名</option>
-                    <option value="rating">评级</option>
-                  </select>
-                  <button
-                    class="icon-button sort-direction"
-                    aria-label={
-                      direction() === 'desc'
-                        ? '排序方向：降序，切换为升序'
-                        : '排序方向：升序，切换为降序'
-                    }
-                    title={direction() === 'desc' ? '降序' : '升序'}
-                    onClick={() => setDirection(direction() === 'desc' ? 'asc' : 'desc')}
-                  >
-                    <Icon name={direction() === 'desc' ? 'sort-desc' : 'sort-asc'} size={16} />
-                  </button>
+                  <div class="collection-controls-spacer" />
+                  <div class="sort-control">
+                    <select
+                      value={sort()}
+                      title={
+                        sort() === 'captured_at'
+                          ? '按相机当地记录的拍摄时间排序；待索引或无有效时间的照片置后。'
+                          : sort() === 'created_at'
+                            ? '源文件创建时间；未提供时间的照片置后。旧远端库可扫描更新以补充。'
+                            : undefined
+                      }
+                      onChange={(event) =>
+                        setSort(
+                          event.currentTarget.value as NonNullable<AssetListOptions['sort_by']>,
+                        )
+                      }
+                      aria-label="排序字段"
+                    >
+                      <option value="captured_at">拍摄时间</option>
+                      <option value="created_at">文件创建时间</option>
+                      <option value="modified_at">文件修改时间</option>
+                      <option value="filename">文件名</option>
+                      <option value="rating">评级</option>
+                    </select>
+                    <button
+                      class="icon-button sort-direction"
+                      aria-label={
+                        direction() === 'desc'
+                          ? '排序方向：降序，切换为升序'
+                          : '排序方向：升序，切换为降序'
+                      }
+                      title={direction() === 'desc' ? '降序' : '升序'}
+                      onClick={() => setDirection(direction() === 'desc' ? 'asc' : 'desc')}
+                    >
+                      <Icon name={direction() === 'desc' ? 'sort-desc' : 'sort-asc'} size={16} />
+                    </button>
+                  </div>
                   <Show when={desktop && sort() === 'captured_at'}>
                     <CaptureIndexControl
                       libraryId={library().id}
@@ -1516,7 +1483,6 @@ export default function ManagementApp() {
                       }}
                     />
                   </Show>
-                  <div class="collection-controls-spacer" />
                   <label class="collection-thumbnail-size">
                     <span>缩略图</span>
                     <input
@@ -1534,6 +1500,152 @@ export default function ManagementApp() {
                     />
                   </label>
                 </div>
+                <Show when={filtersOpen()}>
+                  <div
+                    class="filter-panel"
+                    id="collection-filters"
+                    role="group"
+                    aria-label="筛选条件"
+                  >
+                    <label class="filter-field">
+                      <span>评级</span>
+                      <select
+                        value={rating()}
+                        onChange={(event) => setRating(Number(event.currentTarget.value))}
+                        aria-label="最低评级筛选"
+                      >
+                        <option value="0">所有评级</option>
+                        <For each={[1, 2, 3, 4, 5]}>
+                          {(value) => (
+                            <option value={value}>
+                              {'★'.repeat(value)}
+                              {value < 5 ? ' 及以上' : ''}
+                            </option>
+                          )}
+                        </For>
+                      </select>
+                    </label>
+                    <label class="filter-field">
+                      <span>旗标</span>
+                      <select
+                        value={flag()}
+                        onChange={(event) => setFlag(event.currentTarget.value as FlagFilter)}
+                        aria-label="旗标筛选"
+                      >
+                        <option value="any">所有旗标</option>
+                        <option value="pick">留用</option>
+                        <option value="none">未标记</option>
+                        <option value="reject">淘汰</option>
+                        <option value="not_reject">隐藏淘汰</option>
+                      </select>
+                    </label>
+                    <label class="filter-field">
+                      <span>格式</span>
+                      <select
+                        value={format()}
+                        onChange={(event) =>
+                          setFormat(
+                            event.currentTarget.value as NonNullable<AssetListOptions['format']>,
+                          )
+                        }
+                        aria-label="文件格式筛选"
+                      >
+                        <option value="all">所有格式</option>
+                        <option value="raw">RAW</option>
+                        <option value="jpeg">JPEG</option>
+                      </select>
+                    </label>
+                    <label class="filter-field">
+                      <span>机身</span>
+                      <Show when={facets()?.cameras.length}>
+                        <select
+                          value={camera()}
+                          onChange={(event) => setCamera(event.currentTarget.value)}
+                          aria-label="机身筛选"
+                        >
+                          <option value="">所有机身</option>
+                          <For each={facets()!.cameras}>
+                            {(item) => (
+                              <option value={item.value}>
+                                {item.value}（{item.count}）
+                              </option>
+                            )}
+                          </For>
+                        </select>
+                      </Show>
+                    </label>
+                    <label class="filter-field">
+                      <span>镜头</span>
+                      <Show when={facets()?.lenses.length}>
+                        <select
+                          value={lens()}
+                          onChange={(event) => setLens(event.currentTarget.value)}
+                          aria-label="镜头筛选"
+                        >
+                          <option value="">所有镜头</option>
+                          <For each={facets()!.lenses}>
+                            {(item) => (
+                              <option value={item.value}>
+                                {item.value}（{item.count}）
+                              </option>
+                            )}
+                          </For>
+                        </select>
+                      </Show>
+                    </label>
+                    <div class="filter-field">
+                      <span>拍摄日期</span>
+                      <div class="date-range" role="group" aria-label="拍摄日期范围">
+                        <input
+                          type="date"
+                          value={capturedFrom()}
+                          min={facets()?.captured.first ?? undefined}
+                          max={capturedTo() || facets()?.captured.last || undefined}
+                          onChange={(event) => setCapturedFrom(event.currentTarget.value)}
+                          aria-label="拍摄日期起"
+                        />
+                        <span aria-hidden="true">–</span>
+                        <input
+                          type="date"
+                          value={capturedTo()}
+                          min={capturedFrom() || facets()?.captured.first || undefined}
+                          max={facets()?.captured.last ?? undefined}
+                          onChange={(event) => setCapturedTo(event.currentTarget.value)}
+                          aria-label="拍摄日期止"
+                        />
+                      </div>
+                    </div>
+                    <label class="filter-field">
+                      <span>导入批次</span>
+                      <Show when={batches().length}>
+                        <select
+                          value={batchId()}
+                          onChange={(event) => setBatchId(event.currentTarget.value)}
+                          aria-label="导入批次"
+                        >
+                          <option value="" selected={!batchId()}>
+                            所有导入
+                          </option>
+                          <For each={batches()}>
+                            {(batch) => (
+                              // Options are rebuilt when the batch list reloads; mark selection
+                              // per option so the chosen batch survives that refresh.
+                              <option value={batch.id} selected={batch.id === batchId()}>
+                                {batch.started_at.slice(0, 16).replace('T', ' ')} ·{' '}
+                                {batch.asset_count} 张
+                              </option>
+                            )}
+                          </For>
+                        </select>
+                      </Show>
+                    </label>
+                    <Show when={activeFilters().length}>
+                      <button class="button small filter-clear" onClick={clearAllFilters}>
+                        清除全部
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
                 <Show when={selectedIds().length > 1}>
                   <div class="selection-bar" role="toolbar" aria-label="批量操作">
                     <strong>已选 {selectedIds().length} 张</strong>
@@ -1911,6 +2023,14 @@ export default function ManagementApp() {
   );
 }
 
+const FILTERS_OPEN_KEY = 'nebulume.filters-open';
+function readFiltersOpen() {
+  try {
+    return localStorage.getItem(FILTERS_OPEN_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 function readThumbSize() {
   try {
     const value = Number(localStorage.getItem('nebulume.thumbnail-size'));

@@ -208,6 +208,7 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
     });
   });
   await servePreviewImages(page);
+  await page.addInitScript(() => localStorage.setItem('nebulume.filters-open', 'true'));
   await page.goto('/');
   return calls;
 }

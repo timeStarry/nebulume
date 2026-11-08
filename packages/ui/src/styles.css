@@ -2491,3 +2491,107 @@ kbd {
   padding: 4px 8px;
   font-size: var(--nl-text-xs);
 }
+.collection-controls {
+  flex-wrap: nowrap;
+  gap: var(--nl-space-2);
+}
+.collection-controls .search-field {
+  flex: 0 1 280px;
+  min-width: 160px;
+}
+.filter-toggle {
+  flex-shrink: 0;
+  gap: var(--nl-space-1);
+}
+.filter-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--nl-interactive);
+  color: var(--nl-on-interactive);
+  font-size: var(--nl-text-xs);
+  line-height: 18px;
+  text-align: center;
+}
+.filter-chips {
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--nl-space-1);
+  min-width: 0;
+  overflow: hidden;
+}
+.filter-chip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--nl-space-1);
+  max-width: 220px;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--nl-selected-border);
+  border-radius: 13px;
+  background: var(--nl-selected-bg);
+  color: var(--nl-selected-text);
+  font-size: var(--nl-text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filter-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: inherit;
+}
+.filter-chip-remove:hover {
+  background: var(--nl-surface-hover);
+}
+.collection-controls .collection-controls-spacer {
+  flex: 0 0 0;
+}
+.sort-control {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--nl-space-1);
+}
+.collection-thumbnail-size {
+  flex-shrink: 0;
+}
+.filter-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--nl-space-3) var(--nl-space-4);
+  padding: var(--nl-space-3) var(--nl-space-6);
+  border-bottom: 1px solid var(--nl-border);
+  background: var(--nl-surface);
+}
+.filter-field {
+  display: grid;
+  gap: var(--nl-space-1);
+  font-size: var(--nl-text-xs);
+  color: var(--nl-text-muted);
+}
+.filter-field select {
+  min-height: 32px;
+  min-width: 120px;
+  max-width: 220px;
+  padding: 4px 8px;
+  font-size: var(--nl-text-xs);
+}
+.filter-clear {
+  margin-inline-start: auto;
+}
+@media (max-width: 1279px) {
+  .filter-chips {
+    display: none;
+  }
+}
+/* Camera, lens and import-batch menus only exist when the library has values. */
+.filter-field:not(:has(select, input)) {
+  display: none;
+}

@@ -256,6 +256,7 @@ async function fixture(
     { listenerFailures },
   );
   const images = await servePreviewImages(page);
+  await page.addInitScript(() => localStorage.setItem('nebulume.filters-open', 'true'));
   await page.goto('/');
   await page.getByRole('button', { name: '打开图片库 同步图库' }).click();
   // The grid is virtualized: count what is loaded, not what is mounted.
@@ -1037,4 +1038,28 @@ test('camera, lens and date filters are sent with every page and clear with the 
   await expect(camera).toHaveValue('');
   await expect(page.getByLabel('拍摄日期起')).toHaveValue('');
   await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+});
+
+test('active filters show as removable chips and the panel remembers whether it is open', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page, 6);
+  const panel = page.getByRole('group', { name: '筛选条件' });
+  const toggle = page.getByRole('button', { name: /^筛选/ });
+  await expect(panel).toBeVisible();
+  await page.getByLabel('文件格式筛选').selectOption('jpeg');
+  await page.getByLabel('旗标筛选').selectOption('pick');
+  await expect(toggle).toContainText('2');
+  await toggle.click();
+  await expect(panel).toHaveCount(0);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  const chips = page.getByLabel('当前筛选').locator('.filter-chip');
+  await expect(chips).toHaveText(['留用', 'JPEG']);
+  await page.getByRole('button', { name: '移除筛选：留用' }).click();
+  await expect(chips).toHaveText(['JPEG']);
+  await expect
+    .poll(() => calls.filter((call) => call.command === 'asset.list').at(-1)?.params)
+    .toMatchObject({ format: 'jpeg' });
+  expect(calls.filter((call) => call.command === 'asset.list').at(-1)?.params.flag).toBeUndefined();
+  expect(await page.evaluate(() => localStorage.getItem('nebulume.filters-open'))).toBe('false');
 });

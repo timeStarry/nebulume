@@ -76,6 +76,7 @@ const paths: Record<string, () => JSX.Element> = {
       <path d="M12 7v5l3 2" />
     </>
   ),
+  filter: () => <path d="M4 5h16l-6 7.5V19l-4 1.5v-8Z" />,
   more: () => (
     <>
       <circle cx="5" cy="12" r="1.2" />

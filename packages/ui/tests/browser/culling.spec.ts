@@ -186,6 +186,7 @@ const hud = (page: Page) => page.locator('.cull-hud');
 
 test('grid opens the culling window with the filtered queue description', async ({ page }) => {
   const { calls } = await fixture(page);
+  await page.addInitScript(() => localStorage.setItem('nebulume.filters-open', 'true'));
   await page.goto('/');
   await page
     .getByRole('button', { name: /本地摄影/ })
