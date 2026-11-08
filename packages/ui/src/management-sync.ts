@@ -1,6 +1,6 @@
 import type { Asset, AssetListOptions } from './model';
 
-export type AssetChange = 'rating' | 'crop' | 'metadata' | 'refresh';
+export type AssetChange = 'rating' | 'flag' | 'crop' | 'metadata' | 'refresh';
 export interface AssetUpdated {
   id: string;
   revision?: number;
@@ -33,6 +33,7 @@ export function changedAssetFields(
   )
     return 'metadata';
   if (previous.rating !== next.rating) return 'rating';
+  if ((previous.flag || 'none') !== (next.flag || 'none')) return 'flag';
   return undefined;
 }
 
@@ -46,6 +47,7 @@ export function needsCatalogReconcile(
   if (!change || (options.library_id && next.library_id !== options.library_id)) return false;
   if (change === 'crop') return false;
   if (change === 'rating') return !!options.rating || options.sort_by === 'rating';
+  if (change === 'flag') return !!options.flag && options.flag !== 'any';
   if (!previous) return true;
   if (options.query && JSON.stringify(previous.metadata) !== JSON.stringify(next.metadata))
     return true;
@@ -72,7 +74,7 @@ export function mergePendingUpdate(
         ? 3
         : change === 'metadata'
           ? 2
-          : change === 'rating'
+          : change === 'rating' || change === 'flag'
             ? 1
             : 0;
   return {

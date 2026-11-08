@@ -1,18 +1,15 @@
 //! Independent browse snapshot. It never holds a StorageRegistry lock while
 //! resolving a remote endpoint, issuing HTTP, or enumerating a local directory.
 use crate::{
-    remote, safe, safe_join, transport, validate_key, BrowsePage, Credentials, StorageCheck,
-    StorageConfig, StorageEntry,
+    remote, safe, safe_join, transport, validate_key, Availability, AvailabilityCell, BrowsePage,
+    Credentials, StorageCheck, StorageConfig, StorageEntry,
 };
 use anyhow::Result;
 use reqwest::blocking::Client;
 use std::{
     fs,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 
 /// Private connection/credential snapshot. Intentionally does not implement
@@ -21,14 +18,14 @@ pub struct StorageBrowser {
     config: StorageConfig,
     credentials: Credentials,
     client: Mutex<Option<Client>>,
-    connected: Arc<AtomicBool>,
+    connected: Arc<AvailabilityCell>,
 }
 impl StorageBrowser {
     pub(crate) fn new(
         config: StorageConfig,
         credentials: Credentials,
         client: Option<Client>,
-        connected: Arc<AtomicBool>,
+        connected: Arc<AvailabilityCell>,
     ) -> Self {
         Self {
             config,
@@ -41,7 +38,7 @@ impl StorageBrowser {
     /// Starts remote/local I/O here, after the registry lock has been released.
     pub fn browse(&self, prefix: &str, limit: usize, cursor: Option<&str>) -> Result<BrowsePage> {
         let result = self.browse_inner(prefix, limit, cursor);
-        self.connected.store(result.is_ok(), Ordering::Relaxed);
+        self.connected.set(Availability::of(&result));
         result
     }
 
@@ -52,6 +49,7 @@ impl StorageBrowser {
         Ok(StorageCheck {
             id: self.config.id.clone(),
             connected: result.is_ok(),
+            availability: Availability::of(&result).as_str().into(),
             credential_status: self.config.credential_status.clone(),
             checked_at: chrono::Utc::now().to_rfc3339(),
             error: result.err().map(|error| format!("{error:#}")),

@@ -1,16 +1,20 @@
 //! Read-only storage adapters and non-overwriting local publication.
+mod availability;
 mod credentials;
 mod full_reader;
 mod range_reader;
 mod remote;
+mod remote_write;
 mod safe;
 mod snapshot_browser;
 mod transport;
 
+pub use availability::{classify, Availability, AvailabilityCell};
 pub use credentials::{CredentialStore, CredentialStoreError, SystemCredentialStore};
 pub use range_reader::{
     RangeObjectIdentity, RangeReadError, RangeReadOptions, RangeReadStats, RemoteRangeReader,
 };
+pub use remote_write::{RemoteWriter, WriteCapability, WriteCheck};
 pub use snapshot_browser::StorageBrowser;
 
 pub use transport::{inspect_tls, TlsCertificateInfo};
@@ -28,10 +32,7 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -51,6 +52,10 @@ pub struct StorageConfig {
     /// Result of the latest actual browse/read/check in this process; never persisted as true.
     #[serde(default)]
     pub connected: bool,
+    /// Runtime availability: unchecked, online, offline, auth_required, trust_required or error.
+    /// Never persisted; `connected` is true exactly when this is "online".
+    #[serde(default = "unchecked", skip_deserializing)]
+    pub availability: String,
     /// Legacy sources did not persist credentials, so absent saved fields remain false.
     #[serde(default)]
     pub remember_credentials: bool,
@@ -128,6 +133,7 @@ pub struct FetchResult {
 pub struct StorageCheck {
     pub id: String,
     pub connected: bool,
+    pub availability: String,
     pub credential_status: String,
     pub checked_at: String,
     pub error: Option<String>,
@@ -136,7 +142,13 @@ pub struct StorageCheck {
 struct SourceState {
     credentials: Option<Credentials>,
     credential_status: String,
-    connected: Arc<AtomicBool>,
+    availability: Arc<AvailabilityCell>,
+    /// Result of the explicit write test in this process; reset when the source changes.
+    write: Arc<std::sync::atomic::AtomicU8>,
+}
+
+fn unchecked() -> String {
+    Availability::Unchecked.as_str().into()
 }
 
 pub struct StorageRegistry {
@@ -185,7 +197,8 @@ impl StorageRegistry {
                 SourceState {
                     credentials: credential,
                     credential_status: config.credential_status.clone(),
-                    connected: Arc::new(AtomicBool::new(false)),
+                    availability: Arc::new(AvailabilityCell::default()),
+                    write: Arc::default(),
                 },
             );
         }
@@ -207,11 +220,14 @@ impl StorageRegistry {
             .map(|mut config| {
                 if let Ok(states) = &states {
                     if let Some(state) = states.get(&config.id) {
-                        config.connected = state.connected.load(Ordering::Relaxed);
+                        let availability = state.availability.get();
+                        config.connected = availability == Availability::Online;
+                        config.availability = availability.as_str().into();
                         config.credential_status = state.credential_status.clone();
                     }
                 } else {
                     config.connected = false;
+                    config.availability = unchecked();
                     config.credential_status = "unavailable".into();
                 }
                 config
@@ -282,6 +298,7 @@ impl StorageRegistry {
                 request.tls_certificate_sha256.as_deref(),
             )?,
             connected: false,
+            availability: unchecked(),
             remember_credentials: remember,
             credential_status: if is_local {
                 "not_required"
@@ -402,7 +419,8 @@ impl StorageRegistry {
                 SourceState {
                     credentials: Some(credentials),
                     credential_status: config.credential_status.clone(),
-                    connected: Arc::new(AtomicBool::new(false)),
+                    availability: Arc::new(AvailabilityCell::default()),
+                    write: Arc::default(),
                 },
             );
         Ok(config)
@@ -531,12 +549,49 @@ impl StorageRegistry {
         }
     }
 
-    fn connection_result(&self, id: &str, connected: bool) {
-        if let Ok(mut states) = self.states.lock() {
-            if let Some(state) = states.get_mut(id) {
-                state.connected.store(connected, Ordering::Relaxed);
+    fn connection_result(&self, id: &str, availability: Availability) {
+        if let Ok(states) = self.states.lock() {
+            if let Some(state) = states.get(id) {
+                state.availability.set(availability);
             }
         }
+    }
+
+    /// Write capability for a remote location: unverified until `open_writer().probe()`.
+    pub fn write_capability(&self, id: &str) -> WriteCapability {
+        self.states
+            .lock()
+            .ok()
+            .and_then(|states| {
+                states
+                    .get(id)
+                    .map(|state| WriteCapability::load(&state.write))
+            })
+            .unwrap_or(WriteCapability::Unverified)
+    }
+
+    /// A write snapshot for a WebDAV or S3 location. No network I/O happens here.
+    pub fn open_writer(&self, id: &str) -> Result<RemoteWriter> {
+        let config = self.config(id)?.clone();
+        if !matches!(config.kind.as_str(), "webdav" | "s3") {
+            bail!("E_UNSUPPORTED: Only WebDAV and S3 locations accept remote writes");
+        }
+        let credentials = self.credentials_for(&config)?;
+        let client = self.client(&config)?;
+        let states = self
+            .states
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Credential state is unavailable"))?;
+        let state = states
+            .get(id)
+            .context("Storage credential state is unavailable")?;
+        Ok(RemoteWriter::new(
+            config,
+            credentials,
+            client,
+            state.availability.clone(),
+            state.write.clone(),
+        ))
     }
 
     pub fn local_root(&self, id: &str, prefix: &str) -> Result<PathBuf> {
@@ -563,6 +618,7 @@ impl StorageRegistry {
         Ok(StorageCheck {
             id: id.into(),
             connected: result.is_ok(),
+            availability: Availability::of(&result).as_str().into(),
             credential_status: config.credential_status,
             checked_at: chrono::Utc::now().to_rfc3339(),
             error: result.err().map(|error| format!("{error:#}")),
@@ -592,7 +648,7 @@ impl StorageRegistry {
         cursor: Option<&str>,
     ) -> Result<BrowsePage> {
         let result = self.browse_inner(id, prefix, limit, cursor);
-        self.connection_result(id, result.is_ok());
+        self.connection_result(id, Availability::of(&result));
         result
     }
 
@@ -617,7 +673,7 @@ impl StorageRegistry {
             .map_err(|_| anyhow::anyhow!("Credential state is unavailable"))?
             .get(id)
             .context("Storage credential state is unavailable")?
-            .connected
+            .availability
             .clone();
         Ok(StorageBrowser::new(config, credentials, client, connected))
     }
@@ -689,7 +745,7 @@ impl StorageRegistry {
 
     pub fn reader(&self, id: &str, key: &str) -> Result<Box<dyn Read>> {
         let result = self.reader_inner(id, key);
-        self.connection_result(id, result.is_ok());
+        self.connection_result(id, Availability::of(&result));
         result
     }
 

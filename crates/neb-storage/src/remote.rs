@@ -54,7 +54,7 @@ pub(crate) fn url_for(config: &StorageConfig, key: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn checked(response: Response) -> Result<Response> {
+pub(crate) fn checked(response: Response) -> Result<Response> {
     if !response.status().is_success() {
         bail!(
             "Storage request failed with HTTP {}",
@@ -513,8 +513,23 @@ pub(crate) fn s3_request_with_method(
     credentials: &Credentials,
     config: &StorageConfig,
     method: Method,
+    url: Url,
+    query: &[(String, String)],
+) -> Result<RequestBuilder> {
+    let empty_hash = hex::encode(Sha256::digest(b""));
+    s3_signed(client, credentials, config, method, url, query, &empty_hash)
+}
+
+/// SigV4 request whose signature covers `payload_hash`. For uploads this is the
+/// planned SHA-256, so the server itself rejects a body that differs from the plan.
+pub(crate) fn s3_signed(
+    client: &Client,
+    credentials: &Credentials,
+    config: &StorageConfig,
+    method: Method,
     mut url: Url,
     query: &[(String, String)],
+    payload_hash: &str,
 ) -> Result<RequestBuilder> {
     let access_key = credentials
         .access_key
@@ -560,9 +575,8 @@ pub(crate) fn s3_request_with_method(
         Some(port) => format!("{}:{port}", url.host_str().unwrap_or("")),
         None => url.host_str().unwrap_or("").to_string(),
     };
-    let empty_hash = hex::encode(Sha256::digest(b""));
     let mut canonical_headers =
-        format!("host:{host}\nx-amz-content-sha256:{empty_hash}\nx-amz-date:{timestamp}\n");
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{timestamp}\n");
     let mut signed_headers = "host;x-amz-content-sha256;x-amz-date".to_string();
     if let Some(token) = &credentials.session_token {
         canonical_headers.push_str(&format!("x-amz-security-token:{}\n", token.trim()));
@@ -570,7 +584,7 @@ pub(crate) fn s3_request_with_method(
     }
     // URL segments are percent encoded once; S3 must not normalize or double encode keys.
     let canonical_request = format!(
-        "{}\n{}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{empty_hash}",
+        "{}\n{}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}",
         method.as_str(),
         url.path()
     );
@@ -588,7 +602,7 @@ pub(crate) fn s3_request_with_method(
     let mut request = client
         .request(method, url)
         .header("x-amz-date", timestamp)
-        .header("x-amz-content-sha256", empty_hash)
+        .header("x-amz-content-sha256", payload_hash)
         .header("Authorization", authorization);
     if let Some(token) = &credentials.session_token {
         request = request.header("x-amz-security-token", token);

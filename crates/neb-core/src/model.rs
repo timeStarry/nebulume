@@ -14,6 +14,32 @@ pub struct Library {
     pub hidden: bool,
     #[serde(default)]
     pub pair_raw_jpeg: bool,
+    /// The location that holds this library (v7). Local directories get an implicit one.
+    #[serde(default)]
+    pub location_id: Option<String>,
+}
+
+/// A storage location's non-secret identity. Credentials never enter the catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Location {
+    pub id: String,
+    /// local, removable, webdav or s3.
+    pub kind: String,
+    pub name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub tls_certificate_sha256: Option<String>,
+    /// Created automatically for a library added by choosing a folder.
+    #[serde(default)]
+    pub implicit: bool,
+    #[serde(default)]
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -72,6 +98,17 @@ pub struct Asset {
     pub crop: Option<Crop>,
     pub availability: String,
     pub source_key: Option<String>,
+    /// Culling flag: none, pick or reject. A catalog mark only; never written to the source.
+    #[serde(default = "no_flag")]
+    pub flag: String,
+    /// Location-relative key including the library prefix, with `/` separators (v7).
+    /// None only when an old path could not be expressed under its library root.
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+fn no_flag() -> String {
+    "none".to_owned()
 }
 
 fn pending_capture_status() -> String {

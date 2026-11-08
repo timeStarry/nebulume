@@ -156,9 +156,9 @@ async function nativeFixture(
 async function openConnection(page: Page, endpoint: string) {
   await page
     .getByRole('navigation', { name: '主导航' })
-    .getByRole('button', { name: '存储源', exact: true })
+    .getByRole('button', { name: '位置', exact: true })
     .click();
-  await page.getByRole('button', { name: '添加存储源', exact: true }).click();
+  await page.getByRole('button', { name: '添加网络位置', exact: true }).click();
   await page.getByLabel('显示名称').fill('Home NAS');
   await page.getByLabel('服务端地址').fill(endpoint);
   await page.getByRole('checkbox', { name: '将凭据保存到系统安全存储' }).uncheck();

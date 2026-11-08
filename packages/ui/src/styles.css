@@ -2134,3 +2134,175 @@ kbd {
     transition-duration: 0ms !important;
   }
 }
+
+/* Location availability: one presentation for cards and the open library. */
+.availability-badge {
+  margin-left: auto;
+  padding: 0 var(--nl-space-2);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+  line-height: 20px;
+}
+.availability-badge.online {
+  color: var(--nl-success);
+  border-color: currentColor;
+}
+.availability-badge.offline,
+.availability-badge.error {
+  color: var(--nl-danger);
+  border-color: currentColor;
+}
+.availability-badge.auth_required,
+.availability-badge.trust_required {
+  color: var(--nl-warning);
+  border-color: currentColor;
+}
+.library-card-top > .availability-badge + svg {
+  margin-left: var(--nl-space-2);
+}
+.library-card-container.unavailable .library-card {
+  opacity: 0.6;
+}
+.library-card-container.unavailable .library-card:hover,
+.library-card-container.unavailable .library-card:focus-visible {
+  opacity: 0.85;
+}
+.availability-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nl-space-2) var(--nl-space-3);
+  margin: 0 0 var(--nl-space-3);
+  padding: var(--nl-space-2) var(--nl-space-3);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+  color: var(--nl-text);
+  background: var(--nl-warning-bg);
+  font-size: var(--nl-text-sm);
+}
+.availability-banner.offline,
+.availability-banner.error {
+  background: var(--nl-danger-bg);
+}
+.availability-banner > span {
+  flex: 1 1 240px;
+  color: var(--nl-text-muted);
+}
+
+/* Import organization rules */
+.organize-rules {
+  display: grid;
+  gap: var(--nl-space-3);
+  margin: 0;
+  padding: var(--nl-space-3) var(--nl-space-4);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+}
+.organize-rules legend {
+  padding: 0 var(--nl-space-1);
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-sm);
+}
+.organize-example code {
+  font-family: var(--nl-font-mono);
+  overflow-wrap: anywhere;
+}
+.date-source {
+  margin-left: var(--nl-space-2);
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+}
+.date-source.modified_time {
+  color: var(--nl-warning);
+}
+
+/* Memory card identity on the import page */
+.card-identity {
+  display: grid;
+  gap: var(--nl-space-2);
+  padding: var(--nl-space-3) var(--nl-space-4);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-sm);
+  background: var(--nl-surface-raised);
+  font-size: var(--nl-text-sm);
+}
+.card-identity p {
+  margin: 0;
+  color: var(--nl-text-muted);
+}
+.card-identity strong {
+  margin-right: var(--nl-space-2);
+  color: var(--nl-text);
+}
+.preset-row,
+.preset-save {
+  align-items: end;
+}
+
+.settings-panel > h3 {
+  margin: 16px 0 8px;
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-sm);
+  font-weight: var(--nl-weight-medium);
+}
+.settings-owners {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.settings-owners li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--nl-border);
+  font-size: var(--nl-text-sm);
+}
+
+/* Content fingerprints in library settings */
+.fingerprint-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nl-space-2);
+  padding: var(--nl-space-3);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-md);
+}
+.fingerprint-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--nl-space-3);
+}
+.fingerprint-head strong {
+  font-size: var(--nl-text-sm);
+  font-weight: var(--nl-weight-medium);
+}
+.fingerprint-head p,
+.fingerprint-summary {
+  margin: 2px 0 0;
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+  line-height: var(--nl-line-height-body);
+}
+.fingerprint-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--nl-text-muted);
+  font-size: var(--nl-text-xs);
+}
+.fingerprint-progress progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--nl-interactive);
+}
+.fingerprint-control .workspace-message {
+  flex-wrap: wrap;
+  gap: var(--nl-space-2);
+}
