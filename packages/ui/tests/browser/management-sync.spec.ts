@@ -416,7 +416,7 @@ test('a creation time refresh reconciles the whole loaded catalog in the selecte
     'aria-label',
     'Photo-003.jpg，0 星',
   );
-  await page.getByLabel('排序方向').selectOption('asc');
+  await page.getByRole('button', { name: /^排序方向：降序/ }).click();
   await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
     'aria-label',
     'Photo-000.jpg，0 星',

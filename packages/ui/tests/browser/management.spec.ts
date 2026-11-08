@@ -243,7 +243,7 @@ for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
     await page.getByLabel('最低评级筛选').selectOption('3');
     await page.getByLabel('文件格式筛选').selectOption('jpeg');
     await page.getByLabel('排序字段').selectOption(sortBy);
-    await page.getByLabel('排序方向').selectOption('asc');
+    await page.getByRole('button', { name: /^排序方向：降序/ }).click();
     const matching = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
     await expect.poll(matching).toMatchObject({
       library_id: local.id,
@@ -271,7 +271,7 @@ for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
       'aria-label',
       'Page2.jpg，4 星',
     );
-    await page.getByLabel('排序方向').selectOption('desc');
+    await page.getByRole('button', { name: /^排序方向：升序/ }).click();
     await page.getByLabel('文件格式筛选').selectOption('raw');
     await expect.poll(matching).toMatchObject({
       rating: 3,
@@ -321,7 +321,8 @@ test('library settings persist pairing, variants replace their representative, a
       };
   });
   await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
-  await page.getByRole('button', { name: '本地摄影 图片库设置' }).click();
+  await page.getByRole('button', { name: '本地摄影 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '本地摄影 图片库设置' }).click();
   await page.getByLabel('图片库名称').fill('配对照片');
   await page.getByLabel('合并显示 RAW + JPEG').check();
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
@@ -338,7 +339,8 @@ test('library settings persist pairing, variants replace their representative, a
   await expect
     .poll(() => calls.filter((call) => call.command === '$native/open_viewer').at(-1)?.params)
     .toEqual({ assetId: jpg.id, assetIds: [jpg.id, other.id] });
-  await page.getByRole('button', { name: '配对照片 图片库设置' }).click();
+  await page.getByRole('button', { name: '配对照片 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '配对照片 图片库设置' }).click();
   await expect(page.getByLabel('合并显示 RAW + JPEG')).toBeChecked();
   await page.getByLabel('来源类型').selectOption('remote');
   await page.getByLabel('存储源', { exact: true }).selectOption('nas');
@@ -387,7 +389,8 @@ test('removal dialogs preserve originals, block referenced sources and retain a 
       return { id: nas.id };
     }
   });
-  await page.getByRole('button', { name: '移除图片库 NAS 旅行' }).click();
+  await page.getByRole('button', { name: 'NAS 旅行 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '移除图片库 NAS 旅行' }).click();
   await expect(page.getByRole('dialog')).toContainText('原始照片及目录不会删除');
   await page.getByRole('button', { name: '取消', exact: true }).click();
   expect(calls.some((call) => call.command === 'library.remove')).toBe(false);
@@ -397,7 +400,8 @@ test('removal dialogs preserve originals, block referenced sources and retain a 
   await expect(page.getByRole('button', { name: '确认移除', exact: true })).toBeDisabled();
   expect(calls.some((call) => call.command === 'storage.remove')).toBe(false);
   await page.getByRole('button', { name: '管理关联图片库' }).click();
-  await page.getByRole('button', { name: '移除图片库 NAS 旅行' }).click();
+  await page.getByRole('button', { name: 'NAS 旅行 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '移除图片库 NAS 旅行' }).click();
   await page.getByRole('button', { name: '确认移除', exact: true }).click();
   await expect(page.getByRole('button', { name: '打开图片库 NAS 旅行' })).not.toBeVisible();
   await nav(page, '位置').click();
@@ -752,14 +756,16 @@ test('legacy local library settings retain their binding until an explicitly rev
       return library;
     }
   });
-  await page.getByRole('button', { name: '本地摄影 图片库设置' }).click();
+  await page.getByRole('button', { name: '本地摄影 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '本地摄影 图片库设置' }).click();
   await expect(page.getByLabel('来源类型')).toHaveValue('local');
   await expect(page.getByLabel('本地目录', { exact: true })).toHaveValue(local.root);
   await page.getByRole('button', { name: '选择本地文件夹…', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('旧索引、评级和裁剪配方');
   await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
   expect(calls.filter((call) => call.command === 'library.update')).toHaveLength(0);
-  await page.getByRole('button', { name: '本地摄影 图片库设置' }).click();
+  await page.getByRole('button', { name: '本地摄影 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '本地摄影 图片库设置' }).click();
   await expect(page.getByLabel('本地目录', { exact: true })).toHaveValue(local.root);
   await page.getByRole('button', { name: '选择本地文件夹…', exact: true }).click();
   await page.getByRole('button', { name: '检查位置更改', exact: true }).click();
@@ -1184,7 +1190,8 @@ test('library settings build content fingerprints, confirming before a NAS downl
       };
     return undefined;
   });
-  await page.getByRole('button', { name: 'NAS 旅行 图片库设置' }).click();
+  await page.getByRole('button', { name: 'NAS 旅行 更多操作' }).click();
+  await page.getByRole('menuitem', { name: 'NAS 旅行 图片库设置' }).click();
   const control = page.getByRole('region', { name: '内容指纹' });
   await expect(control).toContainText('已建立 0 / 1');
   await control.getByRole('button', { name: '建立内容指纹' }).click();

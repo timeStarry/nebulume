@@ -76,6 +76,15 @@ const paths: Record<string, () => JSX.Element> = {
       <path d="M12 7v5l3 2" />
     </>
   ),
+  more: () => (
+    <>
+      <circle cx="5" cy="12" r="1.2" />
+      <circle cx="12" cy="12" r="1.2" />
+      <circle cx="19" cy="12" r="1.2" />
+    </>
+  ),
+  'sort-desc': () => <path d="M7 4v16m0 0-3-3m3 3 3-3M13 6h8M13 12h5M13 18h2" />,
+  'sort-asc': () => <path d="M7 20V4m0 0L4 7m3-3 3 3M13 6h2M13 12h5M13 18h8" />,
 };
 export default function Icon(props: { name: string; size?: number; class?: string }) {
   return (

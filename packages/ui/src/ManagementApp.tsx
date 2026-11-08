@@ -25,6 +25,7 @@ import BrandMark from './BrandMark';
 import ThemeControl from './ThemeControl';
 import CacheSettings from './CacheSettings';
 import CaptureIndexControl from './CaptureIndexControl';
+import OverflowMenu from './OverflowMenu';
 import { AboutPanel, UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
@@ -715,15 +716,56 @@ export default function ManagementApp() {
           }
         >
           {(item) => (
-            <button
-              class={`workspace-nav-item ${section() === item.id ? 'active' : ''}`}
-              aria-label={item.id === 'libraries' ? item.label : undefined}
-              aria-current={section() === item.id ? 'page' : undefined}
-              onClick={() => navigate(item.id)}
-            >
-              <Icon name={item.icon} size={19} />
-              <span>{item.label}</span>
-            </button>
+            <>
+              <button
+                class={`workspace-nav-item ${section() === item.id && !(item.id === 'libraries' && libraryId()) ? 'active' : ''}`}
+                aria-label={item.id === 'libraries' ? item.label : undefined}
+                aria-current={
+                  section() === item.id && !(item.id === 'libraries' && libraryId())
+                    ? 'page'
+                    : undefined
+                }
+                onClick={() => navigate(item.id)}
+              >
+                <Icon name={item.icon} size={19} />
+                <span>{item.label}</span>
+              </button>
+              <Show when={item.id === 'libraries' && visibleLibraries().length}>
+                <ul class="nav-library-list" aria-label="图片库列表">
+                  <For each={visibleLibraries()}>
+                    {(library) => (
+                      <li>
+                        <button
+                          class={`nav-library-item ${section() === 'libraries' && libraryId() === library.id ? 'active' : ''}`}
+                          aria-current={
+                            section() === 'libraries' && libraryId() === library.id
+                              ? 'page'
+                              : undefined
+                          }
+                          title={libraryLocation(library)}
+                          onClick={() =>
+                            section() === 'libraries' && libraryId() === library.id
+                              ? closeNavigation()
+                              : enterLibrary(library)
+                          }
+                        >
+                          <span
+                            class={`nav-library-dot ${availabilityPresentation(library).usable ? '' : 'unavailable'}`}
+                            aria-hidden="true"
+                          />
+                          <span class="nav-library-name">{library.name}</span>
+                          <Show when={!availabilityPresentation(library).usable}>
+                            <span class="visually-hidden">
+                              ，{availabilityPresentation(library).label}
+                            </span>
+                          </Show>
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+            </>
           )}
         </For>
       </nav>
@@ -836,23 +878,24 @@ export default function ManagementApp() {
                           </Show>
                         </button>
                         <div class="library-card-actions">
-                          <button
-                            class="button small"
-                            aria-label={`${library.name} 图片库设置`}
-                            disabled={!!busy()}
-                            onClick={() => editLibrary(library)}
-                          >
-                            <Icon name="settings" size={14} />
-                            设置
-                          </button>
-                          <button
-                            class="button small"
-                            aria-label={`移除图片库 ${library.name}`}
-                            disabled={!!busy()}
-                            onClick={() => setRemoving({ kind: 'library', item: library })}
-                          >
-                            移除
-                          </button>
+                          <OverflowMenu
+                            label={`${library.name} 更多操作`}
+                            items={[
+                              {
+                                label: '图片库设置…',
+                                ariaLabel: `${library.name} 图片库设置`,
+                                disabled: !!busy(),
+                                onSelect: () => editLibrary(library),
+                              },
+                              {
+                                label: '移除图片库…',
+                                ariaLabel: `移除图片库 ${library.name}`,
+                                disabled: !!busy(),
+                                danger: true,
+                                onSelect: () => setRemoving({ kind: 'library', item: library }),
+                              },
+                            ]}
+                          />
                         </div>
                       </article>
                     )}
@@ -875,26 +918,9 @@ export default function ManagementApp() {
                     <span>/</span>
                     <h1>{library().name}</h1>
                   </div>
-                  <div>
+                  <div class="collection-actions">
                     <button
-                      class="button"
-                      aria-label={`${library().name} 图片库设置`}
-                      disabled={!!busy()}
-                      onClick={() => editLibrary(library())}
-                    >
-                      <Icon name="settings" size={15} />
-                      设置
-                    </button>
-                    <button
-                      class="button"
-                      aria-label={`移除图片库 ${library().name}`}
-                      disabled={!!busy()}
-                      onClick={() => setRemoving({ kind: 'library', item: library() })}
-                    >
-                      移除
-                    </button>
-                    <button
-                      class="button"
+                      class="button primary"
                       disabled={
                         !!busy() ||
                         (desktop &&
@@ -931,6 +957,24 @@ export default function ManagementApp() {
                       <Icon name="info" size={15} />
                       详情
                     </button>
+                    <OverflowMenu
+                      label={`${library().name} 更多操作`}
+                      items={[
+                        {
+                          label: '图片库设置…',
+                          ariaLabel: `${library().name} 图片库设置`,
+                          disabled: !!busy(),
+                          onSelect: () => editLibrary(library()),
+                        },
+                        {
+                          label: '移除图片库…',
+                          ariaLabel: `移除图片库 ${library().name}`,
+                          disabled: !!busy(),
+                          danger: true,
+                          onSelect: () => setRemoving({ kind: 'library', item: library() }),
+                        },
+                      ]}
+                    />
                   </div>
                 </header>
                 <Show when={!availabilityPresentation(library()).usable}>
@@ -1059,14 +1103,18 @@ export default function ManagementApp() {
                     <option value="filename">文件名</option>
                     <option value="rating">评级</option>
                   </select>
-                  <select
-                    value={direction()}
-                    onChange={(event) => setDirection(event.currentTarget.value as 'asc' | 'desc')}
-                    aria-label="排序方向"
+                  <button
+                    class="icon-button sort-direction"
+                    aria-label={
+                      direction() === 'desc'
+                        ? '排序方向：降序，切换为升序'
+                        : '排序方向：升序，切换为降序'
+                    }
+                    title={direction() === 'desc' ? '降序' : '升序'}
+                    onClick={() => setDirection(direction() === 'desc' ? 'asc' : 'desc')}
                   >
-                    <option value="desc">降序 ↓</option>
-                    <option value="asc">升序 ↑</option>
-                  </select>
+                    <Icon name={direction() === 'desc' ? 'sort-desc' : 'sort-asc'} size={16} />
+                  </button>
                   <Show when={desktop && sort() === 'captured_at'}>
                     <CaptureIndexControl
                       libraryId={library().id}
@@ -1275,15 +1323,7 @@ export default function ManagementApp() {
           />
         </div>
         <Show when={section() === 'settings'}>
-          <Settings
-            system={system()}
-            onNavigate={navigate}
-            thumbSize={thumbSize()}
-            onSizeChange={(value) => {
-              setThumbSize(value);
-              saveThumbSize(value);
-            }}
-          />
+          <Settings system={system()} onNavigate={navigate} />
         </Show>
       </main>
       <Show when={busy() || !ready()}>
@@ -1420,8 +1460,6 @@ function CullingSettings() {
  *  Everything owned by a location, library, card or preset is edited where it lives. */
 function Settings(props: {
   system?: Record<string, unknown>;
-  thumbSize: number;
-  onSizeChange: (value: number) => void;
   onNavigate: (section: WorkspaceSection) => void;
 }) {
   const owners: { what: string; where: string; section: WorkspaceSection }[] = [
@@ -1445,21 +1483,6 @@ function Settings(props: {
         <h2>外观</h2>
         <div class="settings-row">
           <ThemeControl />
-        </div>
-        <div class="settings-row">
-          <div>
-            <strong>缩略图大小</strong>
-            <p>应用于所有图片库。</p>
-          </div>
-          <input
-            type="range"
-            min="150"
-            max="320"
-            step="10"
-            value={props.thumbSize}
-            onInput={(e) => props.onSizeChange(Number(e.currentTarget.value))}
-            aria-label="默认缩略图大小"
-          />
         </div>
       </section>
       <CullingSettings />

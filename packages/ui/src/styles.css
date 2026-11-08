@@ -2306,3 +2306,94 @@ kbd {
   flex-wrap: wrap;
   gap: var(--nl-space-2);
 }
+.collection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nl-space-2);
+}
+.overflow-menu {
+  position: relative;
+}
+.overflow-menu > .icon-button {
+  width: var(--nl-control-height);
+  padding: 0;
+}
+.overflow-menu-list {
+  position: absolute;
+  inset-block-start: calc(100% + var(--nl-space-1));
+  inset-inline-end: 0;
+  z-index: 20;
+  display: grid;
+  min-width: 168px;
+  padding: var(--nl-space-1);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-md);
+  background: var(--nl-surface-raised);
+  box-shadow: var(--nl-shadow-popover);
+}
+.overflow-menu-item {
+  min-height: var(--nl-control-height-compact);
+  padding: var(--nl-space-1) var(--nl-space-3);
+  border-radius: var(--nl-radius-sm);
+  text-align: start;
+  font-size: var(--nl-text-sm);
+  color: var(--nl-text);
+}
+.overflow-menu-item:hover:not(:disabled),
+.overflow-menu-item:focus-visible {
+  background: var(--nl-surface-hover);
+}
+.overflow-menu-item:disabled {
+  color: var(--nl-text-disabled);
+}
+.overflow-menu-item.danger {
+  color: var(--nl-danger);
+}
+.collection-controls .sort-direction {
+  width: var(--nl-control-height-compact);
+  min-height: var(--nl-control-height-compact);
+  padding: 0;
+}
+.nav-library-list {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 var(--nl-space-2);
+  padding: 0 0 0 var(--nl-space-6);
+  list-style: none;
+}
+.nav-library-item {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-space-2);
+  width: 100%;
+  min-height: var(--nl-control-height-compact);
+  padding: var(--nl-space-1) var(--nl-space-3);
+  border-radius: var(--nl-radius-sm);
+  text-align: start;
+  font-size: var(--nl-text-sm);
+  color: var(--nl-text-secondary);
+}
+.nav-library-item:hover {
+  background: var(--nl-surface-hover);
+}
+.nav-library-item.active {
+  background: var(--nl-selected-bg);
+  color: var(--nl-selected-text);
+}
+.nav-library-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nl-success);
+}
+.nav-library-dot.unavailable {
+  background: var(--nl-text-disabled);
+}
+.nav-library-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
