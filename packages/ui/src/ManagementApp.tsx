@@ -26,6 +26,7 @@ import ThemeControl from './ThemeControl';
 import CacheSettings from './CacheSettings';
 import CaptureIndexControl from './CaptureIndexControl';
 import OverflowMenu from './OverflowMenu';
+import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import { AboutPanel, UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
@@ -80,6 +81,7 @@ export default function ManagementApp() {
   // always counts as selected, so single selection keeps working unchanged.
   const [picked, setPicked] = createSignal<ReadonlySet<string>>(new Set());
   let selectionAnchor: string | undefined;
+  const [contextMenu, setContextMenu] = createSignal<ContextMenuState>();
   const [query, setQuery] = createSignal('');
   const [rating, setRating] = createSignal(0);
   const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
@@ -671,6 +673,74 @@ export default function ManagementApp() {
       void startCulling();
     }
   }
+  function openAssetMenu(asset: Asset, point: { x: number; y: number }) {
+    // Right-clicking outside the selection acts on that photo alone, like file managers.
+    if (!selectedIds().includes(asset.id)) selectAsset(asset.id);
+    else setSelectedId(asset.id);
+    const count = selectedIds().length;
+    const subject = count > 1 ? `所选 ${count} 张照片` : asset.filename;
+    const rateItems = [5, 4, 3, 2, 1, 0].map((value) => ({
+      label: value ? `评为 ${'★'.repeat(value)}` : '清除评级',
+      ariaLabel: value ? `将${subject}评为 ${value} 星` : `清除${subject}的评级`,
+      disabled: !!busy(),
+      onSelect: () => void markSelection({ rating: value }),
+    }));
+    setContextMenu({
+      x: point.x,
+      y: point.y,
+      label: `${subject} 操作`,
+      returnFocus: document.activeElement as HTMLElement | null,
+      items: [
+        {
+          label: count > 1 ? '在查看器中打开（所选照片）' : '在查看器中打开',
+          onSelect: () =>
+            void openAsset(asset, count > 1 ? selectedIds() : assets().map((item) => item.id)),
+        },
+        {
+          label: '从此照片开始选图',
+          disabled: !!busy(),
+          onSelect: () => void startCulling(),
+        },
+        'separator',
+        ...rateItems,
+        'separator',
+        { label: '留用', disabled: !!busy(), onSelect: () => void markSelection({ flag: 'pick' }) },
+        {
+          label: '淘汰',
+          disabled: !!busy(),
+          onSelect: () => void markSelection({ flag: 'reject' }),
+        },
+        {
+          label: '清除旗标',
+          disabled: !!busy(),
+          onSelect: () => void markSelection({ flag: 'none' }),
+        },
+        'separator',
+        {
+          label: '显示详情',
+          onSelect: () => setInfo(true),
+        },
+        {
+          label: '复制文件路径',
+          disabled: count > 1 || !asset.path,
+          onSelect: () =>
+            void navigator.clipboard
+              .writeText(asset.path)
+              .then(() => setNotice('已复制文件路径。'))
+              .catch(() => setError('无法写入剪贴板。')),
+        },
+        ...(desktop
+          ? [
+              {
+                label: '重新读取原图',
+                disabled: count > 1 || !!busy(),
+                onSelect: () => void refreshOriginal(),
+              },
+            ]
+          : []),
+      ],
+    });
+  }
   /** Columns in the rendered grid, read from layout so it follows the size slider. */
   function gridColumns() {
     const grid = collectionScroll?.querySelector<HTMLElement>('.photo-grid:not(.skeleton-grid)');
@@ -930,6 +1000,9 @@ export default function ManagementApp() {
           )}
         </For>
       </nav>
+      <Show when={contextMenu()}>
+        {(menu) => <ContextMenu menu={menu()} onClose={() => setContextMenu(undefined)} />}
+      </Show>
       <main class="manager-workspace" aria-label="影像管理工作区">
         <UpdatePrompt />
         <Show when={syncError()}>
@@ -1435,6 +1508,7 @@ export default function ManagementApp() {
                                 }
                                 onSelect={(event) => selectAsset(asset.id, event)}
                                 onOpen={() => openAsset(asset)}
+                                onMenu={(point) => openAssetMenu(asset, point)}
                               />
                               <Show when={asset.variants?.length}>
                                 <div

@@ -61,6 +61,8 @@ export function Thumbnail(props: {
   compact?: boolean;
   onSelect: (event: MouseEvent) => void;
   onOpen: () => void;
+  /** Right-click, Shift+F10 or the Menu key; receives the anchor point. */
+  onMenu?: (point: { x: number; y: number }) => void;
 }) {
   let element!: HTMLButtonElement;
   const [visible, setVisible] = createSignal(false);
@@ -171,7 +173,22 @@ export function Thumbnail(props: {
       tabIndex={props.tabbable === false ? -1 : 0}
       onClick={(event) => props.onSelect(event)}
       onDblClick={props.onOpen}
+      onContextMenu={(event) => {
+        if (!props.onMenu) return;
+        event.preventDefault();
+        props.onMenu({ x: event.clientX, y: event.clientY });
+      }}
       onKeyDown={(event) => {
+        if (
+          props.onMenu &&
+          (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          const rect = element.getBoundingClientRect();
+          props.onMenu({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+          return;
+        }
         if (event.key === 'Enter') {
           event.preventDefault();
           event.stopPropagation();

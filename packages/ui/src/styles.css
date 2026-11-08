@@ -2433,3 +2433,14 @@ kbd {
   border-color: var(--nl-selected-border);
   opacity: 0.92;
 }
+.context-menu {
+  position: fixed;
+  z-index: 40;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+.context-menu-separator {
+  height: 1px;
+  margin: var(--nl-space-1) var(--nl-space-2);
+  background: var(--nl-border);
+}

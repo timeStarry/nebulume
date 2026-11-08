@@ -817,3 +817,51 @@ test('arrow keys move by cell and row, Home and End jump, and only one thumbnail
   await page.keyboard.press('Shift+ArrowRight');
   await expect(page.getByRole('toolbar', { name: '批量操作' })).toContainText('已选 3 张');
 });
+
+test('right-click opens a menu for the photo, or the whole selection, and marks it', async ({
+  page,
+}) => {
+  const { calls, assets } = await fixture(page, 8);
+  const cells = page.locator('.photo-grid .thumbnail');
+  await expect(cells).toHaveCount(8);
+  await cells.nth(2).click({ button: 'right' });
+  const menu = page.getByRole('menu', { name: `${assets[2].filename} 操作` });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  await expect(cells.nth(2)).toHaveClass(/focused/);
+  await menu.getByRole('menuitem', { name: `将${assets[2].filename}评为 4 星` }).click();
+  await expect(menu).toHaveCount(0);
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.rate')?.params)
+    .toMatchObject({ id: assets[2].id, rating: 4 });
+  await cells.nth(0).click();
+  await cells.nth(3).click({ modifiers: ['Shift'] });
+  await cells.nth(1).click({ button: 'right' });
+  const batchMenu = page.getByRole('menu', { name: '所选 4 张照片 操作' });
+  await expect(batchMenu).toBeVisible();
+  await batchMenu.getByRole('menuitem', { name: '淘汰' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.mark_batch')?.params.flag)
+    .toBe('reject');
+  expect(
+    (calls.find((call) => call.command === 'asset.mark_batch')!.params.ids as string[]).length,
+  ).toBe(4);
+});
+
+test('the context menu opens from the keyboard, closes on Escape and returns focus', async ({
+  page,
+}) => {
+  const { assets } = await fixture(page, 4);
+  const cells = page.locator('.photo-grid .thumbnail');
+  await expect(cells).toHaveCount(4);
+  await cells.nth(1).click();
+  await page.keyboard.press('Shift+F10');
+  const menu = page.getByRole('menu', { name: `${assets[1].filename} 操作` });
+  await expect(menu).toBeVisible();
+  await page.keyboard.press('ArrowDown');
+  await expect(menu.getByRole('menuitem').nth(1)).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  await expect(cells.nth(1)).toBeFocused();
+  await expect(page.locator('.asset-inspector')).toHaveCount(0);
+});

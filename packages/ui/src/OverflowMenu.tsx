@@ -92,8 +92,8 @@ export default function OverflowMenu(props: { label: string; items: OverflowItem
                 aria-label={item.ariaLabel}
                 disabled={item.disabled}
                 onClick={() => {
-                  close();
                   item.onSelect();
+                  close();
                 }}
               >
                 {item.label}
