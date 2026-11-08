@@ -174,6 +174,26 @@ async function fixture(
       case 'import.history':
         result = [];
         break;
+      case '$native/classify_dropped': {
+        // In these fixtures folders have no extension and images end in .jpg.
+        const paths = call.params.paths as string[];
+        const hasExtension = (path: string) => /\.[a-z]+$/i.test(path);
+        result = {
+          folders: paths.filter((path) => !hasExtension(path)),
+          images: paths.filter((path) => /\.jpg$/i.test(path)),
+          ignored: paths.filter((path) => hasExtension(path) && !/\.jpg$/i.test(path)).length,
+        };
+        break;
+      }
+      case 'file.open': {
+        const path = String(call.params.path);
+        result = assets.find((asset) => asset.path === path) ?? {
+          ...assets[0],
+          id: `opened-${path}`,
+          path,
+        };
+        break;
+      }
       default:
         result = null;
     }
@@ -186,6 +206,8 @@ async function fixture(
       const listeners = new Map<string, number>();
       Object.assign(window, {
         isTauri: true,
+        __emitTauriEvent: (event: string, payload: unknown) =>
+          callbacks.get(listeners.get(event)!)?.({ event, id: 1, payload }),
         __emitAssetUpdate: (payload: unknown) =>
           callbacks.get(listeners.get('asset-updated')!)?.({
             event: 'asset-updated',
@@ -923,4 +945,54 @@ test('keyboard moves past the rendered rows scroll the focused photo into view',
   for (let i = 0; i < 3; i++) await page.keyboard.press('PageDown');
   await expect(focused).toBeFocused();
   await expect(focused).toBeInViewport();
+});
+
+async function drag(page: Page, type: 'enter' | 'over' | 'drop' | 'leave', paths: string[] = []) {
+  await page.evaluate(
+    ({ type, paths }) => {
+      const emit = (
+        window as unknown as { __emitTauriEvent: (event: string, payload: unknown) => void }
+      ).__emitTauriEvent;
+      const position = { x: 200, y: 200 };
+      emit(`tauri://drag-${type}`, type === 'leave' ? null : { paths, position });
+    },
+    { type, paths },
+  );
+}
+
+test('dropping a folder opens the new library dialog with that folder filled in', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page, 4);
+  await drag(page, 'enter', ['/Users/me/Pictures/Iceland 2026']);
+  await expect(page.locator('.drop-overlay')).toBeVisible();
+  await drag(page, 'over');
+  await drag(page, 'drop', ['/Users/me/Pictures/Iceland 2026']);
+  await expect(page.locator('.drop-overlay')).toHaveCount(0);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('本地目录', { exact: true })).toHaveValue(
+    '/Users/me/Pictures/Iceland 2026',
+  );
+  await expect(dialog.getByLabel('图片库名称')).toHaveValue('Iceland 2026');
+  expect(calls.some((call) => call.command === 'library.add')).toBe(false);
+});
+
+test('dropping images opens them in the viewer and leaving hides the overlay', async ({ page }) => {
+  const { calls, assets } = await fixture(page, 4);
+  await drag(page, 'enter', [assets[1].path]);
+  await expect(page.locator('.drop-overlay')).toBeVisible();
+  await drag(page, 'leave');
+  await expect(page.locator('.drop-overlay')).toHaveCount(0);
+  await drag(page, 'drop', [assets[1].path, assets[2].path, '/tmp/readme.txt']);
+  await expect
+    .poll(() => calls.find((call) => call.command === '$native/open_viewer')?.params)
+    .toMatchObject({ assetId: assets[1].id, assetIds: [assets[1].id, assets[2].id] });
+  expect(calls.filter((call) => call.command === 'file.open')).toHaveLength(2);
+});
+
+test('dropping only unsupported files explains why nothing happened', async ({ page }) => {
+  await fixture(page, 2);
+  await drag(page, 'drop', ['/tmp/notes.txt']);
+  await expect(page.getByRole('alert')).toContainText('不是文件夹或支持的影像文件');
 });

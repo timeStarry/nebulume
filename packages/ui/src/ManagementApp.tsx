@@ -10,6 +10,8 @@ import {
 } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { chooseImage, desktop, execute, openViewerWindow } from './api';
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
@@ -116,6 +118,8 @@ export default function ManagementApp() {
   );
   const [librarySource, setLibrarySource] = createSignal<StorageConfig>();
   const [libraryPrefix, setLibraryPrefix] = createSignal('');
+  const [libraryRoot, setLibraryRoot] = createSignal<string>();
+  const [dropActive, setDropActive] = createSignal(false);
   const [overlay, setOverlay] = createSignal<{
     id: string;
     ids: string[];
@@ -325,11 +329,40 @@ export default function ManagementApp() {
     setError('');
     setNotice('');
   }
-  function newLibrary(source?: StorageConfig, prefix = '') {
+  function newLibrary(source?: StorageConfig, prefix = '', root?: string) {
     setEditingLibrary(undefined);
     setLibrarySource(source);
     setLibraryPrefix(prefix);
+    setLibraryRoot(root);
     setDialog('library');
+  }
+  /** A folder dropped on the window becomes a library; image files open in the viewer. */
+  async function acceptDrop(paths: string[]) {
+    if (!paths.length || dialog() || removing() || busy()) return;
+    const dropped = await invoke<{ folders: string[]; images: string[]; ignored: number }>(
+      'classify_dropped',
+      { paths },
+    );
+    const folder = dropped.folders[0];
+    if (folder) {
+      const existing = libraries().find(
+        (library) => !library.storage_id && library.root === folder && !library.hidden,
+      );
+      if (existing) enterLibrary(existing);
+      else newLibrary(undefined, '', folder);
+      if (dropped.folders.length > 1) setNotice(`一次只建立一个图片库，已使用 ${folder}。`);
+      return;
+    }
+    if (dropped.images.length) {
+      await action('正在打开影像…', async () => {
+        const ids: string[] = [];
+        for (const path of dropped.images.slice(0, 100))
+          ids.push((await execute<Asset>('file.open', { path })).id);
+        await openViewerWindow(ids[0], ids);
+      });
+      return;
+    }
+    setError('拖入的内容不是文件夹或支持的影像文件。');
   }
   function editLibrary(library: Library) {
     setEditingLibrary(library);
@@ -852,6 +885,25 @@ export default function ManagementApp() {
   }
   onMount(() => {
     void updates.start();
+    if (desktop) {
+      let stopDrop: (() => void) | undefined;
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          const payload = event.payload;
+          if (payload.type === 'enter' || payload.type === 'over') setDropActive(true);
+          else if (payload.type === 'leave') setDropActive(false);
+          else {
+            setDropActive(false);
+            void acceptDrop(payload.paths).catch((e) => setError(errorMessage(e)));
+          }
+        })
+        .then((stop) => {
+          if (disposed) stop();
+          else stopDrop = stop;
+        })
+        .catch(() => undefined);
+      onCleanup(() => stopDrop?.());
+    }
     const navigationMedia = window.matchMedia('(max-width: 959px)');
     const updateNavigationMode = () => {
       setCompactNavigation(navigationMedia.matches);
@@ -1000,6 +1052,15 @@ export default function ManagementApp() {
           )}
         </For>
       </nav>
+      <Show when={dropActive()}>
+        <div class="drop-overlay" aria-hidden="true">
+          <div class="drop-overlay-card">
+            <Icon name="folder" size={28} />
+            <strong>松开以添加</strong>
+            <span>文件夹建立图片库，影像文件直接打开</span>
+          </div>
+        </div>
+      </Show>
       <Show when={contextMenu()}>
         {(menu) => <ContextMenu menu={menu()} onClose={() => setContextMenu(undefined)} />}
       </Show>
@@ -1677,6 +1738,7 @@ export default function ManagementApp() {
           sources={sources()}
           initialSource={librarySource()}
           initialPrefix={libraryPrefix()}
+          initialRoot={libraryRoot()}
           existing={editingLibrary()}
           onClose={() => setDialog(null)}
           onAdded={(library, bindingChanged) => {

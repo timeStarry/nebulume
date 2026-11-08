@@ -164,6 +164,8 @@ CLI `neb preview --id ID --tier TIER [--uncropped] --out FILE` 调用同一 `Ser
 
 命令行图片路径或安装包文件关联打开独立查看器；已有进程接收后续文件打开请求，不重复启动管理实例。不会改动用户系统默认应用设置。
 
+`classify_dropped {paths}` → `{folders,images,ignored}`：只读文件元数据，把拖入主窗口的路径分为文件夹与受支持影像，其余计入 `ignored`；不读取内容、不建库、不打开文件。
+
 应用内更新只在主窗口使用：`update_support {}` → `{supported,kind}`，`kind` 为 `installer`、`portable`、`development` 或 `unsupported_platform`，仅安装器版本为 `supported=true`（依据程序旁是否有 NSIS 写入的 `uninstall.exe`）；`prepare_for_update {}` → `{cancelled_jobs,pending_writes,timed_out}`，停止运行中的拍摄时间索引并最多等待 5 秒让预览缓存写入落盘，超时不阻止安装。下载与安装由 `tauri-plugin-updater` 完成，前端顺序为下载、`prepare_for_update`、安装、重启；Windows 安装器启动时应用会直接退出。
 
 CLI 的 `neb stdio` 可在同一会话保留连接凭据和导入计划。输入逐行 `{id,command,params}`，输出 `{id,result}` 或 `{id,error}`，仅使用本机 stdin/stdout，无网络监听端口。

@@ -89,12 +89,18 @@ export function LibraryDialog(props: {
   sources: StorageConfig[];
   initialSource?: StorageConfig;
   initialPrefix?: string;
+  /** A local folder chosen outside the dialog, e.g. dropped on the window. */
+  initialRoot?: string;
   existing?: Library;
   onClose: () => void;
   onAdded: (library: Library, bindingChanged?: boolean) => void;
 }) {
   const [name, setName] = createSignal(
     props.existing?.name ||
+      props.initialRoot
+        ?.replace(/[\\/]+$/, '')
+        .split(/[\\/]/)
+        .pop() ||
       props.initialPrefix?.replace(/\/$/, '').split('/').pop() ||
       props.initialSource?.name ||
       '',
@@ -113,9 +119,11 @@ export function LibraryDialog(props: {
   const [localRoot, setLocalRoot] = createSignal(
     props.existing && existingIsLocal
       ? props.existing.root
-      : props.initialSource?.kind === 'local'
-        ? props.initialSource.endpoint
-        : '',
+      : props.initialRoot
+        ? props.initialRoot
+        : props.initialSource?.kind === 'local'
+          ? props.initialSource.endpoint
+          : '',
   );
   const [sourceId, setSourceId] = createSignal(
     initialIsRemote

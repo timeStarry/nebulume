@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod drop;
 mod file_open;
 mod preview_protocol;
 mod updates;
@@ -62,7 +63,8 @@ fn main() {
             viewer::show_manager,
             list_volumes,
             updates::update_support,
-            updates::prepare_for_update
+            updates::prepare_for_update,
+            drop::classify_dropped
         ])
         .build(tauri::generate_context!())
         .expect("Nebulume failed to start")

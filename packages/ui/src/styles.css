@@ -2452,3 +2452,32 @@ kbd {
   inset: 0 0 auto;
   will-change: transform;
 }
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--nl-canvas) 70%, transparent);
+  border: 2px dashed var(--nl-selected-border);
+}
+.drop-overlay-card {
+  display: grid;
+  justify-items: center;
+  gap: var(--nl-space-2);
+  padding: var(--nl-space-6) var(--nl-space-7);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-lg);
+  background: var(--nl-surface-raised);
+  color: var(--nl-text);
+  font-size: var(--nl-text-sm);
+}
+.drop-overlay-card strong {
+  font-size: var(--nl-text-base);
+  font-weight: var(--nl-weight-medium);
+}
+.drop-overlay-card span {
+  color: var(--nl-text-secondary);
+}
