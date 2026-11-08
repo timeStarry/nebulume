@@ -420,8 +420,14 @@ test('removal dialogs preserve originals, block referenced sources and retain a 
   await page.getByRole('button', { name: '管理关联图片库' }).click();
   await page.getByRole('button', { name: 'NAS 旅行 更多操作' }).click();
   await page.getByRole('menuitem', { name: '移除图片库 NAS 旅行' }).click();
+  await page.clock.install();
   await page.getByRole('button', { name: '确认移除', exact: true }).click();
   await expect(page.getByRole('button', { name: '打开图片库 NAS 旅行' })).not.toBeVisible();
+  const removedNotice = page.getByRole('status').filter({ hasText: '已移除 NAS 旅行' });
+  await expect(removedNotice).toBeVisible();
+  await page.clock.runFor(6500);
+  await expect(removedNotice).toHaveCount(0);
+  await page.clock.resume();
   await nav(page, '位置').click();
   await page.getByRole('button', { name: '移除位置 家庭 NAS' }).click();
   await page.getByRole('button', { name: '确认移除', exact: true }).click();

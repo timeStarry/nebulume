@@ -268,6 +268,12 @@ export default function ManagementApp() {
     const timeout = setTimeout(() => void loadAssets(), 120);
     onCleanup(() => clearTimeout(timeout));
   });
+  // Success notices close themselves; errors stay until dismissed or replaced.
+  createEffect(() => {
+    if (!notice()) return;
+    const timeout = setTimeout(() => setNotice(''), NOTICE_DISMISS_MS);
+    onCleanup(() => clearTimeout(timeout));
+  });
   function closeNavigation() {
     const wasOpen = navigationOpen();
     setNavigationOpen(false);
@@ -1472,6 +1478,7 @@ function readThumbSize() {
     return 210;
   }
 }
+const NOTICE_DISMISS_MS = 6000;
 function saveThumbSize(value: number) {
   try {
     localStorage.setItem('nebulume.thumbnail-size', String(value));
