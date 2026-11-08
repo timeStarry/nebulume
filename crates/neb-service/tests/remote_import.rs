@@ -120,7 +120,7 @@ fn card_imports_into_a_nas_library_only_after_a_write_test() {
     let source = svc
         .execute(
             "storage.add",
-            json!({"name":"NAS","kind":"webdav","endpoint":endpoint,"username":"u","password":"p"}),
+            json!({"name":"NAS","kind":"webdav","endpoint":endpoint,"username":"u","password":"p","remember_credentials":false}),
         )
         .unwrap();
     let library = svc
