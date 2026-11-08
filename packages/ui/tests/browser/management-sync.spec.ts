@@ -785,3 +785,35 @@ test('select all marks every loaded photo and a plain click returns to one photo
     .poll(() => calls.find((call) => call.command === 'asset.rate')?.params.rating)
     .toBe(3);
 });
+
+test('arrow keys move by cell and row, Home and End jump, and only one thumbnail is tabbable', async ({
+  page,
+}) => {
+  await fixture(page, 24);
+  const cells = page.locator('.photo-grid .thumbnail');
+  await expect(cells).toHaveCount(24);
+  await expect(page.locator('.photo-grid .thumbnail[tabindex="0"]')).toHaveCount(1);
+  const columns = await page
+    .locator('.photo-grid')
+    .evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(' ').length);
+  expect(columns).toBeGreaterThan(1);
+  await cells.first().click();
+  await expect(cells.first()).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(cells.nth(1)).toBeFocused();
+  await expect(cells.nth(1)).toHaveClass(/focused/);
+  await page.keyboard.press('ArrowDown');
+  await expect(cells.nth(1 + columns)).toBeFocused();
+  await page.keyboard.press('ArrowUp');
+  await expect(cells.nth(1)).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(cells.nth(23)).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(cells.nth(23)).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(cells.first()).toBeFocused();
+  await expect(page.locator('.photo-grid .thumbnail[tabindex="0"]')).toHaveCount(1);
+  await page.keyboard.press('Shift+ArrowRight');
+  await page.keyboard.press('Shift+ArrowRight');
+  await expect(page.getByRole('toolbar', { name: '批量操作' })).toContainText('已选 3 张');
+});

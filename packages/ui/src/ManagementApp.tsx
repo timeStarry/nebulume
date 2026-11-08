@@ -643,10 +643,14 @@ export default function ManagementApp() {
     if (event.ctrlKey || event.metaKey || event.altKey || section() !== 'libraries' || !libraryId())
       return;
     const index = assets().findIndex((asset) => asset.id === selectedId());
-    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+    const step = gridStep(event.key, index);
+    if (step !== undefined) {
       event.preventDefault();
-      const next = assets()[index + (event.key === 'ArrowRight' ? 1 : -1)];
-      if (next) setSelectedId(next.id);
+      const next = assets()[step];
+      if (next && next.id !== selectedId()) {
+        selectAsset(next.id, event.shiftKey ? { shiftKey: true } : undefined);
+        focusThumbnail(next.id);
+      }
     } else if (
       event.key === 'Enter' &&
       selected() &&
@@ -666,6 +670,55 @@ export default function ManagementApp() {
       event.preventDefault();
       void startCulling();
     }
+  }
+  /** Columns in the rendered grid, read from layout so it follows the size slider. */
+  function gridColumns() {
+    const grid = collectionScroll?.querySelector<HTMLElement>('.photo-grid:not(.skeleton-grid)');
+    if (!grid) return 1;
+    const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length;
+    return Math.max(1, columns);
+  }
+  function gridStep(key: string, index: number): number | undefined {
+    const last = assets().length - 1;
+    if (last < 0) return undefined;
+    if (index < 0)
+      return ['ArrowRight', 'ArrowDown', 'Home', 'PageDown'].includes(key) ? 0 : undefined;
+    const columns = gridColumns();
+    const page = Math.max(
+      columns,
+      columns * Math.floor((collectionScroll?.clientHeight || 0) / Math.max(1, thumbSize())),
+    );
+    switch (key) {
+      case 'ArrowRight':
+        return Math.min(last, index + 1);
+      case 'ArrowLeft':
+        return Math.max(0, index - 1);
+      case 'ArrowDown':
+        return Math.min(last, index + columns);
+      case 'ArrowUp':
+        return Math.max(0, index - columns);
+      case 'Home':
+        return 0;
+      case 'End':
+        return last;
+      case 'PageDown':
+        return Math.min(last, index + page);
+      case 'PageUp':
+        return Math.max(0, index - page);
+      default:
+        return undefined;
+    }
+  }
+  function focusThumbnail(id: string) {
+    queueMicrotask(() => {
+      const element = collectionScroll?.querySelector<HTMLElement>(
+        `[data-asset-id="${CSS.escape(id)}"]`,
+      );
+      // Only move DOM focus when the grid already owns it, so shortcuts used
+      // from the toolbar do not steal focus.
+      if (element && collectionScroll?.contains(document.activeElement)) element.focus();
+      element?.scrollIntoView({ block: 'nearest' });
+    });
   }
   function queueAssetUpdate(update: AssetUpdated) {
     if (!update.id) return;
@@ -1376,6 +1429,10 @@ export default function ManagementApp() {
                                 tier={gridTier(thumbSize(), devicePixelRatio())}
                                 selected={selectedIds().includes(asset.id)}
                                 focused={selectedId() === asset.id}
+                                tabbable={
+                                  selectedId() === asset.id ||
+                                  (!selectedIds().length && asset.id === assets()[0]?.id)
+                                }
                                 onSelect={(event) => selectAsset(asset.id, event)}
                                 onOpen={() => openAsset(asset)}
                               />

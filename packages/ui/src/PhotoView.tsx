@@ -56,6 +56,8 @@ export function Thumbnail(props: {
   selected?: boolean;
   /** The photo that keyboard actions and the detail panel follow. */
   focused?: boolean;
+  /** Grid roving focus: only one thumbnail is in the Tab order. Omitted means tabbable. */
+  tabbable?: boolean;
   compact?: boolean;
   onSelect: (event: MouseEvent) => void;
   onOpen: () => void;
@@ -165,6 +167,8 @@ export function Thumbnail(props: {
     <button
       ref={element}
       class={`thumbnail ${props.selected ? 'selected' : ''} ${props.focused ? 'focused' : ''} ${props.compact ? 'compact' : ''} flag-${props.asset.flag || 'none'}`}
+      data-asset-id={props.asset.id}
+      tabIndex={props.tabbable === false ? -1 : 0}
       onClick={(event) => props.onSelect(event)}
       onDblClick={props.onOpen}
       onKeyDown={(event) => {
