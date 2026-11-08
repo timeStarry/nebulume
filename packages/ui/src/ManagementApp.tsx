@@ -1152,30 +1152,6 @@ export default function ManagementApp() {
       </Show>
       <main class="manager-workspace" aria-label="影像管理工作区">
         <UpdatePrompt />
-        <Show when={syncError()}>
-          <div class="workspace-message error app-message" role="alert">
-            <span>{syncError()}</span>
-            <button class="button small" onClick={focusRefresh}>
-              重试影像同步
-            </button>
-          </div>
-        </Show>
-        <Show when={error()}>
-          <div class="workspace-message error app-message" role="alert">
-            <span>{error()}</span>
-            <button class="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}>
-              <Icon name="close" size={15} />
-            </button>
-          </div>
-        </Show>
-        <Show when={notice()}>
-          <div class="workspace-message success app-message" role="status">
-            <span>{notice()}</span>
-            <button class="icon-button" aria-label="关闭完成提示" onClick={() => setNotice('')}>
-              <Icon name="close" size={15} />
-            </button>
-          </div>
-        </Show>
         <Show when={section() === 'libraries'}>
           <Show
             when={currentLibrary()}
@@ -1929,15 +1905,39 @@ export default function ManagementApp() {
         <Show when={section() === 'settings'}>
           <Settings system={system()} onNavigate={navigate} />
         </Show>
+        <div class="toast-stack">
+          <Show when={busy() || !ready()}>
+            <div class="toast busy" role="status">
+              <span class="spinner small" />
+              <span>{busy() || '正在读取本机配置…'}</span>
+            </div>
+          </Show>
+          <Show when={syncError()}>
+            <div class="toast error" role="alert">
+              <span>{syncError()}</span>
+              <button class="button small" onClick={focusRefresh}>
+                重试影像同步
+              </button>
+            </div>
+          </Show>
+          <Show when={error()}>
+            <div class="toast error" role="alert">
+              <span>{error()}</span>
+              <button class="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}>
+                <Icon name="close" size={15} />
+              </button>
+            </div>
+          </Show>
+          <Show when={notice()}>
+            <div class="toast success" role="status">
+              <span>{notice()}</span>
+              <button class="icon-button" aria-label="关闭完成提示" onClick={() => setNotice('')}>
+                <Icon name="close" size={15} />
+              </button>
+            </div>
+          </Show>
+        </div>
       </main>
-      <Show when={busy() || !ready()}>
-        <footer class="manager-status" role="status">
-          <span>
-            <span class="spinner small" />
-            {busy() || '正在读取本机配置…'}
-          </span>
-        </footer>
-      </Show>
       <Show when={dialog() === 'library'}>
         <LibraryDialog
           sources={sources()}

@@ -2595,3 +2595,64 @@ kbd {
 .filter-field:not(:has(select, input)) {
   display: none;
 }
+.toast-stack {
+  position: absolute;
+  inset-block-end: var(--nl-space-8);
+  inset-inline-end: var(--nl-space-5);
+  z-index: 30;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: var(--nl-space-2);
+  max-width: min(440px, calc(100% - var(--nl-space-8)));
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--nl-space-3);
+  width: 100%;
+  padding: var(--nl-space-3) var(--nl-space-4);
+  border: 1px solid var(--nl-border);
+  border-radius: var(--nl-radius-md);
+  background: var(--nl-surface-raised);
+  box-shadow: var(--nl-shadow-popover);
+  color: var(--nl-text);
+  font-size: var(--nl-text-sm);
+  line-height: var(--nl-line-height-ui);
+  pointer-events: auto;
+  animation: toast-in var(--nl-duration-normal) var(--nl-ease-standard);
+}
+.toast > span:not(.spinner) {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.toast.error {
+  border-color: var(--nl-danger);
+  border-inline-start-width: 3px;
+}
+.toast.success {
+  border-inline-start: 3px solid var(--nl-success);
+}
+.toast.busy {
+  align-items: center;
+  color: var(--nl-text-secondary);
+}
+.toast .icon-button {
+  min-height: 24px;
+  width: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
