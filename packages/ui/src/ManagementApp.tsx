@@ -1830,8 +1830,20 @@ function Settings(props: {
         <div class="settings-shortcuts">
           <span>独立查看照片</span>
           <kbd>Enter / 双击</kbd>
-          <span>评级 / 清除评级</span>
+          <span>移动焦点（左右 / 上下一行）</span>
+          <kbd>← → ↑ ↓</kbd>
+          <span>首张 / 末张 / 翻一屏</span>
+          <kbd>Home / End / PgUp PgDn</kbd>
+          <span>范围选择 / 增减选择 / 全选</span>
+          <kbd>Shift 点击 / Ctrl ⌘ 点击 / Ctrl ⌘ A</kbd>
+          <span>评级 / 清除评级（作用于所选）</span>
           <kbd>1–5 / 0</kbd>
+          <span>留用 / 淘汰 / 清除旗标（作用于所选）</span>
+          <kbd>P / X / U</kbd>
+          <span>照片菜单</span>
+          <kbd>右键 / Shift F10</kbd>
+          <span>取消多选，否则关闭信息</span>
+          <kbd>Esc</kbd>
           <span>显示或隐藏信息</span>
           <kbd>I</kbd>
           <span>搜索当前图片库</span>
