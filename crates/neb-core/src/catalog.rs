@@ -52,7 +52,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 10,
+            version <= 11,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -250,8 +250,21 @@ impl Core {
           PRAGMA user_version=10;",
      )?;
         }
+        if version < 11 {
+            // Photos the user moved to the system Trash keep their marks here for
+            // 30 days so an undo or Finder's Put Back restores them intact.
+            migration.execute_batch(
+                "ALTER TABLE assets ADD COLUMN trashed_at TEXT;
+   ALTER TABLE assets ADD COLUMN trash_path TEXT;
+   PRAGMA user_version=11;",
+            )?;
+        }
 
         migration.commit()?;
+        database.execute(
+     "DELETE FROM assets WHERE trashed_at IS NOT NULL AND trashed_at < datetime('now','-30 days')",
+     [],
+ )?;
         Ok(Self {
             database: Mutex::new(database),
             previews: PreviewMemory::new(PREVIEW_MEMORY_ENTRIES, PREVIEW_MEMORY_BYTES),
@@ -369,6 +382,22 @@ impl Core {
                 )?;
                 ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
+            }
+            "asset.trash" | "asset.restore" => {
+                #[derive(Deserialize)]
+                struct Ids {
+                    ids: Vec<String>,
+                }
+                let args: Ids = parse(params)?;
+                ensure!(
+                    (1..=1000).contains(&args.ids.len()),
+                    "E_INVALID: A request must name 1 to 1000 photos"
+                );
+                if command == "asset.trash" {
+                    self.trash_assets(&args.ids)
+                } else {
+                    self.restore_assets(&args.ids)
+                }
             }
             "asset.mark_batch" => {
                 let args: MarkBatch = parse(params)?;
@@ -1349,7 +1378,7 @@ impl Core {
         let known = {
             let db = self.db()?;
             let mut statement = db.prepare(
-                "SELECT id,path,size,quick_hash FROM assets WHERE library_id=?1 AND source_key IS NULL",
+                "SELECT id,path,size,quick_hash FROM assets WHERE library_id=?1 AND source_key IS NULL AND trashed_at IS NULL",
             )?;
             let rows = statement
                 .query_map([library_id], |row| {
@@ -1595,7 +1624,8 @@ impl Core {
              width=excluded.width,height=excluded.height,metadata_json=excluded.metadata_json,availability=excluded.availability,
              captured_at=excluded.captured_at,captured_at_checked=excluded.captured_at_checked,
              created_at=CASE WHEN assets.source_key IS NULL THEN excluded.created_at ELSE assets.created_at END,
-             created_at_checked=CASE WHEN assets.source_key IS NULL THEN 1 ELSE assets.created_at_checked END",
+             created_at_checked=CASE WHEN assets.source_key IS NULL THEN 1 ELSE assets.created_at_checked END,
+      trashed_at=NULL,trash_path=NULL",
             params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability, file_created_at(&info), captured_at, capture_checked, location_key(&library.source_prefix, Path::new(&library.root), &path), quick_hash(&path, info.len())],
         )?;
         Ok((true, error))
@@ -1694,6 +1724,124 @@ impl Core {
         }
         transaction.commit()?;
         Ok(updated)
+    }
+
+    /// Moves local originals to the system Trash. A RAW and its same-named JPEG in
+    /// the same folder move together. The rows keep their marks for 30 days.
+    fn trash_assets(&self, ids: &[String]) -> Result<Value> {
+        let mut wanted: Vec<String> = Vec::new();
+        for id in ids {
+            let asset = self.asset(id)?;
+            ensure!(
+                asset.source_key.is_none(),
+                "E_REMOTE: 网络存储上的照片不能移到废纸篓"
+            );
+            for member in std::iter::once(asset.id.clone()).chain(self.pair_partner(&asset)?) {
+                if !wanted.contains(&member) {
+                    wanted.push(member);
+                }
+            }
+        }
+        let mut trashed = Vec::new();
+        let mut failed = Vec::new();
+        for id in wanted {
+            let outcome = (|| -> Result<()> {
+                let asset = self.asset(&id)?;
+                let already: Option<String> = self.db()?.query_row(
+                    "SELECT trashed_at FROM assets WHERE id=?1",
+                    [&id],
+                    |row| row.get(0),
+                )?;
+                ensure!(already.is_none(), "E_CONFLICT: Already in the Trash");
+                let path = self.checked_asset_path(&asset)?;
+                let landed = crate::recycle::move_to_trash(&path)?;
+                self.db()?.execute(
+      "UPDATE assets SET availability='missing',trashed_at=datetime('now'),trash_path=?1 WHERE id=?2",
+      params![landed.map(|path| path.to_string_lossy().into_owned()), id],
+  )?;
+                Ok(())
+            })();
+            match outcome {
+                Ok(()) => trashed.push(id),
+                Err(error) => failed.push(json!({"id": id, "message": format!("{error:#}")})),
+            }
+        }
+        Ok(json!({"trashed": trashed, "failed": failed}))
+    }
+
+    /// Puts trashed photos back where they were, with their marks.
+    fn restore_assets(&self, ids: &[String]) -> Result<Value> {
+        let mut restored = Vec::new();
+        let mut failed = Vec::new();
+        for id in ids {
+            let outcome = (|| -> Result<()> {
+                let (path, trash_path): (String, Option<String>) = self
+                    .db()?
+                    .query_row(
+                        "SELECT path,trash_path FROM assets WHERE id=?1 AND trashed_at IS NOT NULL",
+                        [id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?
+                    .context("E_NOT_FOUND: This photo is not in the Trash")?;
+                crate::recycle::put_back(Path::new(&path), trash_path.as_deref().map(Path::new))?;
+                self.db()?.execute(
+      "UPDATE assets SET availability='available',trashed_at=NULL,trash_path=NULL WHERE id=?1",
+      [id],
+         )?;
+                Ok(())
+            })();
+            match outcome {
+                Ok(()) => restored.push(id.clone()),
+                Err(error) => failed.push(json!({"id": id, "message": format!("{error:#}")})),
+            }
+        }
+        Ok(json!({"restored": restored, "failed": failed}))
+    }
+
+    /// The other half of a RAW + JPEG pair: same folder, same name, one RAW and one JPEG.
+    fn pair_partner(&self, asset: &Asset) -> Result<Option<String>> {
+        let path = Path::new(&asset.path);
+        let (Some(folder), Some(stem)) = (path.parent(), path.file_stem()) else {
+            return Ok(None);
+        };
+        let db = self.db()?;
+        let mut statement = db.prepare(
+     "SELECT id,path,kind,extension FROM assets WHERE library_id=?1 AND id<>?2 AND source_key IS NULL AND trashed_at IS NULL AND filename LIKE ?3 ESCAPE '\\'",
+        )?;
+        let pattern = format!(
+            "{}.%",
+            stem.to_string_lossy()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let candidates = statement
+            .query_map(params![asset.library_id, asset.id, pattern], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let is_jpeg =
+            |extension: &str| matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg");
+        let matches: Vec<_> = candidates
+            .into_iter()
+            .filter(|(_, other, kind, extension)| {
+                let other = Path::new(other);
+                other.parent() == Some(folder)
+                    && other.file_stem() == Some(stem)
+                    && ((asset.kind == "raw" && is_jpeg(extension))
+                        || (is_jpeg(&asset.extension) && kind == "raw"))
+            })
+            .collect();
+        Ok(match matches.as_slice() {
+            [(id, ..)] => Some(id.clone()),
+            _ => None,
+        })
     }
 
     pub fn mark_batch_library(&self, ids: &[String]) -> Result<String> {
@@ -1841,7 +1989,7 @@ impl Core {
             .map(|word| format!("\"{word}\"*"))
             .collect::<Vec<_>>()
             .join(" AND ");
-        let scope_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
+        let scope_sql = "trashed_at IS NULL AND (?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
         let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7) AND (?8 IS NULL OR json_extract(metadata_json,'$.Camera')=?8) AND (?9 IS NULL OR json_extract(metadata_json,'$.Lens')=?9) AND (?10 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)>=?10)) AND (?11 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)<=?11))");
         let db = self.db()?;
         // One read snapshot, so the revision and the rows it describes cannot disagree.

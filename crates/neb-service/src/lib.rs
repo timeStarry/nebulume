@@ -245,7 +245,10 @@ impl Service {
                 )
                 .map_err(CommandError::from)?,
             )
-        } else if command == "asset.mark_batch" {
+        } else if matches!(
+            command,
+            "asset.mark_batch" | "asset.trash" | "asset.restore"
+        ) {
             // Every id must belong to one library so a single lease covers the batch.
             let ids: Vec<String> = params
                 .get("ids")
@@ -873,7 +876,10 @@ impl Service {
     }
 
     fn dispatch(&self, command: &str, params: Value) -> Result<Value> {
-        if command == "asset.mark_batch" {
+        if matches!(
+            command,
+            "asset.mark_batch" | "asset.trash" | "asset.restore"
+        ) {
             return self.core.dispatch(command, params);
         }
         if command.starts_with("asset.") && !matches!(command, "asset.list" | "asset.facets") {

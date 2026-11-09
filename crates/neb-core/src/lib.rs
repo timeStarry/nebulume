@@ -12,6 +12,7 @@ mod imaging;
 mod ingest_records;
 mod model;
 pub mod preview;
+pub mod recycle;
 mod remote_exif;
 
 pub use cache::{CacheLease, CacheManager, Reservation};

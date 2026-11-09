@@ -21,5 +21,11 @@ tempfile.workspace = true
 sha2.workspace = true
 hex.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSFileManager", "NSURL", "NSString", "NSError"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+trash = "=5.3.0"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
