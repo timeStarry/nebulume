@@ -126,6 +126,9 @@ async function openInspector(
       case 'plugin:window|set_title':
         result = null;
         break;
+      case 'watch_libraries':
+        result = [];
+        break;
       case 'update_support':
         result = { supported: false, kind: 'development' };
         break;

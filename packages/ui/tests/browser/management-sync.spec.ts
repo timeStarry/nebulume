@@ -31,6 +31,7 @@ async function fixture(
       export const chooseDirectory = async()=>null, chooseSave = async(path)=>path, chooseImage = async()=>null;
       export const openViewerWindow = async()=>'', viewerContext = async()=>({asset_ids:[]}), listVolumes=async()=>[];
       export const readPregenerate = ()=>false, writePregenerate = ()=>{}, pregeneratePreviews = async()=>{};
+      export const readWatchLibraries = ()=>false, writeWatchLibraries = ()=>{}, watchLibraries = async()=>[];
     `,
       }),
     );
@@ -92,6 +93,8 @@ async function fixture(
             root: '/photos',
             created_at: '2026',
             pair_raw_jpeg: paired,
+            source_kind: 'local',
+            availability: 'online',
           },
         ];
         break;
@@ -1126,4 +1129,27 @@ test('batch export renders each selected photo to the chosen folder without over
     '/Exports/Photo-002-edited-2.jpg',
     '/Exports/Photo-003-edited.jpg',
   ]);
+});
+
+test('a change in a watched library folder refreshes the open grid in place', async ({ page }) => {
+  const { calls, assets } = await fixture(page, 12);
+  await expect(page.locator('.collection-status')).toContainText('已载入 12 / 12');
+  await expect
+    .poll(() => calls.find((call) => call.command === '$native/watch_libraries')?.params)
+    .toEqual({ enabled: true });
+  await rememberNodes(page);
+  assets.push({
+    ...assets[0],
+    id: 'photo-new',
+    filename: 'Photo-new.jpg',
+    path: '/photos/new.jpg',
+  });
+  await page.evaluate(() =>
+    (
+      window as unknown as { __emitTauriEvent: (event: string, payload: unknown) => void }
+    ).__emitTauriEvent('library-changed', { library_id: 'library', indexed: 1, moved: 0 }),
+  );
+  await expect(page.locator('.collection-status')).toContainText('已载入 13 / 13');
+  // Existing cells are kept, not remounted.
+  expect(await nodesUnchanged(page)).toBe(true);
 });

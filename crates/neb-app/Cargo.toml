@@ -9,6 +9,8 @@ name = "nebulume"
 path = "src/main.rs"
 
 [dependencies]
+notify = { version = "=8.2.2", default-features = false, features = ["macos_fsevent"] }
+dunce = "1"
 neb-core = { path = "../neb-core" }
 neb-service = { path = "../neb-service" }
 percent-encoding = "=2.3.2"

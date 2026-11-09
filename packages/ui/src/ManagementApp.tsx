@@ -23,6 +23,9 @@ import {
   pregeneratePreviews,
   readPregenerate,
   writePregenerate,
+  readWatchLibraries,
+  watchLibraries,
+  writeWatchLibraries,
 } from './api';
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
@@ -1032,6 +1035,32 @@ export default function ManagementApp() {
       drainingUpdates = false;
     }
   }
+  // Local library folders are watched; the backend scans after changes settle and
+  // reports here, so the open grid refreshes in place without a manual scan.
+  const watchKey = createMemo(() =>
+    libraries()
+      .filter((library) => library.source_kind === 'local' && library.availability === 'online')
+      .map((library) => `${library.id}:${library.root}`)
+      .sort()
+      .join('|'),
+  );
+  createEffect(
+    on(watchKey, (key, previous) => {
+      // Nothing to watch and nothing watched before: no native call.
+      if (desktop && (key || previous)) void watchLibraries().catch(() => undefined);
+    }),
+  );
+  let stopLibraryWatch: (() => void) | undefined;
+  async function registerLibraryWatch() {
+    if (!desktop) return;
+    const stop = await listen<{ library_id: string }>('library-changed', (event) => {
+      void refreshLibraries();
+      if (event.payload.library_id === libraryId() && !loading()) void loadAssets(false, true);
+    }).catch(() => undefined);
+    if (!stop) return;
+    if (disposed) stop();
+    else stopLibraryWatch = stop;
+  }
   async function registerAssetListener() {
     if (!desktop || disposed || unlisten || registeringListener) return;
     registeringListener = true;
@@ -1060,6 +1089,7 @@ export default function ManagementApp() {
   }
   onMount(() => {
     void updates.start();
+    void registerLibraryWatch();
     if (desktop) {
       let stopDrop: (() => void) | undefined;
       void getCurrentWebview()
@@ -1094,6 +1124,7 @@ export default function ManagementApp() {
     onCleanup(() => {
       disposed = true;
       unlisten?.();
+      stopLibraryWatch?.();
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', focusRefresh);
       navigationMedia.removeEventListener('change', updateNavigationMode);
@@ -2140,6 +2171,7 @@ function saveThumbSize(value: number) {
 function CullingSettings() {
   const [auto, setAuto] = createSignal(readAutoAdvance());
   const [pregenerate, setPregenerate] = createSignal(readPregenerate());
+  const [watching, setWatching] = createSignal(readWatchLibraries());
   return (
     <section class="settings-panel">
       <h2>浏览与选图</h2>
@@ -2174,6 +2206,25 @@ function CullingSettings() {
               writePregenerate(event.currentTarget.checked);
             }}
             aria-label="扫描后预生成缩略图"
+          />
+        </div>
+        <div class="settings-row">
+          <div>
+            <strong>自动更新本地图片库</strong>
+            <p>
+              监视本地图片库文件夹，文件新增、删除、移动或改名后约 3
+              秒自动重新索引，评级与裁剪随照片保留。网络存储不受影响。
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={watching()}
+            onChange={(event) => {
+              setWatching(event.currentTarget.checked);
+              writeWatchLibraries(event.currentTarget.checked);
+              void watchLibraries(event.currentTarget.checked).catch(() => undefined);
+            }}
+            aria-label="自动更新本地图片库"
           />
         </div>
       </Show>

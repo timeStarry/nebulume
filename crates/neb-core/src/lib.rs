@@ -51,3 +51,8 @@ pub fn capabilities() -> serde_json::Value {
         "max_pixels": imaging::MAX_PIXELS
     })
 }
+
+/// Whether a file extension (any case, without the dot) is one Nebulume indexes.
+pub fn is_image_extension(extension: &str) -> bool {
+    imaging::kind(&extension.to_ascii_lowercase()).is_some()
+}

@@ -6,6 +6,7 @@ mod preview_protocol;
 mod updates;
 mod viewer;
 mod volumes;
+mod watch;
 use neb_service::{CommandError, Service};
 use serde_json::Value;
 use std::sync::Arc;
@@ -41,6 +42,7 @@ fn main() {
         .manage(viewer::ViewerSessions::default())
         .manage(file_open::OpenRequests::default())
         .manage(pregenerate::Pregeneration::default())
+        .manage(watch::LibraryWatch::default())
         // Register first: a secondary instance must exit before opening shared state.
         .plugin(tauri_plugin_single_instance::init(|app, arguments, cwd| {
             let paths = file_open::forwarded_paths(arguments, &cwd);
@@ -67,7 +69,8 @@ fn main() {
             updates::update_support,
             updates::prepare_for_update,
             drop::classify_dropped,
-            pregenerate::pregenerate_previews
+            pregenerate::pregenerate_previews,
+            watch::watch_libraries
         ])
         .build(tauri::generate_context!())
         .expect("Nebulume failed to start")

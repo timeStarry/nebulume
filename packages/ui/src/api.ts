@@ -111,3 +111,24 @@ export function pregeneratePreviews(libraryId: string, tier: string): Promise<vo
   if (!desktop || !readPregenerate()) return Promise.resolve();
   return invoke('pregenerate_previews', { libraryId, tier });
 }
+const WATCH_KEY = 'nebulume.watch-libraries';
+/** Automatic re-indexing when local library folders change; on unless turned off. */
+export function readWatchLibraries(): boolean {
+  try {
+    return localStorage.getItem(WATCH_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+export function writeWatchLibraries(value: boolean) {
+  try {
+    localStorage.setItem(WATCH_KEY, String(value));
+  } catch {
+    /* The preference remains effective for this session. */
+  }
+}
+/** (Re)starts watching every online local library; returns the watched ids. */
+export function watchLibraries(enabled = readWatchLibraries()): Promise<string[]> {
+  if (!desktop) return Promise.resolve([]);
+  return invoke('watch_libraries', { enabled });
+}
