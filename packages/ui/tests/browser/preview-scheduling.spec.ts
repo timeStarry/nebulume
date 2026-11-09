@@ -290,3 +290,29 @@ test('a thumbnail that leaves the viewport mid-request keeps its lane slot until
     fixture.releaseAll();
   }
 });
+test('while the viewer tier is pending, an already decoded thumbnail fills the stage without a new request', async ({
+  page,
+}) => {
+  const fixture = await harness(page, ['seen']);
+  try {
+    // 'seen' is held twice: first its thumbnail at the protocol, then its viewer IPC.
+    await page.evaluate((list) => window.previewHarness.thumbnails(list), [asset('seen', false)]);
+    await expect.poll(() => thumbs(fixture.images)).toContain('seen');
+    fixture.release('seen');
+    await expect(page.getByRole('button', { name: 'seen.jpg，0 星' }).locator('img')).toBeVisible();
+    const before = fixture.images.length;
+    await page.evaluate((photo) => window.previewHarness.photo(photo), asset('seen', false));
+    const placeholder = page.locator('.photo-placeholder');
+    await expect(placeholder).toBeVisible();
+    expect(await placeholder.getAttribute('src')).toBe(
+      fixture.images.find((image) => image.id === 'seen' && image.tier === 't512')!.url,
+    );
+    expect(fixture.images.slice(before).filter((image) => image.tier !== 'p2560')).toEqual([]);
+    fixture.releaseAll();
+    await expect(page.locator('.main-photo')).toHaveAttribute('alt', 'seen.jpg');
+    await expect(placeholder).toHaveCount(0);
+    expect(fixture.errors).toEqual([]);
+  } finally {
+    fixture.releaseAll();
+  }
+});

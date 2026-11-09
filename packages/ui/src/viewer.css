@@ -577,3 +577,33 @@
     min-height: 72px;
   }
 }
+.viewer-overlay {
+  animation: viewer-in var(--nl-duration-slow) var(--nl-ease-standard);
+}
+@keyframes viewer-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+.photo-placeholder {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+.viewer-message.over-placeholder {
+  position: absolute;
+  bottom: var(--nl-space-5);
+  left: 50%;
+  transform: translateX(-50%);
+  flex-direction: row;
+  gap: var(--nl-space-2);
+  padding: var(--nl-space-2) var(--nl-space-4);
+  border-radius: 999px;
+  background: var(--nl-photo-panel);
+  font-size: var(--nl-text-sm);
+}

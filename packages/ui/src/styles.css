@@ -2779,3 +2779,18 @@ kbd {
     overflow-x: auto;
   }
 }
+
+.collection-body > .asset-inspector {
+  animation: inspector-in var(--nl-duration-normal) var(--nl-ease-standard);
+}
+.collection-body > .asset-inspector[aria-busy='true'] .inspector-file,
+.collection-body > .asset-inspector[aria-busy='true'] .inspector-section {
+  opacity: 0.6;
+  transition: opacity var(--nl-duration-fast) var(--nl-ease-standard);
+}
+@keyframes inspector-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}

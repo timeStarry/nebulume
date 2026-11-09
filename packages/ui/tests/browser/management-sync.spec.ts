@@ -320,8 +320,9 @@ test('repeated blur/focus preserves all loaded pages, detail, selection, scroll 
   page,
 }) => {
   const { calls } = await fixture(page);
+  // Clicking scrolls the button into view, so the list is at its end and paging continues.
   await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
+  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = 700));
@@ -341,7 +342,7 @@ test('repeated blur/focus preserves all loaded pages, detail, selection, scroll 
   expect(await nodesUnchanged(page)).toBe(true);
   expect(await page.locator('.collection-scroll').evaluate((el) => el.scrollTop)).toBe(scroll);
   await expect(page.locator('.thumbnail.selected')).toHaveAttribute('aria-label', selected!);
-  await expect(page.locator('.collection-status')).toContainText('已载入 400 / 410');
+  await expect(page.locator('.collection-status')).toContainText('已载入 410 / 410');
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
 });
 test('rating updates fields only; crop and refresh invalidate only the changed asset pixels', async ({
@@ -399,7 +400,7 @@ test('rating sort reconciles the loaded window in the background without remount
     .poll(() => calls.filter((c) => c.command === 'asset.list').at(-1)?.params.sort_by)
     .toBe('rating');
   await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
+  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = 600));
@@ -414,9 +415,9 @@ test('rating sort reconciles the loaded window in the background without remount
     'aria-label',
     'Photo-090.jpg，5 星',
   );
-  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
+  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
   expect(calls.slice(before).filter((c) => c.command === 'asset.list')).toHaveLength(1);
-  expect(calls.slice(before).find((c) => c.command === 'asset.list')?.params.limit).toBe(400);
+  expect(calls.slice(before).find((c) => c.command === 'asset.list')?.params.limit).toBe(410);
   expect(
     calls.slice(before).filter((c) => ['asset.get', 'asset.histogram'].includes(c.command)),
   ).toEqual([]);
@@ -1062,4 +1063,24 @@ test('active filters show as removable chips and the panel remembers whether it 
     .toMatchObject({ format: 'jpeg' });
   expect(calls.filter((call) => call.command === 'asset.list').at(-1)?.params.flag).toBeUndefined();
   expect(await page.evaluate(() => localStorage.getItem('nebulume.filters-open'))).toBe('false');
+});
+
+test('the inspector shows the selected photo at once and keeps its layout while detail loads', async ({
+  page,
+}) => {
+  await fixture(page);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route('**/__sync_rpc', async (route) => {
+    if ((route.request().postDataJSON() as Call).command === 'asset.get') await held;
+    await route.fallback();
+  });
+  const selected = await page.locator('.thumbnail.selected').getAttribute('aria-label');
+  await page.getByRole('button', { name: '影像详情（I）' }).click();
+  const inspector = page.getByRole('complementary', { name: '影像详情' });
+  await expect(inspector).toHaveAttribute('aria-busy', 'true');
+  await expect(inspector.locator('.inspector-file h2')).toHaveText(selected!.split('，')[0]);
+  await expect(inspector.locator('.spinner')).toHaveCount(0);
+  release();
+  await expect(inspector).not.toHaveAttribute('aria-busy');
 });

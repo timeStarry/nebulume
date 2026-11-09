@@ -33,6 +33,7 @@ export default function AssetInspector(props: {
   asset: Asset;
   management?: boolean;
   busy?: boolean;
+  loading?: boolean;
   cropMode?: boolean;
   crop?: Crop;
   setCrop?: (crop: Crop) => void;
@@ -178,6 +179,7 @@ export default function AssetInspector(props: {
       class="asset-inspector"
       classList={{ 'management-inspector': props.management }}
       aria-label="影像详情"
+      aria-busy={props.loading || undefined}
     >
       <div class="inspector-heading">
         <span>影像信息</span>

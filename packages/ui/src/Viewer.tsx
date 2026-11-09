@@ -12,9 +12,10 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { chooseSave, desktop, execute, viewerContext } from './api';
+import { chooseSave, desktop, execute, schedulePreview, viewerContext } from './api';
+import { loadImage, previewUrl } from './preview-url';
 import AssetInspector from './AssetInspector';
-import PhotoView, { Thumbnail } from './PhotoView';
+import PhotoView, { Thumbnail, decodedThumbnail, rememberDecodedPreview } from './PhotoView';
 import Icon from './Icon';
 import {
   errorMessage,
@@ -102,6 +103,51 @@ export default function Viewer(props: {
   const revisions = new Map<string, number>();
   const focusCache = new Map<string, Promise<FocusInfo>>();
   const index = createMemo(() => ids().indexOf(id() || ''));
+  // Between photos asset() is briefly empty: fill the stage with an already decoded thumbnail.
+  const stagePlaceholder = () => {
+    const next = id();
+    return next ? decodedThumbnail({ id: next, preview_revision: revisions.get(next) }) : undefined;
+  };
+  // Once a local photo is shown, render the next one's viewer tier in the background (one lane
+  // of two, so the photo the user opens never waits). Moving on cancels it if not yet started.
+  const prefetched = new Map<string, HTMLImageElement>();
+  createEffect(
+    on(asset, (current) => {
+      if (!current || current.source_key || compareIds().length) return;
+      const position = ids().indexOf(current.id);
+      const neighbours = [ids()[position + 1] ?? ids()[position - 1]].filter(
+        (neighbour): neighbour is string => !!neighbour && !prefetched.has(neighbour),
+      );
+      if (!neighbours.length) return;
+      const controller = new AbortController();
+      const delay = setTimeout(() => {
+        for (const neighbour of neighbours) {
+          const url = previewUrl(
+            { id: neighbour, preview_revision: revisions.get(neighbour) },
+            'p2560',
+          );
+          void schedulePreview(
+            async () => {
+              const image = await loadImage(await url);
+              prefetched.set(neighbour, image);
+              rememberDecodedPreview(
+                { id: neighbour, preview_revision: revisions.get(neighbour) },
+                image.src,
+              );
+              // Keep only a handful decoded; older ones fall back to the backend cache.
+              while (prefetched.size > 4) prefetched.delete(prefetched.keys().next().value!);
+              return image;
+            },
+            { source: 'local', priority: 'viewer', signal: controller.signal },
+          ).catch(() => undefined);
+        }
+      }, 250);
+      onCleanup(() => {
+        clearTimeout(delay);
+        controller.abort();
+      });
+    }),
+  );
   const focusKey = createMemo(() => {
     const current = asset();
     return !refreshing() && current?.id === id() && current
@@ -866,8 +912,15 @@ export default function Viewer(props: {
             <div class="viewer-loading" role="status" aria-live="polite">
               {loading() ? (
                 <>
-                  <span class="spinner" />
-                  <span>正在读取影像…</span>
+                  <Show when={stagePlaceholder()}>
+                    {(src) => (
+                      <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />
+                    )}
+                  </Show>
+                  <span class="viewer-message over-placeholder">
+                    <span class="spinner" />
+                    <span>正在读取影像…</span>
+                  </span>
                 </>
               ) : (
                 <>

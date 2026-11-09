@@ -23,6 +23,25 @@ import {
 } from './model';
 import Icon from './Icon';
 
+/**
+ * URLs of previews this window has already decoded (grid thumbnails, prefetched viewer tiers),
+ * by asset and revision. The viewer shows them as an instant placeholder: no new request.
+ */
+const decodedThumbnails = new Map<string, string>();
+const thumbnailKey = (asset: Pick<Asset, 'id' | 'preview_revision'>) =>
+  `${asset.id}:${asset.preview_revision || 0}`;
+export function rememberDecodedPreview(asset: Pick<Asset, 'id' | 'preview_revision'>, url: string) {
+  const key = thumbnailKey(asset);
+  decodedThumbnails.delete(key);
+  decodedThumbnails.set(key, url);
+  if (decodedThumbnails.size > 1000)
+    decodedThumbnails.delete(decodedThumbnails.keys().next().value!);
+}
+export function decodedThumbnail(
+  asset: Pick<Asset, 'id' | 'preview_revision'>,
+): string | undefined {
+  return decodedThumbnails.get(thumbnailKey(asset));
+}
 const visibilityTargets = new Map<Element, (visible: boolean) => void>();
 let visibilityObserver: IntersectionObserver | undefined;
 /**
@@ -82,13 +101,21 @@ export function Thumbnail(props: {
   let disposed = false;
   let pending: { key: string; controller: AbortController } | undefined;
   const dropLayer = (layer: Layer) => setLayers((list) => list.filter((item) => item !== layer));
-  function startLayer(key: string, url: string): Promise<HTMLImageElement> {
+  function startLayer(
+    key: string,
+    url: string,
+    asset: Pick<Asset, 'id' | 'preview_revision'>,
+  ): Promise<HTMLImageElement> {
     const image = document.createElement('img');
     image.alt = '';
     image.style.visibility = 'hidden';
     const layer: Layer = { key, image };
     setLayers((list) => [...list, layer]);
     const request = loadImage(url, image);
+    request.then(
+      () => rememberDecodedPreview(asset, url),
+      () => undefined,
+    );
     layer.request = request;
     inflight.set(key, layer);
     const settled = () => {
@@ -125,7 +152,7 @@ export function Thumbnail(props: {
     const adopted = inflight.get(key);
     const request = adopted?.request
       ? untilAborted(adopted.request, current.controller.signal)
-      : schedulePreview(async () => startLayer(key, await previewUrl(asset, tier)), {
+      : schedulePreview(async () => startLayer(key, await previewUrl(asset, tier), asset), {
           source: props.asset.source_key ? 'remote' : 'local',
           priority: 'thumbnail',
           signal: current.controller.signal,
@@ -316,6 +343,9 @@ export default function PhotoView(props: {
       }
     },
   );
+  // While p2560 decodes, show an already decoded thumbnail scaled up instead of an empty stage.
+  // Crop mode shows the uncropped frame, which no thumbnail matches.
+  const placeholder = () => (props.cropMode ? undefined : decodedThumbnail(props.asset));
   createEffect(() => {
     const image = preview()?.image;
     if (image) image.alt = props.asset.filename;
@@ -432,10 +462,20 @@ export default function PhotoView(props: {
         <Show
           when={!preview.loading}
           fallback={
-            <div class="viewer-message" role="status" aria-live="polite">
-              <span class="spinner" />
-              正在解析影像…
-            </div>
+            <>
+              <Show when={placeholder()}>
+                {(src) => <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />}
+              </Show>
+              <div
+                class="viewer-message"
+                classList={{ 'over-placeholder': !!placeholder() }}
+                role="status"
+                aria-live="polite"
+              >
+                <span class="spinner" />
+                正在解析影像…
+              </div>
+            </>
           }
         >
           <Show

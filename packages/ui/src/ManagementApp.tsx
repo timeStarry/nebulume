@@ -5,8 +5,10 @@ import {
   createMemo,
   createResource,
   createSignal,
+  on,
   onCleanup,
   onMount,
+  untrack,
 } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import { listen } from '@tauri-apps/api/event';
@@ -108,6 +110,22 @@ export default function ManagementApp() {
   const [loading, setLoading] = createSignal(false);
   // Stops automatic paging after a failure so a scroll cannot retry in a loop.
   const [autoPagingFailed, setAutoPagingFailed] = createSignal(false);
+  // The sentinel near the grid's end is in range. Kept as state, not a one-shot callback, so a
+  // page that finishes while the user is already at the end immediately loads the next one.
+  const [nearEnd, setNearEnd] = createSignal(false);
+  // Intersection reports are asynchronous: a value from before a page landed is stale. Clear it
+  // when a load starts and ask the observer for a fresh report when it ends.
+  let rearmPaging: (() => void) | undefined;
+  createEffect(
+    on(loading, (busy) => {
+      setNearEnd(false);
+      if (!busy) rearmPaging?.();
+    }),
+  );
+  createEffect(() => {
+    if (nearEnd() && !loading() && !autoPagingFailed() && assets().length < total())
+      void untrack(() => loadAssets(true));
+  });
   const [busy, setBusy] = createSignal('');
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
@@ -1795,19 +1813,20 @@ export default function ManagementApp() {
                           class="load-more"
                           ref={(element) => {
                             const observer = new IntersectionObserver(
-                              (entries) => {
-                                if (
-                                  entries.some((entry) => entry.isIntersecting) &&
-                                  !loading() &&
-                                  !autoPagingFailed() &&
-                                  assets().length < total()
-                                )
-                                  void loadAssets(true);
-                              },
+                              (entries) =>
+                                setNearEnd(entries.some((entry) => entry.isIntersecting)),
                               { root: collectionScroll, rootMargin: '800px 0px' },
                             );
                             observer.observe(element);
-                            onCleanup(() => observer.disconnect());
+                            rearmPaging = () => {
+                              observer.unobserve(element);
+                              observer.observe(element);
+                            };
+                            onCleanup(() => {
+                              observer.disconnect();
+                              rearmPaging = undefined;
+                              setNearEnd(false);
+                            });
                           }}
                         >
                           <span class="load-more-status" aria-live="polite">
@@ -1831,27 +1850,8 @@ export default function ManagementApp() {
                     </Show>
                   </div>
                   <Show when={info() && selected()}>
-                    <Show
-                      when={!detail.loading}
-                      fallback={
-                        <aside class="asset-inspector">
-                          <div class="inspector-heading">
-                            正在读取影像详情…
-                            <button
-                              class="icon-button"
-                              aria-label="关闭影像详情"
-                              onClick={() => setInfo(false)}
-                            >
-                              <Icon name="close" size={15} />
-                            </button>
-                          </div>
-                          <div class="compact-empty">
-                            <span class="spinner" />
-                          </div>
-                        </aside>
-                      }
-                    >
-                      <Show when={detail()?.error}>
+                    <>
+                      <Show when={!detail.loading && detail()?.error}>
                         <div class="detail-error" role="alert">
                           {detail()!.error}
                           <button class="button small" onClick={() => refetchDetail()}>
@@ -1860,7 +1860,10 @@ export default function ManagementApp() {
                         </div>
                       </Show>
                       <AssetInspector
-                        asset={detail()?.asset || selected()!}
+                        asset={
+                          detail()?.asset?.id === selected()!.id ? detail()!.asset! : selected()!
+                        }
+                        loading={detail.loading}
                         management
                         busy={!!busy()}
                         onClose={() => setInfo(false)}
@@ -1870,7 +1873,7 @@ export default function ManagementApp() {
                         onExport={() => openAsset(selected()!)}
                         onRefresh={desktop ? refreshOriginal : undefined}
                       />
-                    </Show>
+                    </>
                   </Show>
                 </div>
                 <footer class="collection-status">
