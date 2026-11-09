@@ -328,6 +328,15 @@ impl Core {
                 Ok(serde_json::to_value(self.scan(&args.library_id)?)?)
             }
             "asset.list" => self.list_assets(parse(params)?),
+            "asset.stats" => self.asset_stats(parse(params)?),
+            "library.folders" => {
+                #[derive(Deserialize)]
+                struct Folders {
+                    library_id: String,
+                }
+                let args: Folders = parse(params)?;
+                self.library_folders(&args.library_id)
+            }
             "asset.facets" => {
                 #[derive(Deserialize)]
                 struct Facets {
@@ -358,11 +367,13 @@ impl Core {
                     args.rating <= 5,
                     "E_INVALID: Rating must be an integer from 0 to 5"
                 );
-                let changed = self.db()?.execute(
-                    "UPDATE assets SET rating=?1 WHERE id=?2",
-                    params![args.rating, args.id],
-                )?;
-                ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                let members = self.with_pair_members(std::slice::from_ref(&args.id))?;
+                for member in &members {
+                    self.db()?.execute(
+                        "UPDATE assets SET rating=?1 WHERE id=?2",
+                        params![args.rating, member],
+                    )?;
+                }
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.flag" => {
@@ -376,11 +387,15 @@ impl Core {
                     valid_flag(&args.flag),
                     "E_INVALID: Flag must be none, pick or reject"
                 );
-                let changed = self.db()?.execute(
-                    "UPDATE assets SET flag=?1 WHERE id=?2",
-                    params![args.flag, args.id],
-                )?;
-                ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                let members = self.with_pair_members(std::slice::from_ref(&args.id))?;
+                let mut changed = 0;
+                for member in &members {
+                    changed += self.db()?.execute(
+                        "UPDATE assets SET flag=?1 WHERE id=?2",
+                        params![args.flag, member],
+                    )?;
+                }
+                ensure!(changed >= 1, "E_NOT_FOUND: Asset does not exist");
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.trash" | "asset.restore" => {
@@ -1710,10 +1725,11 @@ impl Core {
             args.flag.as_deref().is_none_or(valid_flag),
             "E_INVALID: Flag must be none, pick or reject"
         );
+        let ids = self.with_pair_members(&args.ids)?;
         let mut db = self.db()?;
         let transaction = db.transaction()?;
         let mut updated = 0;
-        for id in &args.ids {
+        for id in &ids {
             let changed = transaction.execute(
                 "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag) WHERE id=?3",
                 params![args.rating, args.flag, id],
@@ -1797,6 +1813,26 @@ impl Core {
             }
         }
         Ok(json!({"restored": restored, "failed": failed}))
+    }
+
+    /// `ids` plus the other half of each RAW + JPEG pair in libraries that show pairs
+    /// as one photo, so a mark always covers what the grid shows. Unknown ids fail.
+    fn with_pair_members(&self, ids: &[String]) -> Result<Vec<String>> {
+        let mut members = Vec::with_capacity(ids.len());
+        for id in ids {
+            let asset = self.asset(id)?;
+            if !members.contains(&asset.id) {
+                members.push(asset.id.clone());
+            }
+            if self.library(&asset.library_id)?.pair_raw_jpeg {
+                if let Some(partner) = self.pair_partner(&asset)? {
+                    if !members.contains(&partner) {
+                        members.push(partner);
+                    }
+                }
+            }
+        }
+        Ok(members)
     }
 
     /// The other half of a RAW + JPEG pair: same folder, same name, one RAW and one JPEG.
@@ -1932,15 +1968,11 @@ impl Core {
         )
     }
 
-    fn list_assets(&self, args: AssetQuery) -> Result<Value> {
+    /// Validates an asset filter and builds its WHERE and ORDER BY clauses.
+    fn query_parts(&self, args: &AssetQuery) -> Result<QueryParts> {
         ensure!(
             valid_day(&args.captured_from) && valid_day(&args.captured_to),
             "E_INVALID: captured_from and captured_to must be YYYY-MM-DD dates"
-        );
-        let limit = args.limit.unwrap_or(200);
-        ensure!(
-            (1..=1000).contains(&limit),
-            "E_INVALID: Query limit must be between 1 and 1000"
         );
         ensure!(
             args.rating.is_none_or(|rating| rating <= 5),
@@ -1990,7 +2022,36 @@ impl Core {
             .collect::<Vec<_>>()
             .join(" AND ");
         let scope_sql = "trashed_at IS NULL AND (?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
-        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7) AND (?8 IS NULL OR json_extract(metadata_json,'$.Camera')=?8) AND (?9 IS NULL OR json_extract(metadata_json,'$.Lens')=?9) AND (?10 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)>=?10)) AND (?11 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)<=?11))");
+        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7) AND (?8 IS NULL OR json_extract(metadata_json,'$.Camera')=?8) AND (?9 IS NULL OR json_extract(metadata_json,'$.Lens')=?9) AND (?10 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)>=?10)) AND (?11 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)<=?11)) AND (?12 IS NULL OR key=?12 OR key LIKE ?13 ESCAPE '\\') AND (?14 IS NULL OR rating<=?14) AND (?15 IS NULL OR CAST(json_extract(metadata_json,'$.\"Focal Length\"') AS REAL)>=?15) AND (?16 IS NULL OR CAST(json_extract(metadata_json,'$.\"Focal Length\"') AS REAL)<=?16) AND (?17 IS NULL OR CAST(json_extract(metadata_json,'$.ISO') AS REAL)>=?17) AND (?18 IS NULL OR CAST(json_extract(metadata_json,'$.ISO') AS REAL)<=?18)");
+        Ok(QueryParts {
+            search,
+            format: format.to_owned(),
+            flag: flag.to_owned(),
+            sort,
+            direction,
+            order,
+            scope_sql,
+            where_sql,
+        })
+    }
+
+    fn list_assets(&self, args: AssetQuery) -> Result<Value> {
+        let limit = args.limit.unwrap_or(200);
+        ensure!(
+            (1..=1000).contains(&limit),
+            "E_INVALID: Query limit must be between 1 and 1000"
+        );
+        let QueryParts {
+            search,
+            format,
+            flag,
+            sort,
+            direction,
+            order,
+            scope_sql,
+            where_sql,
+        } = self.query_parts(&args)?;
+        let (format, flag) = (format.as_str(), flag.as_str());
         let db = self.db()?;
         // One read snapshot, so the revision and the rows it describes cannot disagree.
         let read = db.unchecked_transaction()?;
@@ -2009,6 +2070,14 @@ impl Core {
             &args.lens,
             &args.captured_from,
             &args.captured_to,
+            (
+                &args.folder,
+                args.rating_max,
+                args.focal_min,
+                args.focal_max,
+                args.iso_min,
+                args.iso_max,
+            ),
             sort,
             direction,
         ))?;
@@ -2072,6 +2141,158 @@ impl Core {
         Ok(json!({"items": items, "total": total, "file_total":file_total}))
     }
 
+    /// Overview numbers for the same filter the grid shows. Photo counts collapse
+    /// RAW + JPEG pairs like the grid; `bytes` counts every file.
+    fn asset_stats(&self, args: AssetQuery) -> Result<Value> {
+        let parts = self.query_parts(&args)?;
+        let db = self.db()?;
+        let read = db.unchecked_transaction()?;
+        let snapshot = Self::list_snapshot(
+            &read,
+            &args,
+            &parts.search,
+            &parts.format,
+            &parts.flag,
+            parts.scope_sql,
+            &parts.where_sql,
+            &parts.order,
+        )?;
+        let shown: HashSet<&str> = snapshot.displayed.iter().map(String::as_str).collect();
+        let mut statement = read.prepare(&format!(
+     "SELECT id,rating,flag,size,substr(captured_at,1,10),json_extract(metadata_json,'$.Camera'),json_extract(metadata_json,'$.Lens'),CAST(json_extract(metadata_json,'$.\"Focal Length\"') AS REAL),CAST(json_extract(metadata_json,'$.ISO') AS REAL) FROM assets WHERE {}",
+     parts.where_sql
+ ))?;
+        let mut rows = statement.query(rusqlite::params_from_iter(filter_params(
+            &args,
+            &parts.search,
+            &parts.format,
+            &parts.flag,
+        )))?;
+        let (mut photos, mut picks, mut rejects, mut rated, mut bytes, mut undated) =
+            (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+        let mut days: BTreeMap<String, u64> = BTreeMap::new();
+        let mut cameras: HashMap<String, u64> = HashMap::new();
+        let mut lenses: HashMap<String, u64> = HashMap::new();
+        let mut focal = Vec::new();
+        let mut iso = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            bytes += row.get::<_, i64>(3)?.max(0) as u64;
+            if !shown.contains(id.as_str()) {
+                continue;
+            }
+            photos += 1;
+            let rating: i64 = row.get(1)?;
+            match row.get::<_, String>(2)?.as_str() {
+                "pick" => picks += 1,
+                "reject" => rejects += 1,
+                _ if rating > 0 => rated += 1,
+                _ => {}
+            }
+            match row.get::<_, Option<String>>(4)? {
+                Some(day) if day.len() == 10 => *days.entry(day).or_default() += 1,
+                _ => undated += 1,
+            }
+            for (column, counts) in [(5, &mut cameras), (6, &mut lenses)] {
+                if let Some(name) = row
+                    .get::<_, Option<String>>(column)?
+                    .filter(|name| !name.trim().is_empty())
+                {
+                    *counts.entry(name).or_default() += 1;
+                }
+            }
+            if let Some(value) = row.get::<_, Option<f64>>(7)?.filter(|value| *value > 0.0) {
+                focal.push(value);
+            }
+            if let Some(value) = row.get::<_, Option<f64>>(8)?.filter(|value| *value > 0.0) {
+                iso.push(value);
+            }
+        }
+        let ranked = |counts: HashMap<String, u64>| {
+            let mut rows: Vec<_> = counts.into_iter().collect();
+            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            rows.truncate(12);
+            rows.into_iter()
+                .map(|(name, count)| json!({"name": name, "count": count}))
+                .collect::<Vec<_>>()
+        };
+        // Inclusive bounds, so each bin is also a valid focal_min/focal_max or iso_min/iso_max filter.
+        let bins = |values: &[f64], edges: &[(&str, f64, Option<f64>)]| {
+            edges
+                .iter()
+                .map(|(label, min, max)| {
+                    let count = values
+                        .iter()
+                        .filter(|value| **value >= *min && max.is_none_or(|max| **value <= max))
+                        .count();
+                    json!({"label": label, "min": min, "max": max, "count": count})
+                })
+                .collect::<Vec<_>>()
+        };
+        Ok(json!({
+               "photos": photos,
+        "files": snapshot.file_total,
+        "bytes": bytes,
+        "picks": picks,
+               "rejects": rejects,
+               "rated": rated,
+        "unprocessed": photos - picks - rejects - rated,
+        "undated": undated,
+        "days": days.into_iter().map(|(day, count)| json!({"day": day, "count": count})).collect::<Vec<_>>(),
+        "cameras": ranked(cameras),
+               "lenses": ranked(lenses),
+        "focal": bins(&focal, &[("≤23", 0.0, Some(23.99)), ("24–35", 24.0, Some(35.99)), ("36–50", 36.0, Some(50.99)), ("51–85", 51.0, Some(85.99)), ("86–135", 86.0, Some(135.99)), ("136+", 136.0, None)]),
+               "iso": bins(&iso, &[("≤100", 0.0, Some(100.0)), ("200", 101.0, Some(200.0)), ("400", 201.0, Some(400.0)), ("800", 401.0, Some(800.0)), ("1600", 801.0, Some(1600.0)), ("3200", 1601.0, Some(3200.0)), ("6400+", 3201.0, None)]),
+           }))
+    }
+
+    /// A library's folders, nested, with photo counts that match the grid
+    /// (a RAW + JPEG pair counts once). `path` is what `asset.list` takes as `folder`.
+    fn library_folders(&self, library_id: &str) -> Result<Value> {
+        self.library(library_id)?;
+        let args: AssetQuery = serde_json::from_value(json!({"library_id": library_id}))?;
+        let parts = self.query_parts(&args)?;
+        let db = self.db()?;
+        let read = db.unchecked_transaction()?;
+        let snapshot = Self::list_snapshot(
+            &read,
+            &args,
+            &parts.search,
+            &parts.format,
+            &parts.flag,
+            parts.scope_sql,
+            &parts.where_sql,
+            &parts.order,
+        )?;
+        let shown: HashSet<&str> = snapshot.displayed.iter().map(String::as_str).collect();
+        let mut statement = read.prepare("SELECT id,key FROM assets WHERE library_id=?1 AND trashed_at IS NULL AND key IS NOT NULL")?;
+        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+        for row in statement.query_map([library_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (id, key) = row?;
+            if !shown.contains(id.as_str()) {
+                continue;
+            }
+            let segments: Vec<&str> = key.split('/').collect();
+            for depth in 1..segments.len() {
+                *counts.entry(segments[..depth].join("/")).or_default() += 1;
+            }
+        }
+        fn nest(parent: &str, counts: &BTreeMap<String, u64>) -> Vec<Value> {
+            counts
+         .iter()
+         .filter(|(path, _)| path.rsplit_once('/').map_or("", |(head, _)| head) == parent)
+         .map(|(path, count)| {
+      json!({"path": path, "name": path.rsplit('/').next().unwrap_or(path), "count": count, "children": nest(path, counts)})
+         })
+         .collect()
+        }
+        Ok(
+            json!({"library_id": library_id, "total": snapshot.displayed.len(), "folders": nest("", &counts)}),
+        )
+    }
+
     /// The ordered, pair-collapsed ID list of one query. Recomputed only when the
     /// catalog revision or the query changes, so paging costs one page of rows.
     #[allow(clippy::too_many_arguments)]
@@ -2133,23 +2354,7 @@ impl Core {
         ))?;
         let ids = statement
             .query_map(
-                params![
-                    args.library_id,
-                    args.rating,
-                    search,
-                    if search.is_empty() {
-                        "\"__nebulume_no_query__\""
-                    } else {
-                        search
-                    },
-                    format,
-                    flag,
-                    args.import_batch_id,
-                    args.camera,
-                    args.lens,
-                    args.captured_from,
-                    args.captured_to
-                ],
+                rusqlite::params_from_iter(filter_params(args, search, format, flag)),
                 |row| row.get::<_, String>(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2247,6 +2452,79 @@ struct AssetQuery {
     /// Inclusive capture-date bounds, `YYYY-MM-DD`, compared with the camera's local date.
     captured_from: Option<String>,
     captured_to: Option<String>,
+    /// Library-relative folder (`a/b`); photos in it and its subfolders.
+    #[serde(default)]
+    folder: Option<String>,
+    /// Highest rating to include, for "not yet rated".
+    #[serde(default)]
+    rating_max: Option<u8>,
+    /// Inclusive focal length range in mm, from EXIF `Focal Length`.
+    #[serde(default)]
+    focal_min: Option<f64>,
+    #[serde(default)]
+    focal_max: Option<f64>,
+    /// Inclusive ISO range.
+    #[serde(default)]
+    iso_min: Option<f64>,
+    #[serde(default)]
+    iso_max: Option<f64>,
+}
+
+/// Positional values for the asset filter's `?1`..`?18`, shared by every query that uses it.
+fn filter_params(
+    args: &AssetQuery,
+    search: &str,
+    format: &str,
+    flag: &str,
+) -> Vec<rusqlite::types::Value> {
+    use rusqlite::types::Value as V;
+    let text = |value: &Option<String>| value.clone().map(V::Text).unwrap_or(V::Null);
+    let real = |value: Option<f64>| value.map(V::Real).unwrap_or(V::Null);
+    let folder = args
+        .folder
+        .as_deref()
+        .map(|folder| folder.trim_matches('/'))
+        .filter(|folder| !folder.is_empty());
+    vec![
+        text(&args.library_id),
+        args.rating
+            .map(|rating| V::Integer(rating.into()))
+            .unwrap_or(V::Null),
+        V::Text(search.to_owned()),
+        V::Text(if search.is_empty() {
+            "\"__nebulume_no_query__\"".to_owned()
+        } else {
+            search.to_owned()
+        }),
+        V::Text(format.to_owned()),
+        V::Text(flag.to_owned()),
+        text(&args.import_batch_id),
+        text(&args.camera),
+        text(&args.lens),
+        text(&args.captured_from),
+        text(&args.captured_to),
+        folder
+            .map(|folder| V::Text(folder.to_owned()))
+            .unwrap_or(V::Null),
+        folder
+            .map(|folder| {
+                V::Text(format!(
+                    "{}/%",
+                    folder
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_")
+                ))
+            })
+            .unwrap_or(V::Null),
+        args.rating_max
+            .map(|rating| V::Integer(rating.into()))
+            .unwrap_or(V::Null),
+        real(args.focal_min),
+        real(args.focal_max),
+        real(args.iso_min),
+        real(args.iso_max),
+    ]
 }
 
 fn valid_day(day: &Option<String>) -> bool {
@@ -2273,6 +2551,17 @@ struct ListSnapshot {
     file_total: usize,
     /// Pair variants by the representative that is displayed.
     pairs: HashMap<String, Arc<[PairVariant; 2]>>,
+}
+
+struct QueryParts {
+    search: String,
+    format: String,
+    flag: String,
+    sort: &'static str,
+    direction: &'static str,
+    order: String,
+    scope_sql: &'static str,
+    where_sql: String,
 }
 
 struct ListMemo {

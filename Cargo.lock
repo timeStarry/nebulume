@@ -2808,6 +2808,7 @@ dependencies = [
  "chrono",
  "dunce",
  "hex",
+ "image",
  "neb-core",
  "neb-ingest",
  "neb-storage",

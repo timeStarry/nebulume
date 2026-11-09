@@ -265,7 +265,8 @@ impl Service {
                 process_library_lock(&self.data_dir, &library, false)
                     .map_err(CommandError::from)?,
             )
-        } else if command.starts_with("asset.") && !matches!(command, "asset.list" | "asset.facets")
+        } else if command.starts_with("asset.")
+            && !matches!(command, "asset.list" | "asset.facets" | "asset.stats")
         {
             let asset = self
                 .core
@@ -281,15 +282,16 @@ impl Service {
         } else {
             None
         };
-        let _process_catalog =
-            if structural_write || matches!(command, "asset.list" | "asset.facets") {
-                Some(
-                    process_catalog_lock(&self.data_dir, structural_write)
-                        .map_err(CommandError::from)?,
-                )
-            } else {
-                None
-            };
+        let _process_catalog = if structural_write
+            || matches!(command, "asset.list" | "asset.facets" | "asset.stats")
+        {
+            Some(
+                process_catalog_lock(&self.data_dir, structural_write)
+                    .map_err(CommandError::from)?,
+            )
+        } else {
+            None
+        };
         // Entry-point lock only: private helpers may call each other without
         // recursively acquiring it. Always acquire catalog before storage/cache.
         let _catalog_write = if structural_write {
@@ -302,7 +304,7 @@ impl Service {
         };
         // Lists need a coherent catalog snapshot. Long asset I/O uses the
         // per-library lease above without occupying this global lock.
-        let _catalog_read = if matches!(command, "asset.list" | "asset.facets") {
+        let _catalog_read = if matches!(command, "asset.list" | "asset.facets" | "asset.stats") {
             Some(self.catalog_operations.read().map_err(|_| CommandError {
                 code: "E_OPERATION",
                 message: "Catalog operation state is unavailable".into(),
@@ -882,10 +884,15 @@ impl Service {
         ) {
             return self.core.dispatch(command, params);
         }
-        if command.starts_with("asset.") && !matches!(command, "asset.list" | "asset.facets") {
+        if command.starts_with("asset.")
+            && !matches!(command, "asset.list" | "asset.facets" | "asset.stats")
+        {
             return self.asset_dispatch(command, params);
         }
-        if matches!(command, "asset.list" | "asset.facets" | "file.open") {
+        if matches!(
+            command,
+            "asset.list" | "asset.facets" | "asset.stats" | "file.open"
+        ) {
             return self.core.dispatch(command, params);
         }
         if command.starts_with("cache.") {
@@ -900,6 +907,7 @@ impl Service {
                 Ok(json!({"id":id,"removed_assets":self.core.remove_library(id)?}))
             }
             "library.scan" => self.scan_library(string(&params, "library_id")?),
+            "library.folders" => self.core.dispatch(command, params),
             "library.capture_index.status" => {
                 self.capture_index_status(string(&params, "library_id")?)
             }
