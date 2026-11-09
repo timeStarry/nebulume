@@ -14,7 +14,7 @@ import { createStore, reconcile } from 'solid-js/store';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { chooseImage, desktop, execute, openViewerWindow } from './api';
+import { chooseDirectory, chooseImage, desktop, execute, openViewerWindow } from './api';
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
@@ -502,6 +502,59 @@ export default function ManagementApp() {
       setBusy('');
     }
   }
+  /** Exports one photo as `<stem>-edited.jpg`, numbering the name until it is free. */
+  async function exportUnique(id: string, directory: string, stem: string) {
+    const separator = directory.includes('\\') && !directory.includes('/') ? '\\' : '/';
+    for (let attempt = 1; attempt <= 50; attempt++) {
+      const name = `${stem}-edited${attempt > 1 ? `-${attempt}` : ''}.jpg`;
+      const destination = directory
+        ? `${directory.replace(/[\\/]+$/, '')}${separator}${name}`
+        : name;
+      try {
+        return await execute<{ path: string }>('asset.export', { id, destination });
+      } catch (e) {
+        // Export never overwrites: a taken name is reported as E_EXISTS, so try the next one.
+        if (!errorMessage(e).includes('E_EXISTS')) throw e;
+      }
+    }
+    throw new Error('E_EXISTS: 同名导出文件过多');
+  }
+  /** Renders every selected photo with its crop to a chosen folder, one at a time. */
+  async function exportSelection(ids = selectedIds()) {
+    if (!ids.length || busy()) return;
+    const directory = desktop ? await chooseDirectory('选择导出文件夹') : '';
+    if (desktop && !directory) return;
+    const loaded = new Map(assets().map((item) => [item.id, item]));
+    const failures: string[] = [];
+    let exported = 0;
+    setError('');
+    setNotice('');
+    try {
+      for (const [index, id] of ids.entries()) {
+        setBusy(`正在导出 ${index + 1} / ${ids.length}…`);
+        let filename = loaded.get(id)?.filename;
+        try {
+          filename ??= (await execute<Asset>('asset.get', { id })).filename;
+          await exportUnique(id, directory ?? '', filename.replace(/\.[^.]+$/, ''));
+          exported++;
+        } catch (e) {
+          failures.push(`${filename ?? id}：${errorMessage(e)}`);
+        }
+      }
+    } finally {
+      setBusy('');
+    }
+    if (failures.length)
+      setError(
+        `已导出 ${exported} 张，${failures.length} 张失败：${failures.slice(0, 3).join('；')}${failures.length > 3 ? '…' : ''}`,
+      );
+    else
+      setNotice(
+        desktop
+          ? `已导出 ${exported} 张到 ${directory}。`
+          : `已生成 ${exported} 张 JPEG，并交给浏览器下载。`,
+      );
+  }
   async function scan(library: Library) {
     await action(`正在扫描 ${library.name}…`, async () => {
       const result = await execute<ScanResult>('library.scan', {
@@ -858,6 +911,11 @@ export default function ManagementApp() {
         {
           label: '显示详情',
           onSelect: () => setInfo(true),
+        },
+        {
+          label: count > 1 ? `导出所选 ${count} 张为 JPEG…` : '导出为 JPEG…',
+          disabled: !!busy(),
+          onSelect: () => void exportSelection(),
         },
         {
           label: '复制文件路径',
@@ -1697,6 +1755,14 @@ export default function ManagementApp() {
                       </button>
                     </div>
                     <span class="collection-controls-spacer" />
+                    <button
+                      class="button small"
+                      disabled={!!busy()}
+                      onClick={() => void exportSelection()}
+                    >
+                      <Icon name="export" size={14} />
+                      导出 JPEG…
+                    </button>
                     <button class="button small" onClick={clearPicked}>
                       取消选择
                     </button>

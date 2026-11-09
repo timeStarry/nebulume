@@ -176,6 +176,25 @@ async function fixture(
       case 'import.history':
         result = [];
         break;
+      case '$native/plugin:dialog|open':
+        result = '/Exports';
+        break;
+      case 'asset.export': {
+        const destination = String(call.params.destination);
+        // Photo-002 already has an export on disk; Photo-003 cannot be rendered.
+        if (destination === '/Exports/Photo-002-edited.jpg') {
+          await route.fulfill({
+            json: { error: { message: 'E_EXISTS: Export destination already exists' } },
+          });
+          return;
+        }
+        if (destination.startsWith('/Exports/Photo-003')) {
+          await route.fulfill({ json: { error: { message: 'E_DECODE: Synthetic broken file' } } });
+          return;
+        }
+        result = { path: destination };
+        break;
+      }
       case '$native/classify_dropped': {
         // In these fixtures folders have no extension and images end in .jpg.
         const paths = call.params.paths as string[];
@@ -1083,4 +1102,27 @@ test('the inspector shows the selected photo at once and keeps its layout while 
   await expect(inspector.locator('.spinner')).toHaveCount(0);
   release();
   await expect(inspector).not.toHaveAttribute('aria-busy');
+});
+
+test('batch export renders each selected photo to the chosen folder without overwriting', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page, 12);
+  const cells = page.locator('.photo-grid .thumbnail');
+  await cells.nth(1).click();
+  await cells.nth(3).click({ modifiers: ['Shift'] });
+  const bar = page.getByRole('toolbar', { name: '批量操作' });
+  await expect(bar).toContainText('已选 3 张');
+  await bar.getByRole('button', { name: '导出 JPEG…' }).click();
+  await expect(page.getByRole('alert')).toContainText('已导出 2 张，1 张失败');
+  await expect(page.getByRole('alert')).toContainText('Photo-003.jpg');
+  const exports = calls
+    .filter((call) => call.command === 'asset.export')
+    .map((call) => call.params.destination);
+  expect(exports).toEqual([
+    '/Exports/Photo-001-edited.jpg',
+    '/Exports/Photo-002-edited.jpg',
+    '/Exports/Photo-002-edited-2.jpg',
+    '/Exports/Photo-003-edited.jpg',
+  ]);
 });
