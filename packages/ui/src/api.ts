@@ -90,3 +90,24 @@ export function viewerContext(): Promise<{
 export function listVolumes(): Promise<Volume[]> {
   return desktop ? invoke('list_volumes') : Promise.resolve([]);
 }
+const PREGENERATE_KEY = 'nebulume.pregenerate-previews';
+/** Background grid-preview rendering after a scan; on unless the user turned it off. */
+export function readPregenerate(): boolean {
+  try {
+    return localStorage.getItem(PREGENERATE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+export function writePregenerate(value: boolean) {
+  try {
+    localStorage.setItem(PREGENERATE_KEY, String(value));
+  } catch {
+    /* The preference remains effective for this session. */
+  }
+}
+/** Starts (or restarts) background rendering of one grid tier for a library's local photos. */
+export function pregeneratePreviews(libraryId: string, tier: string): Promise<void> {
+  if (!desktop || !readPregenerate()) return Promise.resolve();
+  return invoke('pregenerate_previews', { libraryId, tier });
+}

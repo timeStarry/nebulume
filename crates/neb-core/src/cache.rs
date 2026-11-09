@@ -621,6 +621,16 @@ impl CacheManager {
             result=>result,
         }
     }
+    /// Whether a preview object is recorded under this key. Reads no image bytes.
+    pub fn has_preview(&self, key: &str) -> Result<bool> {
+        self.locked(|db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cache_objects WHERE cache_key=?1 AND kind='preview')",
+                [key],
+                |row| row.get(0),
+            )?)
+        })
+    }
     pub fn preview_put(&self, key: &str, bytes: &[u8]) -> Result<()> {
         let reservation = self.reserve(key, "preview", bytes.len() as u64)?;
         let mut file = OpenOptions::new()

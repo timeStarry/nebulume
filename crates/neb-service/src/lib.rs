@@ -18,6 +18,8 @@ use std::{
 };
 
 mod capture_index;
+mod pregenerate;
+pub use pregenerate::PregenerateReport;
 mod cards;
 mod fingerprint;
 mod remote_cache;

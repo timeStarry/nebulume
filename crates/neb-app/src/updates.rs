@@ -54,7 +54,10 @@ pub fn update_support() -> UpdateSupport {
 #[tauri::command]
 pub async fn prepare_for_update(
     service: State<'_, Arc<Service>>,
+    pregeneration: State<'_, crate::pregenerate::Pregeneration>,
 ) -> Result<QuiesceReport, CommandError> {
+    // Background rendering must not hold an asset lock while the installer runs.
+    pregeneration.cancel();
     let service = Arc::clone(service.inner());
     tauri::async_runtime::spawn_blocking(move || service.quiesce(Duration::from_secs(5)))
         .await

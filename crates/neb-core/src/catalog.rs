@@ -1694,6 +1694,18 @@ impl Core {
 
     /// Photo count, latest capture day and up to four cover photos per library,
     /// newest first. Read from the index only; no file or network access.
+    /// Local photos of a library that are on disk, newest capture first (the default grid
+    /// order), for background preview rendering. Remote and missing photos are excluded.
+    pub fn local_asset_ids(&self, library_id: &str) -> Result<Vec<String>> {
+        let db = self.db()?;
+        let mut statement = db.prepare(
+"SELECT id FROM assets WHERE library_id=?1 AND source_key IS NULL AND availability!='missing' ORDER BY captured_at DESC,id",
+)?;
+        let ids = statement
+            .query_map([library_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
     pub fn library_summaries(&self) -> Result<HashMap<String, Value>> {
         let db = self.db()?;
         let mut counts = db.prepare(

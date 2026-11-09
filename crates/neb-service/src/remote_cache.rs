@@ -234,7 +234,12 @@ impl Service {
     /// from the file itself, so an on-disk change alters the key (and ETag)
     /// before any refresh. Remote stamps are catalog/snapshot fields; no I/O
     /// beyond SQLite and a local stat is performed.
-    fn preview_key(&self, asset: &Asset, tier: PreviewTier, uncropped: bool) -> Result<String> {
+    pub(super) fn preview_key(
+        &self,
+        asset: &Asset,
+        tier: PreviewTier,
+        uncropped: bool,
+    ) -> Result<String> {
         if asset.source_key.is_none() {
             return Ok(format!(
                 "preview-v2:{}:{}",

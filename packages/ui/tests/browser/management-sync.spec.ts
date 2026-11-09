@@ -30,6 +30,7 @@ async function fixture(
       }
       export const chooseDirectory = async()=>null, chooseSave = async(path)=>path, chooseImage = async()=>null;
       export const openViewerWindow = async()=>'', viewerContext = async()=>({asset_ids:[]}), listVolumes=async()=>[];
+      export const readPregenerate = ()=>false, writePregenerate = ()=>{}, pregeneratePreviews = async()=>{};
     `,
       }),
     );

@@ -159,6 +159,9 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
           case 'library.scan':
             result = { indexed: 1, skipped: 0, errors: [] };
             break;
+          case '$native/pregenerate_previews':
+            result = null;
+            break;
           case 'library.add': {
             result = {
               ...remote,
@@ -603,6 +606,10 @@ test('a failed connection is reported, stored credentials can browse, and a dire
       ),
     )
     .toBe(true);
+  // After the scan the grid's tier is rendered in the background (210px at 1x is t256).
+  await expect
+    .poll(() => calls.find((call) => call.command === '$native/pregenerate_previews')?.params)
+    .toEqual({ libraryId: 'new-library', tier: 't256' });
 });
 
 test('a failed browse revokes previous verification and refreshes missing credential state without losing its directory', async ({

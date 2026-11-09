@@ -14,7 +14,16 @@ import { createStore, reconcile } from 'solid-js/store';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { chooseDirectory, chooseImage, desktop, execute, openViewerWindow } from './api';
+import {
+  chooseDirectory,
+  chooseImage,
+  desktop,
+  execute,
+  openViewerWindow,
+  pregeneratePreviews,
+  readPregenerate,
+  writePregenerate,
+} from './api';
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
@@ -562,6 +571,10 @@ export default function ManagementApp() {
       }).finally(() => void refreshLibraries());
       if (library.id === libraryId()) await loadAssets();
       await refreshLibraries();
+      // Render the grid's tier for new photos in the background; on-demand loading covers failures.
+      void pregeneratePreviews(library.id, gridTier(thumbSize(), devicePixelRatio())).catch(
+        () => undefined,
+      );
       setNotice(
         `扫描完成：索引 ${result.indexed} 项，跳过 ${result.skipped} 项${result.moved ? `，识别 ${result.moved} 张移动或改名的照片并保留标记` : ''}${result.errors.length ? `，${result.errors.length} 项异常` : ''}。`,
       );
@@ -2126,6 +2139,7 @@ function saveThumbSize(value: number) {
 }
 function CullingSettings() {
   const [auto, setAuto] = createSignal(readAutoAdvance());
+  const [pregenerate, setPregenerate] = createSignal(readPregenerate());
   return (
     <section class="settings-panel">
       <h2>浏览与选图</h2>
@@ -2144,6 +2158,25 @@ function CullingSettings() {
           aria-label="打标后自动下一张"
         />
       </div>
+      <Show when={desktop}>
+        <div class="settings-row">
+          <div>
+            <strong>扫描后预生成缩略图</strong>
+            <p>
+              扫描本地图片库后，在后台按当前网格尺寸渲染缩略图，首次浏览更快。不会下载远端照片，占用的空间计入缓存上限。
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={pregenerate()}
+            onChange={(event) => {
+              setPregenerate(event.currentTarget.checked);
+              writePregenerate(event.currentTarget.checked);
+            }}
+            aria-label="扫描后预生成缩略图"
+          />
+        </div>
+      </Show>
     </section>
   );
 }

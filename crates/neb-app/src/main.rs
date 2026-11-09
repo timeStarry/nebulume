@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod drop;
 mod file_open;
+mod pregenerate;
 mod preview_protocol;
 mod updates;
 mod viewer;
@@ -39,6 +40,7 @@ fn main() {
     preview_protocol::register(tauri::Builder::default())
         .manage(viewer::ViewerSessions::default())
         .manage(file_open::OpenRequests::default())
+        .manage(pregenerate::Pregeneration::default())
         // Register first: a secondary instance must exit before opening shared state.
         .plugin(tauri_plugin_single_instance::init(|app, arguments, cwd| {
             let paths = file_open::forwarded_paths(arguments, &cwd);
@@ -64,7 +66,8 @@ fn main() {
             list_volumes,
             updates::update_support,
             updates::prepare_for_update,
-            drop::classify_dropped
+            drop::classify_dropped,
+            pregenerate::pregenerate_previews
         ])
         .build(tauri::generate_context!())
         .expect("Nebulume failed to start")
