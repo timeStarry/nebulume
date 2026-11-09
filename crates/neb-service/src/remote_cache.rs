@@ -230,7 +230,7 @@ impl Service {
         }))
     }
 
-    /// `preview-v2:<id>:<stamp>:<size>:<crop json>:<tier>`. Local stamps come
+    /// `preview-v3:<id>:<stamp>:<size>:<crop json>:<tier>`. Local stamps come
     /// from the file itself, so an on-disk change alters the key (and ETag)
     /// before any refresh. Remote stamps are catalog/snapshot fields; no I/O
     /// beyond SQLite and a local stat is performed.
@@ -242,7 +242,7 @@ impl Service {
     ) -> Result<String> {
         if asset.source_key.is_none() {
             return Ok(format!(
-                "preview-v2:{}:{}",
+                "preview-v3:{}:{}",
                 self.core.preview_fingerprint(&asset.id, uncropped)?,
                 tier.as_str()
             ));
@@ -264,7 +264,7 @@ impl Service {
             .and_then(|s| s["size"].as_u64())
             .unwrap_or(asset.size);
         Ok(format!(
-            "preview-v2:{}:{}:{}:{}:{}",
+            "preview-v3:{}:{}:{}:{}:{}",
             asset.id,
             fingerprint,
             size,

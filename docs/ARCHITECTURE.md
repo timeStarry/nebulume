@@ -56,7 +56,7 @@ schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并�
 
 像素与元数据分路：`asset.preview` 经 IPC 只返回尺寸、来源、坐标映射和资产元数据；JPEG 字节由 `neb-app` 的 `neb` 自定义协议从 `Service::preview_image` 直接返回，以 ETag/304 复验，不再经 JSON 传 base64。CLI `neb preview` 走同一路径。
 
-持久预览缓存键为 `preview-v2:`（资产、文件版本、尺寸、裁剪配方与档位），旧 `preview-v1:` 条目不转换，由常规回收淘汰。磁盘条目为二进制信封：`NPV2`、小端 `u32` 元数据长度、UTF-8 元数据 JSON、JPEG 字节；格式不符即报 `E_CACHE: Invalid preview cache`。Service 内另有本地/远端共享的内存 LRU，最多 256 项、128 MiB JPEG 字节，命中直接共享 `Arc<PreviewImage>`，不复制字节。
+持久预览缓存键为 `preview-v3:`（资产、文件版本、尺寸、裁剪配方与档位）。v3 起预览与导出的 JPEG 内嵌源文件的 ICC 色彩配置（RAW 传感器解码与相机内嵌预览按 sRGB 处理，不附加配置），由 WebView 做色彩管理，广色域照片不再发灰；旧 `preview-v1:`、`preview-v2:` 条目不转换，由常规回收淘汰。磁盘条目为二进制信封：`NPV2`、小端 `u32` 元数据长度、UTF-8 元数据 JSON、JPEG 字节；格式不符即报 `E_CACHE: Invalid preview cache`。Service 内另有本地/远端共享的内存 LRU，最多 256 项、128 MiB JPEG 字节，命中直接共享 `Arc<PreviewImage>`，不复制字节。
 
 直方图基于渲染图；当前没有完整分辨率瓦片或专业 ICC 工作流。解码、容器和相机支持边界见[实施状态](STATUS.md)。
 

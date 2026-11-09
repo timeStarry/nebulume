@@ -152,7 +152,7 @@ HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须�
 桌面 webview 通过自定义协议读取预览 JPEG，不经 IPC 传 base64：`neb://localhost/<id>/<tier>/<crop>/<rev>`（Windows 为 `http://neb.localhost/...`）。前端用 `convertFileSrc(path,'neb')` 构造，整段可被百分号编码为单段，服务端先解码再解析。`id` 为 1–64 个 ASCII 字母数字或 `-`；`tier` 为上述四档之一；`crop` 为 `0`（应用裁剪）或 `1`（uncropped）；`rev` 为数字，仅用于前端区分版本，不参与服务端缓存键。路径不合法时在任何文件查找前返回 400。
 
 - 200：`Content-Type: image/jpeg`，`Cache-Control: no-cache`，`ETag`，以及 `X-Neb-Width`/`X-Neb-Height`/`X-Neb-Source`。
-- 304：`If-None-Match` 与当前 ETag 相同（或为 `*`）时返回，不解码像素、不访问远端。ETag 为完整 `preview-v2:` 缓存键的小写十六进制 SHA-256（带引号）；原文件变化后键随之改变，不会返回过期 304。
+- 304：`If-None-Match` 与当前 ETag 相同（或为 `*`）时返回，不解码像素、不访问远端。ETag 为完整 `preview-v3:` 缓存键的小写十六进制 SHA-256（带引号）；原文件变化后键随之改变，不会返回过期 304。
 - 错误：400 路径/档位不合法（`E_INVALID`）；404 `E_NOT_FOUND`；409 `E_DOWNLOAD_REQUIRED`；415 `E_UNSUPPORTED_CODEC`；503 `E_CACHE_BUSY`、`E_WORKER`、`E_OFFLINE`（Service 尚未就绪也为 503 `E_WORKER`）；其余 500。错误正文为 `{"code","message"}`，`Content-Type: application/json`，`Cache-Control: no-store`。
 - 仅对 `tauri://localhost`、`http://tauri.localhost` 来源回写 `Access-Control-Allow-Origin` 与 `Vary: Origin`。
 - CSP `img-src 'self' blob: neb: http://neb.localhost`，`img-src` 不再允许 `data:`（`font-src` 保留）。协议无需新增窗口权限。

@@ -93,7 +93,7 @@ pub struct Service {
     asset_operations: AssetOperations,
     downloads: (Mutex<usize>, Condvar),
     preview_writes: Arc<AtomicUsize>,
-    // Rendered tiers keyed by their `preview-v2:` cache key, local and remote.
+    // Rendered tiers keyed by their `preview-v3:` cache key, local and remote.
     previews: PreviewMemory,
     data_dir: PathBuf,
     catalog_operations: RwLock<()>,
@@ -323,7 +323,7 @@ impl Service {
         })
     }
 
-    /// Quoted lowercase hex SHA-256 of the `preview-v2:` cache key. Never
+    /// Quoted lowercase hex SHA-256 of the `preview-v3:` cache key. Never
     /// decodes pixels or contacts remote storage.
     pub fn preview_etag(
         &self,

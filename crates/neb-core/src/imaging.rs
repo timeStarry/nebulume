@@ -8,8 +8,8 @@ use std::{
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use exif::{In, Tag};
 use image::{
-    codecs::jpeg::JpegEncoder, metadata::Orientation, DynamicImage, ImageDecoder, ImageReader, Rgb,
-    RgbImage,
+    codecs::jpeg::JpegEncoder, metadata::Orientation, DynamicImage, ImageDecoder, ImageEncoder,
+    ImageReader, Rgb, RgbImage,
 };
 use serde_json::{json, Value};
 
@@ -285,6 +285,9 @@ struct RenderedFrame {
     image: DynamicImage,
     source: &'static str,
     coordinate_mapping: CoordinateMapping,
+    /// Source ICC profile, embedded in previews and exports so a color-managed
+    /// viewer shows wide-gamut photos correctly. RAW development yields sRGB.
+    icc: Option<Vec<u8>>,
 }
 
 fn render_frame(
@@ -294,7 +297,7 @@ fn render_frame(
     prefers_embedded: bool,
 ) -> Result<RenderedFrame> {
     check_file(path)?;
-    let (image, source, orientation) = if kind(&extension(path)) == Some("raw") {
+    let (image, source, orientation, icc) = if kind(&extension(path)) == Some("raw") {
         // Keep enough full-frame pixels that a small saved crop can still fill
         // the requested preview. Exports pass None and render all sensor pixels.
         let raw_limit = max_side.map(|limit| {
@@ -311,15 +314,15 @@ fn render_frame(
             None
         };
         if let Some((preview, orientation)) = embedded {
-            (preview, "embedded_jpeg", orientation)
+            (preview, "embedded_jpeg", orientation, None)
         } else {
             match render_sensor(path, raw_limit) {
-                Ok((image, orientation)) => (image, "raw_demosaic", orientation),
+                Ok((image, orientation)) => (image, "raw_demosaic", orientation, None),
                 Err(raw_error) if max_side.is_some() => {
                     let (preview, orientation) = crate::embedded_preview::read_with_orientation(path).with_context(|| {
                     format!("RAW sensor decoding unavailable ({raw_error:#}); embedded preview fallback failed")
                 })?;
-                    (preview, "embedded_jpeg", orientation)
+                    (preview, "embedded_jpeg", orientation, None)
                 }
                 Err(error) => {
                     return Err(error.context(
@@ -335,12 +338,13 @@ fn render_frame(
         let (width, height) = decoder.dimensions();
         check_dimensions(width, height)?;
         let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+        let icc = decoder.icc_profile().ok().flatten();
         let mut image =
             DynamicImage::from_decoder(decoder).context("E_DECODE: Image decoding failed")?;
         image.apply_orientation(orientation);
-        (image, "raster", orientation.to_exif())
+        (image, "raster", orientation.to_exif(), icc)
     };
-    finish_frame(image, source, orientation, crop)
+    finish_frame(image, source, orientation, crop, icc)
 }
 
 fn finish_frame(
@@ -348,6 +352,7 @@ fn finish_frame(
     source: &'static str,
     orientation: u8,
     crop: Option<Crop>,
+    icc: Option<Vec<u8>>,
 ) -> Result<RenderedFrame> {
     let mut coordinate_mapping = CoordinateMapping {
         orientation,
@@ -380,6 +385,7 @@ fn finish_frame(
         image,
         source,
         coordinate_mapping,
+        icc,
     })
 }
 
@@ -548,7 +554,11 @@ pub fn preview(path: &Path, crop: Option<Crop>, tier: PreviewTier) -> Result<Pre
 fn encode_preview(frame: RenderedFrame, max_size: u32) -> Result<PreviewImage> {
     let image = downsample(frame.image, max_size);
     let mut bytes = Cursor::new(Vec::new());
-    JpegEncoder::new_with_quality(&mut bytes, 88).encode_image(&image.to_rgb8())?;
+    let mut encoder = JpegEncoder::new_with_quality(&mut bytes, 88);
+    if let Some(icc) = frame.icc {
+        encoder.set_icc_profile(icc)?;
+    }
+    encoder.encode_image(&image.to_rgb8())?;
     Ok(PreviewImage {
         jpeg: bytes.into_inner(),
         width: image.width(),
@@ -603,7 +613,7 @@ pub fn remote_preview<R: Read + Seek>(
     metadata.insert("Decoder".into(), "相机内嵌预览".into());
     let width = image.width();
     let height = image.height();
-    let frame = finish_frame(image, "remote_embedded_jpeg", orientation, crop)?;
+    let frame = finish_frame(image, "remote_embedded_jpeg", orientation, crop, None)?;
     let histogram = histogram_image(frame.image.clone(), frame.source)?;
     let mut preview = encode_preview(frame, tier.pixels())?;
     preview.extras.insert(
@@ -636,9 +646,13 @@ pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Val
         parent.is_dir(),
         "E_NOT_FOUND: Export destination folder does not exist"
     );
-    let (image, _) = render(path, crop, None)?;
+    let frame = render_frame(path, crop, None, false)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    JpegEncoder::new_with_quality(temp.as_file_mut(), 95).encode_image(&image.to_rgb8())?;
+    let mut encoder = JpegEncoder::new_with_quality(temp.as_file_mut(), 95);
+    if let Some(icc) = frame.icc {
+        encoder.set_icc_profile(icc)?;
+    }
+    encoder.encode_image(&frame.image.to_rgb8())?;
     temp.as_file().sync_all()?;
     // This atomic no-clobber commit also closes the check-then-write race above.
     temp.persist_noclobber(destination).map_err(|e| {
@@ -896,5 +910,67 @@ mod remote_metadata_tests {
             assert!(!reader.exceeded);
             assert!(reader.bytes < 8 * 1024);
         }
+    }
+}
+
+#[cfg(test)]
+mod color_profile_tests {
+    use super::*;
+
+    fn gradient(width: u32, height: u32) -> RgbImage {
+        RgbImage::from_fn(width, height, |x, y| {
+            Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])
+        })
+    }
+
+    fn jpeg(image: &RgbImage, icc: Option<&[u8]>) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        let mut encoder = JpegEncoder::new_with_quality(&mut bytes, 90);
+        if let Some(icc) = icc {
+            encoder.set_icc_profile(icc.to_vec()).unwrap();
+        }
+        encoder.encode_image(image).unwrap();
+        bytes.into_inner()
+    }
+
+    fn embedded_icc(bytes: &[u8]) -> Option<Vec<u8>> {
+        image::codecs::jpeg::JpegDecoder::new(Cursor::new(bytes))
+            .unwrap()
+            .icc_profile()
+            .unwrap()
+    }
+
+    #[test]
+    fn previews_keep_tier_size_crop_coverage_and_the_source_color_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wide.jpg");
+        let icc = b"nebulume-test-profile".repeat(8);
+        std::fs::write(&path, jpeg(&gradient(2000, 1200), Some(&icc))).unwrap();
+        let preview = preview(&path, None, PreviewTier::T256).unwrap();
+        assert_eq!((preview.width, preview.height), (256, 154));
+        assert_eq!(embedded_icc(&preview.jpeg).as_deref(), Some(&icc[..]));
+        // A quarter-width crop still fills the tier.
+        let crop = Crop {
+            x: 0.0,
+            y: 0.0,
+            width: 0.25,
+            height: 1.0,
+        };
+        let cropped = super::preview(&path, Some(crop), PreviewTier::T256).unwrap();
+        assert_eq!(cropped.height, 256);
+        let output = temp.path().join("export.jpg");
+        export(&path, None, &output).unwrap();
+        let exported = std::fs::read(&output).unwrap();
+        assert_eq!(image::load_from_memory(&exported).unwrap().width(), 2000);
+        assert_eq!(embedded_icc(&exported).as_deref(), Some(&icc[..]));
+    }
+
+    #[test]
+    fn photos_without_a_profile_stay_without_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("plain.jpg");
+        std::fs::write(&path, jpeg(&gradient(640, 480), None)).unwrap();
+        let preview = preview(&path, None, PreviewTier::T256).unwrap();
+        assert_eq!(embedded_icc(&preview.jpeg), None);
     }
 }
