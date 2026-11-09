@@ -100,6 +100,10 @@ export class UndoStack {
   get size() {
     return this.entries.length;
   }
+  /** Drops marks of photos that are no longer in the session (moved to the Trash). */
+  forget(ids: Set<string>) {
+    this.entries = this.entries.filter((entry) => !ids.has(entry.id));
+  }
 }
 
 /** Ids shown together in compare view: the focused image and the ones after it. */
@@ -123,6 +127,8 @@ export async function snapshotQueue(
   libraryId: string,
   options: AssetListOptions,
   startId: string,
+  /** Receives every listed photo, so the strip and counts need no extra reads. */
+  collect?: (items: Asset[]) => void,
 ): Promise<string[]> {
   const ids: string[] = [];
   for (let offset = 0; ids.length < CULL_QUEUE_LIMIT; ) {
@@ -133,6 +139,7 @@ export async function snapshotQueue(
       offset,
     });
     ids.push(...page.items.map((item) => item.id));
+    collect?.(page.items);
     offset += page.items.length;
     if (!page.items.length || offset >= page.total) break;
   }

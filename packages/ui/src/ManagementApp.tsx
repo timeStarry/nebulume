@@ -32,6 +32,13 @@ import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, { type FolderAction } from './LibrarySidebar';
 import LibraryOverview from './LibraryOverview';
+import {
+  exportPhotos,
+  exportSummary,
+  restorePhotos,
+  trashPhotos,
+  trashSummary,
+} from './photo-actions';
 import { Thumbnail } from './PhotoView';
 import { gridTier, previewUrl, watchDevicePixelRatio } from './preview-url';
 import StorageWorkspace from './StorageWorkspace';
@@ -63,6 +70,7 @@ import {
   type LibraryFolders,
   type ScanResult,
   type StorageConfig,
+  type TrashResult,
 } from './model';
 import {
   availabilityPresentation,
@@ -120,6 +128,7 @@ export default function ManagementApp() {
   const [folders, setFolders] = createSignal<LibraryFolders>();
   // 照片 shows the grid, 概览 the statistics for the same filter; 选片 opens culling.
   const [view, setView] = createSignal<'photos' | 'overview'>('photos');
+  const [undoable, setUndoable] = createSignal<{ text: string; run: () => Promise<void> }>();
   // Culling started from a folder waits for that folder's first page.
   const [cullWhenLoaded, setCullWhenLoaded] = createSignal(false);
   const [facets, setFacets] = createSignal<AssetFacets>();
@@ -539,58 +548,81 @@ export default function ManagementApp() {
       setBusy('');
     }
   }
-  /** Exports one photo as `<stem>-edited.jpg`, numbering the name until it is free. */
-  async function exportUnique(id: string, directory: string, stem: string) {
-    const separator = directory.includes('\\') && !directory.includes('/') ? '\\' : '/';
-    for (let attempt = 1; attempt <= 50; attempt++) {
-      const name = `${stem}-edited${attempt > 1 ? `-${attempt}` : ''}.jpg`;
-      const destination = directory
-        ? `${directory.replace(/[\\/]+$/, '')}${separator}${name}`
-        : name;
-      try {
-        return await execute<{ path: string }>('asset.export', { id, destination });
-      } catch (e) {
-        // Export never overwrites: a taken name is reported as E_EXISTS, so try the next one.
-        if (!errorMessage(e).includes('E_EXISTS')) throw e;
-      }
-    }
-    throw new Error('E_EXISTS: 同名导出文件过多');
-  }
   /** Renders every selected photo with its crop to a chosen folder, one at a time. */
   async function exportSelection(ids = selectedIds()) {
     if (!ids.length || busy()) return;
     const directory = desktop ? await chooseDirectory('选择导出文件夹') : '';
     if (desktop && !directory) return;
-    const loaded = new Map(assets().map((item) => [item.id, item]));
-    const failures: string[] = [];
-    let exported = 0;
     setError('');
     setNotice('');
     try {
-      for (const [index, id] of ids.entries()) {
-        setBusy(`正在导出 ${index + 1} / ${ids.length}…`);
-        let filename = loaded.get(id)?.filename;
-        try {
-          filename ??= (await execute<Asset>('asset.get', { id })).filename;
-          await exportUnique(id, directory ?? '', filename.replace(/\.[^.]+$/, ''));
-          exported++;
-        } catch (e) {
-          failures.push(`${filename ?? id}：${errorMessage(e)}`);
-        }
-      }
+      const result = await exportPhotos(
+        ids,
+        directory ?? '',
+        new Map(assets().map((item) => [item.id, item])),
+        (done, total) => setBusy(`正在导出 ${done} / ${total}…`),
+      );
+      const summary = exportSummary(result, directory ?? '', desktop);
+      if (summary.error) setError(summary.error);
+      else setNotice(summary.notice!);
     } finally {
       setBusy('');
     }
-    if (failures.length)
-      setError(
-        `已导出 ${exported} 张，${failures.length} 张失败：${failures.slice(0, 3).join('；')}${failures.length > 3 ? '…' : ''}`,
-      );
-    else
-      setNotice(
-        desktop
-          ? `已导出 ${exported} 张到 ${directory}。`
-          : `已生成 ${exported} 张 JPEG，并交给浏览器下载。`,
-      );
+  }
+  /** Moves the selected photos to the system Trash; the toast offers to put them back. */
+  async function trashSelection(ids = selectedIds()) {
+    if (!ids.length || busy()) return;
+    const order = assets().map((item) => item.id);
+    const position = Math.max(0, order.indexOf(ids[0]));
+    setError('');
+    setNotice('');
+    setUndoable(undefined);
+    let result: TrashResult;
+    setBusy(`正在移到废纸篓：${ids.length} 张…`);
+    try {
+      result = await trashPhotos(ids);
+    } catch (e) {
+      setError(errorMessage(e));
+      return;
+    } finally {
+      setBusy('');
+    }
+    const summary = trashSummary(result);
+    if (summary.error) setError(summary.error);
+    if (result.trashed.length) {
+      const gone = new Set(result.trashed);
+      const remaining = assets().filter((item) => !gone.has(item.id));
+      clearPicked();
+      const next = remaining[Math.min(position, remaining.length - 1)];
+      if (next) {
+        setSelectedId(next.id);
+        queueMicrotask(() => focusThumbnail(next.id));
+      }
+      offerUndo(`已把 ${ids.length} 张照片移到废纸篓。`, async () => {
+        const restored = await restorePhotos(result.trashed);
+        if (restored.failed.length)
+          setError(`${restored.failed.length} 张未能放回：${restored.failed[0].message}`);
+        else setNotice(`已放回 ${restored.restored.length} 个文件。`);
+      });
+      await loadAssets(false, true);
+    }
+  }
+  let undoTimer: ReturnType<typeof setTimeout> | undefined;
+  function offerUndo(text: string, run: () => Promise<void>) {
+    clearTimeout(undoTimer);
+    setUndoable({ text, run });
+    undoTimer = setTimeout(() => setUndoable(undefined), 10_000);
+  }
+  async function runUndo() {
+    const pending = undoable();
+    if (!pending) return;
+    clearTimeout(undoTimer);
+    setUndoable(undefined);
+    await action('正在放回原处…', async () => {
+      await pending.run();
+      await loadAssets(false, true);
+      await refreshFolders();
+    });
   }
   async function scan(library: Library) {
     await action(`正在扫描 ${library.name}…`, async () => {
@@ -920,6 +952,17 @@ export default function ManagementApp() {
       return;
     }
     if (
+      (event.metaKey || event.ctrlKey) &&
+      (event.key === 'Backspace' || event.key === 'Delete') &&
+      section() === 'libraries' &&
+      view() === 'photos' &&
+      selectedIds().length
+    ) {
+      event.preventDefault();
+      void trashSelection();
+      return;
+    }
+    if (
       event.ctrlKey ||
       event.metaKey ||
       event.altKey ||
@@ -1021,6 +1064,15 @@ export default function ManagementApp() {
           disabled: !!busy(),
           onSelect: () => void exportSelection(),
         },
+        ...(currentLibrary()?.source_kind === 'local'
+          ? [
+              {
+                label: count > 1 ? `将所选 ${count} 张移到废纸篓` : '移到废纸篓',
+                disabled: !!busy(),
+                onSelect: () => void trashSelection(),
+              },
+            ]
+          : []),
         {
           label: '复制文件路径',
           disabled: count > 1 || !asset.path,
@@ -1135,14 +1187,14 @@ export default function ManagementApp() {
   }
   // Local library folders are watched; the backend scans after changes settle and
   // reports here, so the open grid refreshes in place without a manual scan.
-  createEffect(
-    on([libraryId, libraries], ([id]) => {
-      if (!id) return setFolders(undefined);
-      void execute<LibraryFolders>('library.folders', { library_id: id })
-        .then((tree) => libraryId() === id && setFolders(tree))
-        .catch(() => setFolders(undefined));
-    }),
-  );
+  async function refreshFolders() {
+    const id = libraryId();
+    if (!id) return setFolders(undefined);
+    await execute<LibraryFolders>('library.folders', { library_id: id })
+      .then((tree) => libraryId() === id && setFolders(tree))
+      .catch(() => setFolders(undefined));
+  }
+  createEffect(on([libraryId, libraries], () => void refreshFolders()));
   createEffect(() => {
     if (!cullWhenLoaded() || loading() || !assets().length) return;
     setCullWhenLoaded(false);
@@ -2224,6 +2276,16 @@ export default function ManagementApp() {
               </button>
             </div>
           </Show>
+          <Show when={undoable()}>
+            {(pending) => (
+              <div class="toast success" role="status">
+                <span>{pending().text}</span>
+                <button class="button small" onClick={() => void runUndo()}>
+                  撤销
+                </button>
+              </div>
+            )}
+          </Show>
           <Show when={notice()}>
             <div class="toast success" role="status">
               <span>{notice()}</span>
@@ -2310,6 +2372,10 @@ export default function ManagementApp() {
             onClose={closeOverlay}
             onCurrent={(id) => (viewerCurrent = id)}
             onAssetChanged={(asset) => void acceptAsset(asset)}
+            onTrashed={() => {
+              void loadAssets(false, true);
+              void refreshFolders();
+            }}
           />
         )}
       </Show>

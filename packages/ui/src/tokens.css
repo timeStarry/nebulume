@@ -1,6 +1,8 @@
 /* Shared application typography, spacing, color, and motion tokens. */
 :root {
-  --nl-font-ui: 'Anthropic Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
+  --nl-font-ui:
+    'Anthropic Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC',
+    'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
   --nl-font-mono: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
   --nl-text-xs: 12px;
   --nl-text-sm: 13px;
@@ -37,10 +39,11 @@
   --nl-duration-fast: 120ms;
   --nl-duration-normal: 180ms;
   --nl-duration-slow: 240ms;
-  --nl-ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --nl-ease-standard: cubic-bezier(0.2, 0, 0, 1);
 }
 
-:root, [data-theme="dark"] {
+:root,
+[data-theme='dark'] {
   color-scheme: dark;
   --nl-canvas: #262626;
   --nl-surface: #212121;
@@ -90,7 +93,7 @@
   --nl-shadow-dialog: 0 0 0 1px #3a3a3a;
 }
 
-[data-theme="light"] {
+[data-theme='light'] {
   color-scheme: light;
   --nl-canvas: #f2f2f2;
   --nl-surface: #e9e9e9;
@@ -141,7 +144,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root, [data-theme] {
+  :root,
+  [data-theme] {
     --nl-duration-fast: 0ms;
     --nl-duration-normal: 0ms;
     --nl-duration-slow: 0ms;

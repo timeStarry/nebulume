@@ -14,6 +14,7 @@ async function fixture(
   customize?: (assets: Asset[]) => void,
 ) {
   const calls: Call[] = [];
+  const trashed = new Map<string, { at: number; asset: Asset }>();
   let failedReads = 0;
   let failedLists = 0;
   if (browserMode)
@@ -164,6 +165,24 @@ async function fixture(
           if (call.params.flag !== undefined) asset.flag = call.params.flag as Asset['flag'];
         }
         result = { updated: ids.length };
+        break;
+      }
+      case 'asset.trash': {
+        const ids = call.params.ids as string[];
+        for (const id of ids) {
+          const at = assets.findIndex((item) => item.id === id);
+          if (at >= 0) trashed.set(id, { at, asset: assets.splice(at, 1)[0] });
+        }
+        result = { trashed: ids, failed: [] };
+        break;
+      }
+      case 'asset.restore': {
+        const ids = call.params.ids as string[];
+        for (const id of ids) {
+          const entry = trashed.get(id);
+          if (entry) assets.splice(entry.at, 0, entry.asset);
+        }
+        result = { restored: ids, failed: [] };
         break;
       }
       case 'asset.preview':
@@ -1278,4 +1297,25 @@ test('the overview counts the filtered library and every figure leads back to it
   // The overview then follows the same filter as the grid.
   await page.keyboard.press('Meta+3');
   await expect(overview).toContainText('8张照片');
+});
+
+test('⌘⌫ moves the selected photo to the Trash and the toast puts it back', async ({ page }) => {
+  const { calls } = await fixture(page, 6);
+  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  const second = page.locator('.thumbnail').nth(1);
+  const name = await second.getAttribute('aria-label');
+  await second.click();
+  await page.keyboard.press('Meta+Backspace');
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.trash')?.params)
+    .toEqual({ ids: ['photo-1'] });
+  await expect(page.locator('.collection-status')).toContainText('已载入 5 / 5');
+  // Selection moves on to the photo that took its place.
+  await expect(page.locator('.thumbnail').nth(1)).toBeFocused();
+  await page.getByRole('button', { name: '撤销' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.restore')?.params)
+    .toEqual({ ids: ['photo-1'] });
+  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.getByRole('button', { name: name! })).toBeVisible();
 });

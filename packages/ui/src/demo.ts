@@ -222,6 +222,33 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       result = { updated: ids.length };
       break;
     }
+    case 'asset.trash': {
+      // Browser files cannot be deleted; the demo only takes them out of its catalog.
+      const ids = Array.isArray(params.ids) ? (params.ids as string[]) : [];
+      const trashed: string[] = [];
+      for (const id of ids) {
+        const target = assets.get(id);
+        if (!target) continue;
+        browserTrash.set(id, target);
+        assets.delete(id);
+        trashed.push(id);
+      }
+      result = { trashed, failed: [] };
+      break;
+    }
+    case 'asset.restore': {
+      const ids = Array.isArray(params.ids) ? (params.ids as string[]) : [];
+      const restored: string[] = [];
+      for (const id of ids) {
+        const target = browserTrash.get(id);
+        if (!target) continue;
+        assets.set(id, target);
+        browserTrash.delete(id);
+        restored.push(id);
+      }
+      result = { restored, failed: [] };
+      break;
+    }
     case 'asset.crop': {
       if (!asset) throw new Error('图片不存在。');
       const crop = {
@@ -415,3 +442,5 @@ function browserStats(items: Asset[]) {
     iso: [],
   };
 }
+
+const browserTrash = new Map<string, Asset>();

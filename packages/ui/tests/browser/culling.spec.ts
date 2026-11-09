@@ -31,6 +31,7 @@ const photo = (index: number): Asset => ({
 async function fixture(page: Page, options: { failFlag?: boolean } = {}) {
   const calls: Call[] = [];
   const assets = new Map([1, 2, 3].map((index) => [`photo-${index}`, photo(index)]));
+  const trashed = new Map<string, Asset>();
   await page.route('**/__culling_rpc', async (route) => {
     const call = route.request().postDataJSON() as Call;
     calls.push(call);
@@ -118,6 +119,19 @@ async function fixture(page: Page, options: { failFlag?: boolean } = {}) {
             source: 'fixture',
           };
           break;
+        case 'asset.trash': {
+          const ids = call.params.ids as string[];
+          for (const id of ids) trashed.set(id, assets.get(id)!);
+          for (const id of ids) assets.delete(id);
+          result = { trashed: ids, failed: [] };
+          break;
+        }
+        case 'asset.restore': {
+          const ids = call.params.ids as string[];
+          for (const id of ids) assets.set(id, trashed.get(id)!);
+          result = { restored: ids, failed: [] };
+          break;
+        }
         case '$native/open_viewer':
           result = 'viewer-test';
           break;
@@ -275,4 +289,64 @@ test('mode switch restores ordinary viewer shortcuts', async ({ page }) => {
   );
   await expect(hud(page)).toHaveCount(0);
   await expect(page.getByRole('button', { name: '显示对焦点（P）' })).toBeVisible();
+});
+
+test('culling shows progress and marks beside the photo, then finishes with export and Trash', async ({
+  page,
+}) => {
+  const { calls, assets } = await fixture(page);
+  await page.goto('/?viewer=1');
+  const panel = page.getByRole('complementary', { name: '选片面板' });
+  await expect(panel).toContainText('已看 1 / 3');
+  await expect(page.locator('.cull-strip-item')).toHaveCount(3);
+  await page.keyboard.press('p');
+  await expect(panel).toContainText('已看 2 / 3');
+  await expect(panel).toContainText('1 留用');
+  await page.keyboard.press('x');
+  await expect(panel).toContainText('1 淘汰');
+  await expect(page.locator('.cull-strip-mark.pick')).toHaveCount(1);
+  await expect(page.locator('.cull-strip-mark.reject')).toHaveCount(1);
+  // The side panel marks the photo on screen like the keys do.
+  await panel.getByRole('button', { name: '评为 4 星' }).click();
+  await expect.poll(() => assets.get('photo-3')!.rating).toBe(4);
+
+  await panel.getByRole('button', { name: '完成选片' }).click();
+  const review = page.getByRole('region', { name: '完成选片' });
+  await expect(review).toContainText('留用 1 张');
+  await expect(review).toContainText('淘汰 1 张');
+  await expect(review.getByRole('button', { name: '继续选片' })).toBeFocused();
+  // Moving originals needs a second, explicit press.
+  await review.getByRole('button', { name: '移到废纸篓…' }).click();
+  expect(calls.some((call) => call.command === 'asset.trash')).toBe(false);
+  await review.getByRole('button', { name: '确认移走 1 个文件' }).click();
+  await expect(review).toBeHidden();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.trash')?.params)
+    .toEqual({
+      ids: ['photo-2'],
+    });
+  await expect(page.locator('.cull-strip-item')).toHaveCount(2);
+  await expect(panel).toContainText('0 淘汰');
+  await page.getByRole('button', { name: '撤销' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.restore')?.params)
+    .toEqual({
+      ids: ['photo-2'],
+    });
+  await expect(page.locator('.cull-strip-item')).toHaveCount(3);
+  await expect(panel).toContainText('1 淘汰');
+});
+
+test('⌘⌫ moves the photo on screen to the Trash and the viewer moves on', async ({ page }) => {
+  const { calls } = await fixture(page);
+  await page.goto('/?viewer=1');
+  await expect(hud(page)).toContainText('1 / 3');
+  await page.keyboard.press('Meta+Backspace');
+  await expect(hud(page)).toContainText('1 / 2');
+  expect(calls.find((call) => call.command === 'asset.trash')?.params).toEqual({
+    ids: ['photo-1'],
+  });
+  await expect(
+    page.getByRole('status').filter({ hasText: '已把 1 张照片移到废纸篓' }),
+  ).toBeVisible();
 });

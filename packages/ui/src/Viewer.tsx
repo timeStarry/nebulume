@@ -45,6 +45,17 @@ import {
   writeAutoAdvance,
   type Mark,
 } from './culling';
+import CullPanel from './CullPanel';
+import CullStrip from './CullStrip';
+import CullReview from './CullReview';
+import {
+  exportPhotos,
+  exportSummary,
+  restorePhotos,
+  trashPhotos,
+  trashSummary,
+} from './photo-actions';
+import { chooseDirectory } from './api';
 import './viewer-focus.css';
 import './culling.css';
 
@@ -63,6 +74,8 @@ export default function Viewer(props: {
   onAssetChanged?: (asset: Asset) => void;
   /** The photo on screen, so the library can return to it when the viewer closes. */
   onCurrent?: (id: string) => void;
+  /** Photos left the library (moved to the Trash or put back). */
+  onTrashed?: () => void;
 }) {
   const focusHelpId = createUniqueId();
   const [ids, setIds] = createSignal<string[]>(props.initialAssetIds || []);
@@ -95,6 +108,43 @@ export default function Viewer(props: {
   const [zoomToggle, setZoomToggle] = createSignal(0);
   const [compareAssets, setCompareAssets] = createSignal<Record<string, Asset>>({});
   const [queueLoading, setQueueLoading] = createSignal(false);
+  // Culling: the queue's photos for the strip and counts, those already looked at, and the review.
+  const [items, setItems] = createSignal<Record<string, Asset>>({});
+  const [seen, setSeen] = createSignal(new Set<string>());
+  const [review, setReview] = createSignal(false);
+  const [undoable, setUndoable] = createSignal<{ text: string; run: () => Promise<void> }>();
+  let undoTimer: ReturnType<typeof setTimeout> | undefined;
+  const remember = (list: Asset[]) =>
+    setItems((map) => {
+      const next = { ...map };
+      for (const item of list) next[item.id] = item;
+      return next;
+    });
+  const queueItems = createMemo(() => ids().flatMap((each) => items()[each] ?? []));
+  const picks = createMemo(() => queueItems().filter((item) => item.flag === 'pick'));
+  const rejects = createMemo(() => queueItems().filter((item) => item.flag === 'reject'));
+  createEffect(
+    on([id, mode], ([current, now]) => {
+      if (!current || now !== 'cull' || seen().has(current)) return;
+      setSeen((set) => new Set(set).add(current));
+    }),
+  );
+  // Without a listed queue (culling started from plain viewing), read the photos near the current one.
+  const requested = new Set<string>();
+  createEffect(
+    on([ids, () => ids().indexOf(id() || ''), mode], ([list, at, now]) => {
+      if (now !== 'cull' || queueLoading()) return;
+      const missing = list
+        .slice(Math.max(0, at - 20), at + 21)
+        .filter((each) => !items()[each] && !requested.has(each));
+      for (const each of missing) {
+        requested.add(each);
+        void execute<Asset>('asset.get', { id: each })
+          .then((loaded) => remember([loaded]))
+          .catch(() => requested.delete(each));
+      }
+    }),
+  );
   const undo = new UndoStack();
   let pulseTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingAdvance: (() => void) | undefined;
@@ -284,6 +334,7 @@ export default function Viewer(props: {
           queue.library_id,
           queue.options,
           startId,
+          remember,
         ),
       );
     } catch (e) {
@@ -319,6 +370,7 @@ export default function Viewer(props: {
     onCleanup(() => {
       clearTimeout(timer);
       clearTimeout(pulseTimer);
+      clearTimeout(undoTimer);
       window.removeEventListener('keydown', keyboard);
       request++;
       focusRequest++;
@@ -355,6 +407,14 @@ export default function Viewer(props: {
     return markOf(await execute<Asset>('asset.get', { id: targetId }));
   }
   function applyLocal(updated: Mark) {
+    setItems((map) =>
+      map[updated.id]
+        ? {
+            ...map,
+            [updated.id]: { ...map[updated.id], rating: updated.rating, flag: updated.flag },
+          }
+        : map,
+    );
     setAsset((previous) =>
       previous && previous.id === updated.id
         ? { ...previous, rating: updated.rating, flag: updated.flag }
@@ -543,6 +603,22 @@ export default function Viewer(props: {
     recoverFocus();
     if (!container.contains(document.activeElement)) return;
     if (
+      (event.metaKey || event.ctrlKey) &&
+      (event.key === 'Backspace' || event.key === 'Delete') &&
+      !isTextEntry(event.target)
+    ) {
+      event.preventDefault();
+      if (asset() && !cropMode()) void trash([asset()!.id]);
+      return;
+    }
+    if (review()) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setReview(false);
+      }
+      return;
+    }
+    if (
       mode() === 'cull' &&
       !isTextEntry(event.target) &&
       !event.defaultPrevented &&
@@ -631,6 +707,7 @@ export default function Viewer(props: {
     updated = { ...updated, preview_revision: revision };
     if (revision) revisions.set(updated.id, revision);
     if (updated.id === id()) setAsset(updated);
+    if (items()[updated.id]) remember([updated]);
     props.onAssetChanged?.(updated);
     // Inside the library window the owner already received the change directly.
     if (desktop && !props.onClose)
@@ -644,6 +721,76 @@ export default function Viewer(props: {
       } catch {
         setError('编辑已保存，但未能通知图库更新。请在图库使用“扫描更新”。');
       }
+  }
+  function offerUndo(text: string, run: () => Promise<void>) {
+    clearTimeout(undoTimer);
+    setUndoable({ text, run });
+    undoTimer = setTimeout(() => setUndoable(undefined), 10_000);
+  }
+  async function librarySynced() {
+    if (props.onTrashed) props.onTrashed();
+    else if (desktop && asset())
+      await emit('library-changed', { library_id: asset()!.library_id }).catch(() => undefined);
+  }
+  /** Moves photos to the system Trash and out of this viewer; the notice can put them back. */
+  async function trash(targets: string[]) {
+    if (!targets.length || busy()) return;
+    const before = ids();
+    const position = Math.max(0, before.indexOf(id() || ''));
+    let result: Awaited<ReturnType<typeof trashPhotos>> | undefined;
+    await action(`正在移到废纸篓：${targets.length} 张…`, async () => {
+      result = await trashPhotos(targets);
+    });
+    if (!result) return;
+    const summary = trashSummary(result);
+    if (summary.error) setError(summary.error);
+    if (!result.trashed.length) return;
+    const gone = new Set(result.trashed);
+    const remaining = before.filter((each) => !gone.has(each));
+    setIds(remaining);
+    undo.forget(gone);
+    if (gone.has(id() || '')) {
+      const next = remaining[Math.min(position, remaining.length - 1)];
+      if (next) setId(next);
+      else {
+        setAsset(undefined);
+        setId(undefined);
+      }
+    }
+    const moved = result.trashed;
+    offerUndo(`已把 ${targets.length} 张照片移到废纸篓。`, async () => {
+      const restored = await restorePhotos(moved);
+      const back = new Set(restored.restored);
+      setIds((list) => before.filter((each) => back.has(each) || list.includes(each)));
+      if (!id() && restored.restored[0]) setId(before.find((each) => back.has(each)));
+      if (restored.failed.length)
+        setError(`${restored.failed.length} 张未能放回：${restored.failed[0].message}`);
+      else setNotice(`已放回 ${restored.restored.length} 个文件。`);
+      await librarySynced();
+    });
+    await librarySynced();
+  }
+  async function runUndo() {
+    const pending = undoable();
+    if (!pending) return;
+    clearTimeout(undoTimer);
+    setUndoable(undefined);
+    await action('正在放回原处…', pending.run);
+  }
+  async function exportPicks(targets: string[]) {
+    const directory = desktop ? await chooseDirectory('选择导出文件夹') : '';
+    if (desktop && !directory) return;
+    await action(`正在导出 ${targets.length} 张…`, async () => {
+      const result = await exportPhotos(
+        targets,
+        directory ?? '',
+        new Map(Object.entries(items())),
+        (done, total) => setBusy(`正在导出 ${done} / ${total}…`),
+      );
+      const summary = exportSummary(result, directory ?? '', desktop);
+      if (summary.error) setError(summary.error);
+      else setNotice(summary.notice!);
+    });
   }
   async function rate(rating: number) {
     const target = asset();
@@ -877,6 +1024,17 @@ export default function Viewer(props: {
             </button>
           </div>
         </Show>
+        <Show when={undoable()}>
+          {(pending) => (
+            <div class="viewer-alert success" role="status">
+              <Icon name="check" />
+              <span>{pending().text}</span>
+              <button class="button small" onClick={() => void runUndo()}>
+                撤销
+              </button>
+            </div>
+          )}
+        </Show>
         <Show when={compareIds().length}>
           <div
             class={`cull-compare count-${compareIds().length}`}
@@ -1012,6 +1170,19 @@ export default function Viewer(props: {
             </div>
           )}
         </Show>
+        <Show when={mode() === 'cull' && !compareIds().length && ids().length > 1}>
+          <CullStrip
+            ids={ids()}
+            items={items()}
+            current={id()}
+            seen={seen()}
+            onSelect={(next) => {
+              if (pulse()) finishPulse();
+              setId(next);
+              container.focus({ preventScroll: true });
+            }}
+          />
+        </Show>
         <Show when={busy()}>
           <div class="viewer-operation-status" role="status">
             <span class="spinner small" />
@@ -1019,6 +1190,39 @@ export default function Viewer(props: {
           </div>
         </Show>
       </div>
+      <Show when={mode() === 'cull' && !info() && asset()}>
+        {(current) => (
+          <CullPanel
+            asset={current()}
+            total={ids().length}
+            seen={ids().filter((each) => seen().has(each)).length}
+            picks={picks().length}
+            rejects={rejects().length}
+            busy={!!busy()}
+            onFlag={(flag) => void mark('flag', flag)}
+            onRate={(rating) => void mark('rate', rating)}
+            onFinish={() => setReview(true)}
+          />
+        )}
+      </Show>
+      <Show when={review()}>
+        <CullReview
+          picks={picks()}
+          rejects={rejects()}
+          canTrash={!rejects().some((item) => item.source_key)}
+          busy={!!busy()}
+          onBack={() => {
+            setReview(false);
+            container.focus({ preventScroll: true });
+          }}
+          onExport={(targets) => void exportPicks(targets)}
+          onTrash={(targets) => {
+            setReview(false);
+            container.focus({ preventScroll: true });
+            void trash(targets);
+          }}
+        />
+      </Show>
       <Show when={info() && asset()}>
         <AssetInspector
           asset={asset()!}
