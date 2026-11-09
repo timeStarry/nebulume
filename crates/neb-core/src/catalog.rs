@@ -28,6 +28,8 @@ pub struct Core {
     // Bounded memory cache, keyed by current source fingerprint and crop recipe.
     // The disk catalog never contains preview data or credentials.
     previews: PreviewMemory,
+    // Recent `asset.list` snapshots, valid while `catalog_revision` is unchanged.
+    list_memo: Mutex<Vec<ListMemo>>,
 }
 
 const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key";
@@ -50,7 +52,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 9,
+            version <= 10,
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         if version == 0 {
@@ -233,10 +235,27 @@ impl Core {
                  PRAGMA user_version=9;",
             )?;
         }
+        if version < 10 {
+            // A counter bumped by every change to assets or libraries, from any process,
+            // so list snapshots can be reused until something they depend on changes.
+            migration.execute_batch(
+  "CREATE TABLE IF NOT EXISTS catalog_revision(id INTEGER PRIMARY KEY CHECK(id=1),value INTEGER NOT NULL);
+          INSERT OR IGNORE INTO catalog_revision VALUES(1,0);
+          CREATE TRIGGER IF NOT EXISTS assets_revision_insert AFTER INSERT ON assets BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
+   CREATE TRIGGER IF NOT EXISTS assets_revision_update AFTER UPDATE ON assets BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
+          CREATE TRIGGER IF NOT EXISTS assets_revision_delete AFTER DELETE ON assets BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
+   CREATE TRIGGER IF NOT EXISTS libraries_revision_insert AFTER INSERT ON libraries BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
+          CREATE TRIGGER IF NOT EXISTS libraries_revision_update AFTER UPDATE ON libraries BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
+   CREATE TRIGGER IF NOT EXISTS libraries_revision_delete AFTER DELETE ON libraries BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
+          PRAGMA user_version=10;",
+     )?;
+        }
+
         migration.commit()?;
         Ok(Self {
             database: Mutex::new(database),
             previews: PreviewMemory::new(PREVIEW_MEMORY_ENTRIES, PREVIEW_MEMORY_BYTES),
+            list_memo: Mutex::new(Vec::new()),
         })
     }
 
@@ -1779,7 +1798,7 @@ impl Core {
             args.rating.is_none_or(|rating| rating <= 5),
             "E_INVALID: Rating must be from 0 to 5"
         );
-        let query = args.query.unwrap_or_default();
+        let query = args.query.clone().unwrap_or_default();
         ensure!(
             query.chars().count() <= 256,
             "E_INVALID: Search query is too long"
@@ -1825,6 +1844,99 @@ impl Core {
         let scope_sql = "(?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
         let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7) AND (?8 IS NULL OR json_extract(metadata_json,'$.Camera')=?8) AND (?9 IS NULL OR json_extract(metadata_json,'$.Lens')=?9) AND (?10 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)>=?10)) AND (?11 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)<=?11))");
         let db = self.db()?;
+        // One read snapshot, so the revision and the rows it describes cannot disagree.
+        let read = db.unchecked_transaction()?;
+        let revision: i64 =
+            read.query_row("SELECT value FROM catalog_revision WHERE id=1", [], |row| {
+                row.get(0)
+            })?;
+        let memo_key = serde_json::to_string(&(
+            &args.library_id,
+            args.rating,
+            &search,
+            format,
+            flag,
+            &args.import_batch_id,
+            &args.camera,
+            &args.lens,
+            &args.captured_from,
+            &args.captured_to,
+            sort,
+            direction,
+        ))?;
+        let cached = self.list_memo.lock().ok().and_then(|memo| {
+            memo.iter()
+                .find(|entry| entry.revision == revision && entry.key == memo_key)
+                .map(|entry| Arc::clone(&entry.snapshot))
+        });
+        let snapshot = match cached {
+            Some(snapshot) => snapshot,
+            None => {
+                let snapshot = Arc::new(Self::list_snapshot(
+                    &read, &args, &search, format, flag, scope_sql, &where_sql, &order,
+                )?);
+                if let Ok(mut memo) = self.list_memo.lock() {
+                    memo.retain(|entry| entry.revision == revision && entry.key != memo_key);
+                    memo.push(ListMemo {
+                        key: memo_key,
+                        revision,
+                        snapshot: Arc::clone(&snapshot),
+                    });
+                    if memo.len() > LIST_MEMO_ENTRIES {
+                        memo.remove(0);
+                    }
+                }
+                snapshot
+            }
+        };
+        let file_total = snapshot.file_total;
+        let total = snapshot.displayed.len();
+        let page: Vec<&String> = snapshot
+            .displayed
+            .iter()
+            .skip(args.offset.unwrap_or(0) as usize)
+            .take(limit as usize)
+            .collect();
+        let mut items = Vec::with_capacity(page.len());
+        if !page.is_empty() {
+            let placeholders = vec!["?"; page.len()].join(",");
+            let mut statement = read.prepare(&format!(
+                "SELECT {ASSET_COLUMNS} FROM assets WHERE id IN ({placeholders})"
+            ))?;
+            let assets = statement
+                .query_map(rusqlite::params_from_iter(page.iter().copied()), asset_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut assets: HashMap<_, _> = assets
+                .into_iter()
+                .map(|asset| (asset.id.clone(), asset))
+                .collect();
+            for id in page {
+                let asset = assets
+                    .remove(id)
+                    .context("E_CONFLICT: Asset list changed while reading")?;
+                let mut value = serde_json::to_value(asset)?;
+                if let Some(pair) = snapshot.pairs.get(id.as_str()) {
+                    value["variants"] = serde_json::to_value(&**pair)?;
+                }
+                items.push(value);
+            }
+        }
+        Ok(json!({"items": items, "total": total, "file_total":file_total}))
+    }
+
+    /// The ordered, pair-collapsed ID list of one query. Recomputed only when the
+    /// catalog revision or the query changes, so paging costs one page of rows.
+    #[allow(clippy::too_many_arguments)]
+    fn list_snapshot(
+        db: &Connection,
+        args: &AssetQuery,
+        search: &str,
+        format: &str,
+        flag: &str,
+        scope_sql: &str,
+        where_sql: &str,
+        order: &str,
+    ) -> Result<ListSnapshot> {
         // Determine ambiguity from the unfiltered library. Only thin identity
         // fields are read globally; large metadata blobs are loaded for the page.
         let mut groups: HashMap<(String, String, String), Vec<PairVariant>> = HashMap::new();
@@ -1880,7 +1992,7 @@ impl Core {
                     if search.is_empty() {
                         "\"__nebulume_no_query__\""
                     } else {
-                        &search
+                        search
                     },
                     format,
                     flag,
@@ -1895,7 +2007,7 @@ impl Core {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let file_total = ids.len();
         let matches: HashSet<_> = ids.iter().collect();
-        let displayed: Vec<_> = ids
+        let displayed: Vec<String> = ids
             .iter()
             .filter(|id| {
                 pairs.get(*id).is_none_or(|pair| {
@@ -1907,38 +2019,19 @@ impl Core {
                     *id == representative
                 })
             })
+            .cloned()
             .collect();
-        let total = displayed.len();
-        let page: Vec<_> = displayed
-            .into_iter()
-            .skip(args.offset.unwrap_or(0) as usize)
-            .take(limit as usize)
-            .collect();
-        let mut items = Vec::with_capacity(page.len());
-        if !page.is_empty() {
-            let placeholders = vec!["?"; page.len()].join(",");
-            let mut statement = db.prepare(&format!(
-                "SELECT {ASSET_COLUMNS} FROM assets WHERE id IN ({placeholders})"
-            ))?;
-            let assets = statement
-                .query_map(rusqlite::params_from_iter(page.iter().copied()), asset_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut assets: HashMap<_, _> = assets
-                .into_iter()
-                .map(|asset| (asset.id.clone(), asset))
-                .collect();
-            for id in page {
-                let asset = assets
-                    .remove(id)
-                    .context("E_CONFLICT: Asset list changed while reading")?;
-                let mut value = serde_json::to_value(asset)?;
-                if let Some(pair) = pairs.get(id) {
-                    value["variants"] = serde_json::to_value(pair)?;
-                }
-                items.push(value);
+        let mut representatives = HashMap::new();
+        for id in &displayed {
+            if let Some(pair) = pairs.get(id) {
+                representatives.insert(id.clone(), Arc::new(pair.clone()));
             }
         }
-        Ok(json!({"items": items, "total": total, "file_total":file_total}))
+        Ok(ListSnapshot {
+            displayed,
+            file_total,
+            pairs: representatives,
+        })
     }
 
     /// Source fingerprint and crop recipe of a preview, without decoding pixels.
@@ -2023,6 +2116,21 @@ struct MarkBatch {
 
 fn valid_flag(flag: &str) -> bool {
     matches!(flag, "none" | "pick" | "reject")
+}
+
+const LIST_MEMO_ENTRIES: usize = 2;
+
+struct ListSnapshot {
+    displayed: Vec<String>,
+    file_total: usize,
+    /// Pair variants by the representative that is displayed.
+    pairs: HashMap<String, Arc<[PairVariant; 2]>>,
+}
+
+struct ListMemo {
+    key: String,
+    revision: i64,
+    snapshot: Arc<ListSnapshot>,
 }
 
 #[derive(Clone, serde::Serialize)]

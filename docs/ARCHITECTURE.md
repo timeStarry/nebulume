@@ -37,7 +37,7 @@ flowchart TD
 
 SQLite 保存图库、来源绑定、资产和编辑配方。图库绑定本地目录或远端来源前缀；一个存储源可提供多个图库。资产用稳定 ID 关联评级和裁剪，远端 `source_key` 保留原始键，与缓存路径分开。
 
-schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v9：v9 新增 `assets.quick_hash`（文件首尾各 64 KiB 加文件大小的 SHA-256，小于 128 KiB 的文件取全文），只用于扫描时识别移动和改名，导入去重仍用完整 `sha256`；升级不读原件，旧资产在下次扫描遇到未变化的文件时补算。此前 v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
+schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v10：v10 新增单行表 `catalog_revision`，由 `assets` 与 `libraries` 上的触发器在任何增删改（包括其他进程，如 CLI）时递增；`asset.list` 把同一筛选与排序下按配对折叠后的有序 ID 列表按该计数缓存（最近 2 组），翻页只读取当页行，计数变化即重新计算。10 万张照片的合成库中，新查询首页约 200ms，之后的翻页约 1ms。此前 v9 新增 `assets.quick_hash`（文件首尾各 64 KiB 加文件大小的 SHA-256，小于 128 KiB 的文件取全文），只用于扫描时识别移动和改名，导入去重仍用完整 `sha256`；升级不读原件，旧资产在下次扫描遇到未变化的文件时补算。此前 v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
 
 文件创建、修改和 EXIF 拍摄时间分别保存。拍摄时间来自 DateTimeOriginal，按相机记录的日期、时间和子秒排序；保留已有时区但不推断缺失时区，不用文件或缓存时间补值。未知值在两个排序方向下均置后。
 
