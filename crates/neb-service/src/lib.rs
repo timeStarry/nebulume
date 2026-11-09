@@ -95,10 +95,36 @@ pub struct Service {
     preview_writes: Arc<AtomicUsize>,
     // Rendered tiers keyed by their `preview-v3:` cache key, local and remote.
     previews: PreviewMemory,
+    // Histograms by preview cache key; small values, recent photos only.
+    histograms: HistogramMemory,
     data_dir: PathBuf,
     catalog_operations: RwLock<()>,
     capture_index: capture_index::CaptureIndexController,
     fingerprints: fingerprint::FingerprintController,
+}
+
+/// Bounded memory of computed histograms, oldest dropped first.
+#[derive(Default)]
+struct HistogramMemory(Mutex<VecDeque<(String, Value)>>);
+
+impl HistogramMemory {
+    const ENTRIES: usize = 512;
+    fn get(&self, key: &str) -> Option<Value> {
+        let memory = self.0.lock().ok()?;
+        memory
+            .iter()
+            .find(|(stored, _)| stored == key)
+            .map(|(_, value)| value.clone())
+    }
+    fn put(&self, key: String, value: Value) {
+        if let Ok(mut memory) = self.0.lock() {
+            memory.retain(|(stored, _)| *stored != key);
+            memory.push_back((key, value));
+            while memory.len() > Self::ENTRIES {
+                memory.pop_front();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +221,7 @@ impl Service {
             downloads: (Mutex::new(0), Condvar::new()),
             preview_writes: Arc::new(AtomicUsize::new(0)),
             previews: PreviewMemory::new(PREVIEW_MEMORY_ENTRIES, PREVIEW_MEMORY_BYTES),
+            histograms: HistogramMemory::default(),
             data_dir: data_dir.to_path_buf(),
             catalog_operations: RwLock::new(()),
             capture_index: capture_index::CaptureIndexController::default(),
@@ -891,7 +918,7 @@ impl Service {
         }
         if matches!(
             command,
-            "asset.list" | "asset.facets" | "asset.stats" | "file.open"
+            "asset.list" | "asset.facets" | "asset.stats" | "file.open" | "file.siblings"
         ) {
             return self.core.dispatch(command, params);
         }

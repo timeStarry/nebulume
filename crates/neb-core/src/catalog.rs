@@ -329,6 +329,14 @@ impl Core {
             }
             "asset.list" => self.list_assets(parse(params)?),
             "asset.stats" => self.asset_stats(parse(params)?),
+            "file.siblings" => {
+                #[derive(Deserialize)]
+                struct Siblings {
+                    path: String,
+                }
+                let args: Siblings = parse(params)?;
+                self.sibling_images(Path::new(&args.path))
+            }
             "library.folders" => {
                 #[derive(Deserialize)]
                 struct Folders {
@@ -811,6 +819,42 @@ impl Core {
         delete_orphan_locations(&db)?;
         drop(db);
         self.library(library_id)
+    }
+
+    /// The image files beside `path`, by name, for a viewer opened from the file
+    /// manager. Reads directory entries only: no image content, nothing indexed.
+    pub fn sibling_images(&self, path: &Path) -> Result<Value> {
+        let path = dunce::canonicalize(path).context("E_NOT_FOUND: Image file is unavailable")?;
+        let folder = path
+            .parent()
+            .context("E_INVALID: Image has no parent directory")?;
+        let mut files = Vec::new();
+        for entry in fs::read_dir(folder)?.flatten().take(50_000) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if !kind.is_file() || name.starts_with('.') {
+                continue;
+            }
+            let extension = Path::new(&name)
+                .extension()
+                .and_then(|v| v.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if imaging::kind(&extension).is_none() {
+                continue;
+            }
+            let size = entry.metadata().map(|info| info.len()).unwrap_or(0);
+            files.push((name.to_lowercase(), name, entry.path(), size));
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        let index = files.iter().position(|file| file.2 == path);
+        Ok(json!({
+        "folder": folder.to_string_lossy(),
+        "index": index,
+        "files": files.into_iter().map(|(_, name, path, size)| json!({"name": name, "path": path.to_string_lossy(), "size": size})).collect::<Vec<_>>(),
+           }))
     }
 
     /// Opening a file never scans its siblings or adds a visible library implicitly.

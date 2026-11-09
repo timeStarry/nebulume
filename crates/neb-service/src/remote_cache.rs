@@ -637,6 +637,19 @@ impl Service {
                 }
                 Ok(json!({"asset_id":id,"pinned":pinned,"stats":stats}))
             }
+            "asset.histogram" if asset.source_key.is_none() => {
+                // From the viewer tier the window already shows (cached on disk after the
+                // first view), then from memory: a RAW is never demosaiced twice for this.
+                let (_, uncropped) = preview_request(&params)?;
+                let key = self.preview_key(&asset, PreviewTier::P2560, uncropped)?;
+                if let Some(hit) = self.histograms.get(&key) {
+                    return Ok(hit);
+                }
+                let image = self.render_preview(&asset, PreviewTier::P2560, uncropped)?;
+                let histogram = neb_core::histogram_from_jpeg(&image.jpeg, &image.source)?;
+                self.histograms.put(key, histogram.clone());
+                Ok(histogram)
+            }
             "asset.histogram" if asset.source_key.is_some() => {
                 let (_, uncropped) = preview_request(&params)?;
                 let image = self.render_preview(&asset, PreviewTier::P2560, uncropped)?;

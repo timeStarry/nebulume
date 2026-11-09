@@ -181,3 +181,29 @@ fn folders_counts_filters_and_stats_match_the_grid() {
     assert_eq!(scoped["days"].as_array().unwrap().len(), 0);
     assert_eq!(scoped["undated"], 1);
 }
+
+#[test]
+fn siblings_of_an_opened_file_are_listed_by_name_without_indexing_them() {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    for name in ["b.JPG", "a.nef", "c.png", "notes.txt", ".hidden.jpg"] {
+        fs::write(folder.path().join(name), b"x").unwrap();
+    }
+    fs::create_dir(folder.path().join("sub.jpg")).unwrap();
+    let svc = Service::open(data.path()).unwrap();
+    let listed = svc
+        .execute(
+            "file.siblings",
+            json!({"path": folder.path().join("b.JPG")}),
+        )
+        .unwrap();
+    let names: Vec<&str> = listed["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["a.nef", "b.JPG", "c.png"]);
+    assert_eq!(listed["index"], 1);
+    assert_eq!(svc.execute("library.list", json!({})).unwrap(), json!([]));
+}

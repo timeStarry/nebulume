@@ -574,6 +574,14 @@ pub fn histogram(path: &Path, crop: Option<Crop>) -> Result<Value> {
     histogram_image(image, source)
 }
 
+/// Histogram of an already rendered preview JPEG, so a cached tier answers
+/// without decoding the original again.
+pub fn histogram_from_jpeg(jpeg: &[u8], source: &str) -> Result<Value> {
+    let image = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)
+        .context("E_DECODE: Cached preview is not a readable JPEG")?;
+    histogram_image(image, source)
+}
+
 fn histogram_image(image: DynamicImage, source: &str) -> Result<Value> {
     let image = downsample(image, 2048).to_rgb8();
     let mut red = vec![0_u64; 256];

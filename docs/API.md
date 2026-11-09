@@ -27,6 +27,14 @@
 - `asset.crop {id,x,y,width,height}` → `Asset` (normalized 0..1, oriented coordinates)
 - `asset.reset_crop {id}` → `Asset`
 - `asset.export {id,destination}` → `{path}` (new JPEG file, never overwrite)
+- `asset.list` 另接受 `folder`（库内相对路径，如 `Kyoto/01 岚山`，含子文件夹；只匹配完整的路径段）、`rating_max`、`focal_min`/`focal_max`（EXIF Focal Length，mm）、`iso_min`/`iso_max`，均为闭区间。“未处理”即 `{flag:'none',rating_max:0}`。
+- `asset.stats`（与 `asset.list` 相同的筛选参数）→ `{photos,files,bytes,picks,rejects,rated,unprocessed,undated,days:[{day,count}],cameras:[{name,count}],lenses:[{name,count}],focal:[{label,min,max,count}],iso:[{label,min,max,count}]}`。照片数按网格的配对折叠计算，`files`/`bytes` 计所有文件。每个 `focal`/`iso` 分组的 `min`/`max` 可直接作为筛选参数，列出的照片与计数一致。
+- `library.folders {library_id}` → `{library_id,total,folders:[{path,name,count,children}]}`：库内各级文件夹，计数与网格一致（配对算一张）；`path` 即 `asset.list` 的 `folder`。
+- `asset.trash {ids}` → `{trashed:[id],failed:[{id,message}]}`：把本地原片移到系统废纸篓，RAW 与同目录同名 JPEG 一起移动；网络存储照片返回 `E_REMOTE`。记录标记 `trashed_at` 并在列表、计数与移动识别中隐藏，评级、旗标与裁剪保留 30 天。macOS 记录废纸篓中的实际位置。
+- `asset.restore {ids}` → `{restored,failed}`：把废纸篓中的照片放回原处并恢复记录；原处已有文件时不覆盖并报错。在访达中“放回原处”后重新扫描也会恢复记录。
+- `file.siblings {path}` → `{folder,index,files:[{name,path,size}]}`：所给文件所在目录中的影像文件，按名称排序，只读目录项，不读图像内容、不建立索引。独立查看器据此在同一文件夹内前后浏览，切换到某张时再 `file.open`。
+- 本地 `asset.histogram` 由 `p2560` 预览计算（首次查看后已在磁盘缓存），结果在内存中保留最近 512 张，同一照片不再重复解码原片。
+- 合并显示 RAW + JPEG 的图库中，`asset.rate`、`asset.flag`、`asset.mark_batch` 同时作用于配对的两个文件。
 
 `Library={id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg,source_kind,source_name,source_endpoint,connected}`。`source_prefix` 相对于存储源的 root；远端库的 `root` / `Asset.path` 是历史稳定逻辑路径，不保证指向现用物理缓存。实际I/O按缓存对象的root/relative_path解析，迁移不改库绑定或资产身份；原始位置用来源字段表示。独立打开文件的隐藏库不出现在 `library.list` 和默认 `asset.list` 中。
 
