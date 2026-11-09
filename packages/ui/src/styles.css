@@ -3215,3 +3215,11 @@ kbd {
 .day-head.pinned {
   z-index: 4;
 }
+
+.zoom-ghost {
+  position: fixed;
+  z-index: 100;
+  object-fit: cover;
+  transform-origin: 0 0;
+  pointer-events: none;
+}

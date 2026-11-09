@@ -353,14 +353,22 @@ test('library settings persist pairing, variants replace their representative, a
     .toEqual({ id: local.id, name: '配对照片', pair_raw_jpeg: true });
   await expect(page.locator('.asset-variants').getByRole('button')).toHaveText(['RAW', 'JPEG']);
   await expect(page.locator('.collection-status')).toContainText('2 / 2 项 · 3 个匹配文件');
+  // Each variant opens in place, in a sequence where it replaces its representative.
+  const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
   await page.getByRole('button', { name: '打开 Mountain.nef RAW' }).click();
   await expect
-    .poll(() => calls.filter((call) => call.command === '$native/open_viewer').at(-1)?.params)
-    .toEqual({ assetId: raw.id, assetIds: [raw.id, other.id] });
+    .poll(() => calls.filter((call) => call.command === 'asset.get').at(-1)?.params)
+    .toEqual({ id: raw.id });
+  await expect(viewer.getByLabel('第 1 张，共 2 张')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
   await page.getByRole('button', { name: '打开 Mountain.jpg JPEG' }).click();
   await expect
-    .poll(() => calls.filter((call) => call.command === '$native/open_viewer').at(-1)?.params)
-    .toEqual({ assetId: jpg.id, assetIds: [jpg.id, other.id] });
+    .poll(() => calls.filter((call) => call.command === 'asset.get').at(-1)?.params)
+    .toEqual({ id: jpg.id });
+  await expect(viewer.getByLabel('第 1 张，共 2 张')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
   await page.getByRole('button', { name: '配对照片 更多操作' }).click();
   await page.getByRole('menuitem', { name: '配对照片 图片库设置' }).click();
   await expect(page.getByLabel('合并显示 RAW + JPEG')).toBeChecked();
@@ -522,7 +530,7 @@ test('embedded RAW preview is labeled and raw EXIF is disclosed without duplicat
   );
 });
 
-test('library management is the default, metadata is on demand and native viewing uses scoped context', async ({
+test('library management is the default, metadata is on demand, photos open in place and a window on request', async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -537,11 +545,21 @@ test('library management is the default, metadata is on demand and native viewin
   await expect(thumb).toBeVisible();
   expect(calls.filter((call) => call.command === 'asset.get')).toHaveLength(0);
   await thumb.press('Enter');
+  // The library opens photos inside its own window; Escape returns to the tile.
+  const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
+  await expect(viewer).toBeVisible();
+  await expect(viewer.getByText('Mountain.png').first()).toBeVisible();
+  expect(calls.filter((call) => call.command === '$native/open_viewer')).toHaveLength(0);
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
+  await expect(thumb).toBeFocused();
+  // A separate window stays one menu item away, with the same scoped photo list.
+  await thumb.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '在新窗口中打开' }).click();
   await expect
     .poll(() => calls.find((call) => call.command === '$native/open_viewer')?.params)
     .toEqual({ assetId: 'photo-a', assetIds: ['photo-a'] });
   await expect(page.locator('.manager-navigation')).toBeVisible();
-  await expect(page.locator('.immersive-viewer')).not.toBeVisible();
   await page.locator('.breadcrumb-button').click();
   await expect(page.getByRole('region', { name: '图片库管理' })).toBeVisible();
   await servePreviewImages(page);

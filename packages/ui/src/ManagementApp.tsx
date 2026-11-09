@@ -45,6 +45,7 @@ import CaptureIndexControl from './CaptureIndexControl';
 import OverflowMenu from './OverflowMenu';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import JustifiedGrid, { type JustifiedGridApi } from './JustifiedGrid';
+import { fitRect, fly } from './zoom-transition';
 import { AboutPanel, UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
@@ -172,6 +173,8 @@ export default function ManagementApp() {
     mode?: ViewerMode;
     queue?: CullQueue;
   }>();
+  // The photo the in-window viewer shows, so closing zooms back to its tile.
+  let viewerCurrent: string | undefined;
   let fileInput!: HTMLInputElement;
   let searchInput: HTMLInputElement | undefined;
   let navigationButton: HTMLButtonElement | undefined;
@@ -746,12 +749,46 @@ export default function ManagementApp() {
       setNotice('已重新读取原图，评级与裁剪配方已保留。');
     });
   }
-  async function openAsset(asset: Pick<Asset, 'id'>, ids = assets().map((item) => item.id)) {
-    if (desktop)
-      await action('正在打开查看窗口…', async () => {
-        await openViewerWindow(asset.id, ids);
+  function tileImage(id: string) {
+    return collectionScroll?.querySelector<HTMLImageElement>(
+      `[data-asset-id="${CSS.escape(id)}"] img:not([style*="hidden"])`,
+    );
+  }
+  /** Opens a photo inside this window, growing it out of its tile. */
+  function openAsset(asset: Pick<Asset, 'id'>, ids = assets().map((item) => item.id)) {
+    const image = tileImage(asset.id);
+    viewerCurrent = asset.id;
+    setOverlay({ id: asset.id, ids });
+    if (image)
+      fly(image, image.getBoundingClientRect(), () => {
+        const stage = document
+          .querySelector('.viewer-overlay .photo-stage')
+          ?.getBoundingClientRect();
+        return stage && fitRect(stage, image.naturalWidth / Math.max(1, image.naturalHeight));
       });
-    else setOverlay({ id: asset.id, ids });
+  }
+  /** A separate viewer window, for a second screen or side-by-side work. */
+  async function openAssetWindow(asset: Pick<Asset, 'id'>, ids = assets().map((item) => item.id)) {
+    if (!desktop) return openAsset(asset, ids);
+    await action('正在打开查看窗口…', async () => {
+      await openViewerWindow(asset.id, ids);
+    });
+  }
+  function closeOverlay() {
+    const id = viewerCurrent;
+    const photo = document.querySelector<HTMLImageElement>('.viewer-overlay .main-photo');
+    const from = photo?.getBoundingClientRect();
+    setOverlay(undefined);
+    document.title = 'Nebulume — 影像管理';
+    if (!id) return;
+    // Come back to the photo the viewer ended on. The viewer hands focus back to
+    // the tile it opened from as it unmounts, so move selection and focus after it.
+    queueMicrotask(() => {
+      if (!assets().some((item) => item.id === id)) return;
+      setSelectedId(id);
+      focusThumbnail(id);
+    });
+    if (photo && from) fly(photo, from, () => tileImage(id)?.getBoundingClientRect());
   }
   /** Import → selection: filter the library to the new batch, then open culling. */
   async function cullBatch(library: Library, batch: ImportBatch) {
@@ -923,6 +960,18 @@ export default function ManagementApp() {
           onSelect: () =>
             void openAsset(asset, count > 1 ? selectedIds() : assets().map((item) => item.id)),
         },
+        ...(desktop
+          ? [
+              {
+                label: '在新窗口中打开',
+                onSelect: () =>
+                  void openAssetWindow(
+                    asset,
+                    count > 1 ? selectedIds() : assets().map((item) => item.id),
+                  ),
+              },
+            ]
+          : []),
         {
           label: '从此照片开始选图',
           disabled: !!busy(),
@@ -2190,10 +2239,8 @@ export default function ManagementApp() {
             initialAssetIds={context().ids}
             initialMode={context().mode}
             initialQueue={context().queue}
-            onClose={() => {
-              setOverlay(undefined);
-              document.title = 'Nebulume — 影像管理';
-            }}
+            onClose={closeOverlay}
+            onCurrent={(id) => (viewerCurrent = id)}
             onAssetChanged={(asset) => void acceptAsset(asset)}
           />
         )}

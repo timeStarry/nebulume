@@ -1178,3 +1178,38 @@ test('a change in a watched library folder refreshes the open grid in place', as
   // Existing cells are kept, not remounted.
   expect(await nodesUnchanged(page)).toBe(true);
 });
+
+test('opening a photo zooms it out of its tile and closing returns to the photo shown', async ({
+  page,
+}) => {
+  await fixture(page, 8, 0, false, true);
+  const cells = page.locator('.photo-grid .thumbnail');
+  await expect(cells.first().locator('img')).toBeVisible();
+  const tile = (await cells.first().boundingBox())!;
+  await cells.first().dblclick();
+  const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
+  await expect(viewer).toBeVisible();
+  // A copy of the tile's image starts exactly where the tile is and grows into the stage.
+  const ghost = page.locator('.zoom-ghost');
+  await expect(ghost).toHaveCount(1);
+  const start = await ghost.evaluate((element) => {
+    const style = (element as HTMLElement).style;
+    return {
+      left: parseFloat(style.left),
+      top: parseFloat(style.top),
+      width: parseFloat(style.width),
+    };
+  });
+  expect(Math.abs(start.left - tile.x)).toBeLessThan(2);
+  expect(Math.abs(start.width - tile.width)).toBeLessThan(2);
+  await expect(ghost).toHaveCount(0);
+  // Move to the next photo, then close: the grid comes back focused on it.
+  await page.keyboard.press('ArrowRight');
+  await expect(viewer.getByLabel('第 2 张，共 8 张')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
+  await expect(page.locator('.thumbnail.focused')).toHaveAttribute(
+    'aria-label',
+    (await cells.nth(1).getAttribute('aria-label'))!,
+  );
+});

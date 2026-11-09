@@ -61,6 +61,8 @@ export default function Viewer(props: {
   initialQueue?: CullQueue;
   onClose?: () => void;
   onAssetChanged?: (asset: Asset) => void;
+  /** The photo on screen, so the library can return to it when the viewer closes. */
+  onCurrent?: (id: string) => void;
 }) {
   const focusHelpId = createUniqueId();
   const [ids, setIds] = createSignal<string[]>(props.initialAssetIds || []);
@@ -255,7 +257,8 @@ export default function Viewer(props: {
         setAsset({ ...next, preview_revision: revisions.get(next.id) });
         setCrop({ ...(next.crop || fullCrop) });
         document.title = `${next.filename} — Nebulume`;
-        if (desktop) await getCurrentWindow().setTitle(document.title);
+        // Only a viewer window names itself; inside the library window the title stays.
+        if (desktop && !props.onClose) await getCurrentWindow().setTitle(document.title);
       }
     } catch (e) {
       if (token === request) setError(errorMessage(e));
@@ -265,6 +268,7 @@ export default function Viewer(props: {
   }
   createEffect(
     on(id, (next) => {
+      if (next) props.onCurrent?.(next);
       if (next) void loadAsset(next);
     }),
   );
@@ -521,7 +525,8 @@ export default function Viewer(props: {
       return;
     }
     try {
-      if (desktop && (await getCurrentWindow().isFullscreen())) {
+      // Inside the library window, Escape leaves the viewer; the window keeps its own fullscreen.
+      if (desktop && !props.onClose && (await getCurrentWindow().isFullscreen())) {
         await getCurrentWindow().setFullscreen(false);
         return;
       }
@@ -627,7 +632,8 @@ export default function Viewer(props: {
     if (revision) revisions.set(updated.id, revision);
     if (updated.id === id()) setAsset(updated);
     props.onAssetChanged?.(updated);
-    if (desktop)
+    // Inside the library window the owner already received the change directly.
+    if (desktop && !props.onClose)
       try {
         await emit('asset-updated', {
           id: updated.id,
