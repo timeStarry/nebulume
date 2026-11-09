@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebulume 方向 C 画廊白墙</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.31.0/dist/tabler-icons.min.css">
+<style>
+:root {
+  --c-wall: #e4e7ea;
+  --c-mat: #ffffff;
+  --c-paper: #fcfcfb;
+  --c-line: #cfd4d9;
+  --c-ink: #1d2329;
+  --c-ink-2: #545d66;
+  --c-ink-3: #808891;
+  --c-series: #2f5fa8;
+  --c-series-soft: #c9d6ea;
+  --c-reject: #b4382a;
+  --c-pick: #23744a;
+  --c-ease: cubic-bezier(.2, 0, 0, 1);
+  --c-sans: var(--font-sans, "Anthropic Sans", -apple-system, "PingFang SC", "Helvetica Neue", sans-serif);
+  --c-serif: var(--font-voice, "Songti SC", "Noto Serif SC", "Source Han Serif SC", Georgia, serif);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: transparent; }
+body { font-family: var(--c-sans); color: var(--c-ink); -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--c-series); outline-offset: 2px; }
+.window { position: relative; display: grid; grid-template-rows: 60px 1fr; height: 100vh; background: var(--c-wall); overflow: hidden; }
+.top { display: flex; align-items: center; gap: 18px; padding: 0 28px; }
+.crumb { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--c-ink-2); }
+.crumb button:hover { color: var(--c-ink); }
+.crumb b { color: var(--c-ink); font-weight: 500; }
+.tabs { display: flex; gap: 22px; margin-left: 18px; }
+.tabs button { height: 60px; font-size: 14px; color: var(--c-ink-2); border-bottom: 2px solid transparent; }
+.tabs button[aria-selected="true"] { color: var(--c-ink); border-bottom-color: var(--c-ink); }
+.top .grow { flex: 1; }
+.search { display: flex; align-items: center; gap: 8px; height: 34px; width: 260px; padding: 0 12px; border-radius: 17px; background: var(--c-mat); color: var(--c-ink-3); font-size: 13px; }
+.round { width: 34px; height: 34px; border-radius: 17px; display: grid; place-items: center; font-size: 18px; color: var(--c-ink-2); }
+.round:hover { background: var(--c-mat); color: var(--c-ink); }
+.page { overflow: auto; min-height: 0; }
+.home { padding: 18px 56px 64px; }
+.home h1 { margin: 10px 0 4px; font-family: var(--c-serif); font-size: 22px; font-weight: 500; }
+.home .lede { margin: 0 0 30px; font-size: 14px; color: var(--c-ink-2); }
+.albums { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 40px 36px; }
+.album { text-align: left; }
+.album .mat { padding: 14px; background: var(--c-mat); border-radius: 2px; transition: transform 180ms var(--c-ease); }
+.album:hover .mat { transform: translateY(-3px); }
+.album .mosaic { display: grid; grid-template-columns: 2fr 1fr; grid-template-rows: 1fr 1fr; gap: 3px; aspect-ratio: 4 / 3; }
+.album .mosaic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.album .mosaic img:first-child { grid-row: 1 / 3; }
+.album h2 { margin: 14px 0 2px; font-family: var(--c-serif); font-size: 18px; font-weight: 500; }
+.album p { margin: 0; font-size: 13px; color: var(--c-ink-3); display: flex; gap: 10px; align-items: center; }
+.album .src { display: inline-flex; align-items: center; gap: 4px; }
+.add { display: grid; place-items: center; align-content: center; gap: 8px; min-height: 240px; border: 1px dashed var(--c-ink-3); border-radius: 2px; color: var(--c-ink-2); font-size: 14px; text-align: center; padding: 20px; }
+.add i { font-size: 26px; }
+.add span { font-size: 12px; color: var(--c-ink-3); max-width: 22ch; line-height: 1.6; }
+.album-view { display: grid; grid-template-columns: 220px 1fr; min-height: 100%; }
+.folders { position: sticky; top: 0; align-self: start; padding: 26px 12px 26px 28px; font-size: 13px; }
+.folders h3 { margin: 0 0 10px 8px; font-size: 12px; font-weight: 500; color: var(--c-ink-3); }
+.folders button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border-radius: 6px; text-align: left; color: var(--c-ink-2); }
+.folders button:hover { background: var(--c-paper); color: var(--c-ink); }
+.folders button[aria-current="true"] { background: var(--c-mat); color: var(--c-ink); }
+.folders .n { margin-left: auto; color: var(--c-ink-3); }
+.folders .sub { padding-left: 22px; }
+.wall { padding: 8px 48px 72px 20px; }
+.chapter { margin: 26px 0 8px; display: flex; align-items: baseline; gap: 14px; }
+.chapter h2 { margin: 0; font-family: var(--c-serif); font-size: 22px; font-weight: 500; }
+.chapter span { font-size: 13px; color: var(--c-ink-3); }
+.chapter .tools { margin-left: auto; display: flex; gap: 4px; opacity: 0; transition: opacity 120ms var(--c-ease); }
+.chapter:hover .tools { opacity: 1; }
+.chapter .tools button { font-size: 12px; color: var(--c-ink-2); padding: 4px 8px; border-radius: 6px; }
+.chapter .tools button:hover { background: var(--c-mat); }
+.prints { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 22px; }
+.print { position: relative; text-align: left; }
+.print .mat { padding: 10px 10px 30px; background: var(--c-mat); border-radius: 1px; transition: transform 160ms var(--c-ease); }
+.print:hover .mat { transform: translateY(-2px); }
+.print .frame { aspect-ratio: 1; display: grid; place-items: center; overflow: hidden; }
+.print img { max-width: 100%; max-height: 100%; display: block; }
+.print .caption { position: absolute; left: 10px; right: 10px; bottom: 8px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--c-ink-3); }
+.print .caption .stars { margin-left: auto; color: #b07d10; letter-spacing: 1px; }
+.print .state { display: inline-flex; align-items: center; gap: 3px; font-weight: 500; }
+.print.pick .state { color: var(--c-pick); }
+.print.reject .state { color: var(--c-reject); }
+.print.reject .mat { background: var(--c-paper); }
+.print.reject .frame::after { content: ""; position: absolute; left: 10px; right: 10px; top: 10px; height: 3px; background: var(--c-reject); }
+.stats { padding: 26px 56px 64px; max-width: 1180px; }
+.stats h1 { margin: 0 0 4px; font-family: var(--c-serif); font-size: 22px; font-weight: 500; }
+.stats .lede { margin: 0 0 22px; font-size: 14px; color: var(--c-ink-2); }
+.range { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--c-paper); width: max-content; margin-bottom: 22px; }
+.range button { padding: 5px 12px; border-radius: 6px; font-size: 13px; color: var(--c-ink-2); }
+.range button[aria-pressed="true"] { background: var(--c-ink); color: var(--c-mat); }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 18px; }
+.tile { padding: 16px 18px; background: var(--c-paper); border-radius: 12px; }
+.tile b { display: block; font-size: 22px; font-weight: 500; }
+.tile span { font-size: 13px; color: var(--c-ink-2); }
+.tile small { display: block; margin-top: 6px; font-size: 12px; color: var(--c-ink-3); }
+.charts { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+.card { position: relative; padding: 16px 18px 14px; background: var(--c-paper); border-radius: 12px; }
+.card h2 { margin: 0 0 2px; font-size: 16px; font-weight: 500; }
+.card p { margin: 0 0 12px; font-size: 12px; color: var(--c-ink-3); }
+.card.wide { grid-column: 1 / -1; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart .grid { stroke: var(--c-line); stroke-width: 1; }
+.chart .axis { fill: var(--c-ink-3); font-size: 12px; }
+.chart .bar { fill: var(--c-series); }
+.chart .bar.muted { fill: var(--c-series-soft); }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .hit:hover + .bar, .chart .bar.active { fill: #244a84; }
+.chart .label { fill: var(--c-ink); font-size: 12px; }
+.chart .label.dim { fill: var(--c-ink-2); }
+.tip { position: absolute; z-index: 5; pointer-events: none; padding: 6px 9px; border-radius: 8px; background: var(--c-ink); color: var(--c-mat); font-size: 12px; white-space: nowrap; opacity: 0; transform: translate(-50%, -100%); transition: opacity 80ms linear; }
+.tip.on { opacity: 1; }
+.tip b { font-weight: 500; }
+.table-toggle { position: absolute; right: 14px; top: 14px; font-size: 12px; color: var(--c-ink-3); padding: 3px 8px; border-radius: 6px; }
+.table-toggle:hover { color: var(--c-ink); background: var(--c-wall); }
+.data-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.data-table th, .data-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--c-line); }
+.data-table th { font-weight: 500; color: var(--c-ink-2); }
+.lightbox { position: absolute; inset: 0; z-index: 20; display: grid; grid-template-rows: 1fr auto; background: rgba(228, 231, 234, .97); visibility: hidden; opacity: 0; transition: opacity 200ms var(--c-ease), visibility 0s 200ms; }
+.lightbox.open { visibility: visible; opacity: 1; transition: opacity 200ms var(--c-ease); }
+.lightbox .stage { display: grid; place-items: center; padding: 40px 80px 10px; min-height: 0; }
+.lightbox .stage .mat { padding: 16px; background: var(--c-mat); max-height: 100%; transform: scale(.97); transition: transform 240ms var(--c-ease); }
+.lightbox.open .stage .mat { transform: none; }
+.lightbox img { display: block; max-width: calc(100vw - 200px); max-height: calc(100vh - 190px); }
+.lightbox .under { display: flex; align-items: center; gap: 18px; padding: 14px 80px 24px; font-size: 13px; color: var(--c-ink-2); }
+.lightbox .under h2 { margin: 0; font-family: var(--c-serif); font-size: 18px; font-weight: 500; color: var(--c-ink); }
+.lightbox .under .grow { flex: 1; }
+.lightbox .close { position: absolute; right: 20px; top: 16px; }
+.lightbox .side { position: absolute; top: 50%; width: 44px; height: 44px; border-radius: 22px; display: grid; place-items: center; font-size: 22px; color: var(--c-ink-2); }
+.lightbox .side:hover { background: var(--c-mat); }
+.lightbox .prev { left: 22px; }
+.lightbox .next { right: 22px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0s !important; } }
+</style>
+</head>
+<body>
+<div class="window">
+  <header class="top">
+    <div class="crumb" id="crumb"></div>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <span class="grow"></span>
+    <div class="search"><i class="ti ti-search" aria-hidden="true"></i>搜索照片、地点、相机</div>
+    <button class="round" aria-label="导入"><i class="ti ti-download" aria-hidden="true"></i></button>
+    <button class="round" aria-label="设置"><i class="ti ti-settings" aria-hidden="true"></i></button>
+  </header>
+  <main class="page" id="page"></main>
+  <section class="lightbox" id="lightbox" aria-label="查看照片">
+    <div class="stage"><div class="mat"><img id="lbImg" alt=""></div></div>
+    <div class="under"><div><h2 id="lbTitle"></h2><span id="lbSub"></span></div><span class="grow"></span><span id="lbExpo"></span></div>
+    <button class="round close" id="lbClose" aria-label="关闭（Esc）"><i class="ti ti-x" aria-hidden="true"></i></button>
+    <button class="side prev" id="lbPrev" aria-label="上一张"><i class="ti ti-chevron-left" aria-hidden="true"></i></button>
+    <button class="side next" id="lbNext" aria-label="下一张"><i class="ti ti-chevron-right" aria-hidden="true"></i></button>
+  </section>
+</div>
+<script src="photos.js"></script>
+<script>
+const photos = window.PHOTOS;
+const libraries = window.LIBRARIES;
+const $ = (id) => document.getElementById(id);
+const state = { view: 'home', tab: 'photos', folder: 'all', open: -1, range: 'year' };
+const monthName = (date) => `${Number(date.slice(5, 7))}月`;
+const folderTree = [
+  { id: 'all', name: '全部照片', n: 1284 },
+  { id: 'kyoto', name: 'Kyoto', n: 702, children: [{ id: 'arashiyama', name: '01 岚山', n: 388 }, { id: 'fushimi', name: '02 伏见稻荷', n: 314 }] },
+  { id: 'nara', name: 'Nara', n: 296 },
+  { id: 'misc', name: '未整理', n: 286 },
+];
+function header() {
+  const crumb = state.view === 'home' ? '<b>图片库</b>' : `<button id="toHome">图片库</button><i class="ti ti-chevron-right" aria-hidden="true"></i><b>2026 关西</b>`;
+  $('crumb').innerHTML = `<i class="ti ti-aperture" aria-hidden="true" style="font-size:20px;color:var(--c-ink)"></i>${crumb}`;
+  $('tabs').innerHTML = state.view === 'home' ? '' : ['photos', 'stats'].map((t) => `<button role="tab" data-tab="${t}" aria-selected="${state.tab === t}">${t === 'photos' ? '照片' : '统计'}</button>`).join('');
+  $('toHome')?.addEventListener('click', () => { state.view = 'home'; render(); });
+}
+function renderHome() {
+  const covers = (offset) => [0, 1, 2].map((k) => `<img alt="" src="${photoUrl(photos[(offset + k * 7) % photos.length], 520)}">`).join('');
+  $('page').innerHTML = `<div class="home"><h1>图片库</h1><p class="lede">4 个图片库，共 14676 张照片</p><div class="albums">${libraries.map((l, i) => `<button class="album" data-lib="${l.id}"><div class="mat"><div class="mosaic">${covers(i * 13 + 2)}</div></div><h2>${l.name}</h2><p><span>${l.count} 张</span><span class="src"><i class="ti ${l.source === 'nas' ? 'ti-server' : 'ti-device-laptop'}" aria-hidden="true"></i>${l.source === 'nas' ? 'NAS' : '本机'}</span></p></button>`).join('')}<div class="add"><i class="ti ti-folder-plus" aria-hidden="true"></i>添加图片库<span>把文件夹拖到这里，或选择本机、NAS 上的文件夹</span></div></div></div>`;
+  document.querySelectorAll('.album').forEach((a) => a.addEventListener('click', () => { state.view = 'album'; state.tab = 'photos'; render(); }));
+}
+function renderAlbum() {
+  const tree = folderTree.map((f) => `<button data-folder="${f.id}" aria-current="${state.folder === f.id}"><i class="ti ${f.id === 'all' ? 'ti-photo' : 'ti-folder'}" aria-hidden="true"></i>${f.name}<span class="n">${f.n}</span></button>${(f.children || []).map((c) => `<button class="sub" data-folder="${c.id}" aria-current="${state.folder === c.id}"><i class="ti ti-folder" aria-hidden="true"></i>${c.name}<span class="n">${c.n}</span></button>`).join('')}`).join('');
+  const months = [...new Set(photos.map((p) => p.date.slice(0, 7)))];
+  const chapters = months.map((m) => {
+    const items = photos.filter((p) => p.date.startsWith(m));
+    const places = [...new Set(items.map((p) => p.place))].join('、');
+    return `<section><div class="chapter"><h2>${m.slice(0, 4)}年${monthName(m + '-01')}</h2><span>${places}，${items.length} 张</span><div class="tools"><button>选择本月</button><button>导出本月留用…</button></div></div><div class="prints">${items.map((p) => { const i = photos.indexOf(p); return `<button class="print ${p.flag}" data-i="${i}" aria-label="${p.file}"><div class="mat"><div class="frame"><img alt="" loading="lazy" src="${photoUrl(p, 420)}"></div></div><div class="caption">${p.flag === 'pick' ? '<span class="state"><i class="ti ti-check" aria-hidden="true"></i>留用</span>' : p.flag === 'reject' ? '<span class="state"><i class="ti ti-x" aria-hidden="true"></i>淘汰</span>' : `<span>${p.file}</span>`}<span class="stars">${'★'.repeat(p.rating)}</span></div></button>`; }).join('')}</div></section>`;
+  }).join('');
+  $('page').innerHTML = `<div class="album-view"><nav class="folders" aria-label="文件夹"><h3>文件夹</h3>${tree}</nav><div class="wall">${chapters}</div></div>`;
+  document.querySelectorAll('[data-folder]').forEach((b) => b.addEventListener('click', () => { state.folder = b.dataset.folder; renderAlbum(); }));
+  document.querySelectorAll('.print').forEach((b) => b.addEventListener('click', () => openBox(Number(b.dataset.i))));
+}
+const stats = {
+  months: [['2025-11', 96], ['2025-12', 212], ['2026-01', 40], ['2026-02', 18], ['2026-03', 154], ['2026-04', 302], ['2026-05', 88], ['2026-06', 61], ['2026-07', 120], ['2026-08', 233], ['2026-09', 862], ['2026-10', 1284]],
+  cameras: [['Nikon Z 6II', 2140], ['FUJIFILM X-T5', 1186], ['iPhone 16 Pro', 132]],
+  focal: [['14–24', 212], ['25–35', 1488], ['36–50', 908], ['51–85', 610], ['86–135', 196], ['136+', 44]],
+  lenses: [['Z 24-70mm f/4 S', 1902], ['XF 33mm F1.4', 1030], ['Z 70-200mm f/2.8', 238], ['XF 16mm F2.8', 156], ['iPhone 主摄', 132]],
+  iso: [['≤100', 1302], ['200', 744], ['400', 590], ['800', 402], ['1600', 252], ['3200+', 168]],
+  funnel: [['拍摄', 3458], ['已看过', 2911], ['评了星', 1240], ['留用', 486], ['已导出', 212]],
+};
+function barsV(data, height = 180) {
+  const w = 600; const pad = { l: 34, b: 22, t: 8 }; const max = Math.max(...data.map((d) => d[1]));
+  const step = (w - pad.l) / data.length; const bw = Math.max(6, Math.min(30, step - 10));
+  const ticks = [0, 0.5, 1].map((f) => Math.round((max * f) / 50) * 50);
+  let s = ticks.map((t) => { const y = pad.t + (1 - t / max) * (height - pad.t - pad.b); return `<line class="grid" x1="${pad.l}" x2="${w}" y1="${y}" y2="${y}"/><text class="axis" x="${pad.l - 6}" y="${y + 4}" text-anchor="end">${t}</text>`; }).join('');
+  data.forEach(([k, v], i) => {
+    const x = pad.l + i * step + (step - bw) / 2; const h = (v / max) * (height - pad.t - pad.b); const y = height - pad.b - h;
+    s += `<rect class="hit" x="${pad.l + i * step}" y="${pad.t}" width="${step}" height="${height - pad.t - pad.b}" data-k="${k}" data-v="${v}"/><path class="bar" d="M${x},${height - pad.b} V${y + 4} q0,-4 4,-4 h${bw - 8} q4,0 4,4 V${height - pad.b} Z"/>`;
+    const label = k.length === 7 ? `${Number(k.slice(5))}月` : k;
+    if (data.length <= 8 || i % 2 === 0 || i === data.length - 1) s += `<text class="axis" x="${x + bw / 2}" y="${height - 6}" text-anchor="middle">${label}</text>`;
+  });
+  return `<svg viewBox="0 0 ${w} ${height}" role="img">${s}</svg>`;
+}
+function barsH(data, unit) {
+  const w = 440; const row = 34; const labelW = 116; const max = Math.max(...data.map((d) => d[1]));
+  let s = '';
+  data.forEach(([k, v], i) => {
+    const y = i * row + 6; const bw = Math.max(4, (v / max) * (w - labelW - 70));
+    s += `<text class="label dim" x="0" y="${y + 15}">${k}</text><rect class="hit" x="${labelW}" y="${y - 2}" width="${w - labelW}" height="${row - 4}" data-k="${k}" data-v="${v}"/><path class="bar" d="M${labelW},${y} H${labelW + bw - 4} q4,0 4,4 V${y + 16} q0,4 -4,4 H${labelW} Z"/><text class="label" x="${labelW + bw + 8}" y="${y + 15}">${v.toLocaleString()}${unit}</text>`;
+  });
+  return `<svg viewBox="0 0 ${w} ${data.length * row + 4}" role="img">${s}</svg>`;
+}
+function table(data, a, b) { return `<table class="data-table"><thead><tr><th>${a}</th><th>${b}</th></tr></thead><tbody>${data.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</tbody></table>`; }
+function card(id, title, note, chart, data, a, b, wide) {
+  return `<section class="card${wide ? ' wide' : ''}" data-card="${id}"><h2>${title}</h2><p>${note}</p><button class="table-toggle" data-table="${id}">表格</button><div class="chart" id="chart-${id}">${chart}</div><div hidden id="table-${id}">${table(data, a, b)}</div><div class="tip" id="tip-${id}"></div></section>`;
+}
+function renderStats() {
+  const total = 3458; const picks = 486;
+  $('page').innerHTML = `<div class="stats"><h1>2026 关西</h1><p class="lede">从拍摄到导出，这个图片库的照片都去了哪里。</p><div class="range" role="group" aria-label="时间范围"><button aria-pressed="false" data-range="month">本月</button><button aria-pressed="true" data-range="year">近一年</button><button aria-pressed="false" data-range="all">全部</button></div>
+  <div class="tiles"><div class="tile"><b>${total.toLocaleString()}</b><span>张照片</span><small>RAW 2104，JPEG 1354</small></div><div class="tile"><b>${Math.round((picks / total) * 1000) / 10}%</b><span>留用率</span><small>${picks} 张留用，318 张淘汰</small></div><div class="tile"><b>84.2 GB</b><span>原片占用</span><small>其中淘汰的照片占 7.9 GB</small></div><div class="tile"><b>547</b><span>张还没看过</span><small>多在 10月21日 奈良</small></div></div>
+  <div class="charts">${card('months', '每月拍摄', '按拍摄时间统计，没有拍摄时间的 23 张不计入。', barsV(stats.months), stats.months, '月份', '照片')}${card('funnel', '选片进度', '每一步还剩多少张。', barsH(stats.funnel, ' 张'), stats.funnel, '阶段', '照片')}${card('focal', '常用焦段', '按等效焦距分组，单位 mm。', barsV(stats.focal, 160), stats.focal, '焦段', '照片')}${card('cameras', '相机', '按 EXIF 机身型号。', barsH(stats.cameras, ' 张'), stats.cameras, '相机', '照片')}${card('iso', 'ISO 分布', '高 ISO 的照片多在夜里或室内。', barsV(stats.iso, 160), stats.iso, 'ISO', '照片')}${card('lenses', '镜头', '按 EXIF 镜头型号。', barsH(stats.lenses, ' 张'), stats.lenses, '镜头', '照片')}</div></div>`;
+  document.querySelectorAll('.card').forEach((c) => {
+    const tip = c.querySelector('.tip');
+    c.querySelectorAll('.hit').forEach((h) => {
+      h.addEventListener('pointermove', (e) => { const r = c.getBoundingClientRect(); tip.textContent = ''; const b = document.createElement('b'); b.textContent = Number(h.dataset.v).toLocaleString() + ' 张'; tip.append(b, document.createTextNode(`  ${h.dataset.k}`)); tip.style.left = `${e.clientX - r.left}px`; tip.style.top = `${e.clientY - r.top - 10}px`; tip.classList.add('on'); h.nextElementSibling?.classList.add('active'); });
+      h.addEventListener('pointerleave', () => { tip.classList.remove('on'); h.nextElementSibling?.classList.remove('active'); });
+    });
+  });
+  document.querySelectorAll('.table-toggle').forEach((b) => b.addEventListener('click', () => { const t = $('table-' + b.dataset.table); const c = $('chart-' + b.dataset.table); const show = t.hidden; t.hidden = !show; c.hidden = show; b.textContent = show ? '图表' : '表格'; }));
+  document.querySelectorAll('[data-range]').forEach((b) => b.addEventListener('click', () => document.querySelectorAll('[data-range]').forEach((x) => x.setAttribute('aria-pressed', x === b))));
+}
+function openBox(i) {
+  state.open = i; const p = photos[i];
+  $('lbImg').src = photoUrl(p, 1600); $('lbImg').alt = p.file;
+  $('lbTitle').textContent = `${p.place}，${monthName(p.date)}${Number(p.date.slice(8))}日 ${p.time}`;
+  $('lbSub').textContent = `${p.file}.${p.raw}，${p.camera}`;
+  $('lbExpo').textContent = `${p.aperture}  ${p.shutter}  ISO ${p.iso}  ${p.focal}mm`;
+  $('lightbox').classList.add('open'); $('lbClose').focus();
+}
+function closeBox() { $('lightbox').classList.remove('open'); document.querySelector(`.print[data-i="${state.open}"]`)?.focus(); state.open = -1; }
+$('lbClose').onclick = closeBox;
+$('lbPrev').onclick = () => state.open > 0 && openBox(state.open - 1);
+$('lbNext').onclick = () => state.open < photos.length - 1 && openBox(state.open + 1);
+$('tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) { state.tab = b.dataset.tab; render(); } });
+document.addEventListener('keydown', (e) => { if (state.open < 0) return; if (e.key === 'Escape') closeBox(); if (e.key === 'ArrowRight') $('lbNext').click(); if (e.key === 'ArrowLeft') $('lbPrev').click(); });
+function render() { header(); if (state.view === 'home') renderHome(); else if (state.tab === 'stats') renderStats(); else renderAlbum(); $('page').scrollTop = 0; }
+const start = new URLSearchParams(location.search);
+if (start.get('view')) { state.view = 'album'; state.tab = start.get('view') === 'stats' ? 'stats' : 'photos'; }
+render();
+</script>
+</body>
+</html>

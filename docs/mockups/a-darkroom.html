@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebulume 方向 A 中性灰暗房</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.31.0/dist/tabler-icons.min.css">
+<style>
+:root {
+  --a-window: #262626;
+  --a-rail: #1d1d1d;
+  --a-raised: #303030;
+  --a-line: #3a3a3a;
+  --a-stage: #1b1b1b;
+  --a-text: #ececec;
+  --a-text-2: #a6a6a6;
+  --a-text-3: #7a7a7a;
+  --a-star: #f0c050;
+  --a-pick: #86cf9c;
+  --a-reject: #e8786f;
+  --a-ring: #f5f5f5;
+  --a-ease: cubic-bezier(.2, 0, 0, 1);
+  --a-font: var(--font-sans, "Anthropic Sans", -apple-system, "PingFang SC", "Helvetica Neue", sans-serif);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: transparent; }
+body { font-family: var(--a-font); color: var(--a-text); -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--a-ring); outline-offset: 2px; }
+.window { position: relative; display: grid; grid-template-columns: 56px 1fr; height: 100vh; background: var(--a-window); overflow: hidden; }
+.rail { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; background: var(--a-rail); }
+.rail button { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; color: var(--a-text-3); font-size: 20px; transition: color 120ms var(--a-ease), background 120ms var(--a-ease); }
+.rail button:hover { color: var(--a-text); }
+.rail button[aria-current="true"] { color: var(--a-text); background: var(--a-raised); }
+.rail .mark { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--a-text); margin-bottom: 14px; display: grid; place-items: center; }
+.rail .mark::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--a-text); }
+.rail .spacer { flex: 1; }
+.main { display: grid; grid-template-rows: 56px 1fr; min-width: 0; min-height: 0; }
+.bar { display: flex; align-items: center; gap: 12px; padding: 0 20px; }
+.bar h1 { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -0.01em; }
+.bar .count { color: var(--a-text-3); font-size: 13px; }
+.bar .grow { flex: 1; }
+.find { display: flex; align-items: center; gap: 8px; height: 32px; min-width: 240px; padding: 0 10px; border-radius: 8px; background: var(--a-raised); color: var(--a-text-3); font-size: 13px; }
+.find kbd { margin-left: auto; font: inherit; font-size: 11px; color: var(--a-text-3); border: 1px solid var(--a-line); border-radius: 4px; padding: 0 4px; }
+.seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--a-raised); }
+.seg button { height: 28px; padding: 0 10px; border-radius: 6px; font-size: 13px; color: var(--a-text-2); }
+.seg button[aria-pressed="true"] { background: var(--a-window); color: var(--a-text); }
+.icon-btn { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: var(--a-text-2); font-size: 18px; }
+.icon-btn:hover { color: var(--a-text); background: var(--a-raised); }
+.body { position: relative; display: grid; grid-template-columns: 1fr 28px; min-height: 0; }
+.scroll { overflow: auto; padding: 0 8px 40px 20px; scrollbar-width: none; }
+.scroll::-webkit-scrollbar { display: none; }
+.day { margin-bottom: 28px; }
+.day-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 12px; padding: 14px 0 10px; background: var(--a-window); }
+.day-head h2 { margin: 0; font-size: 18px; font-weight: 500; }
+.day-head span { color: var(--a-text-3); font-size: 13px; }
+.day-head .select-day { margin-left: auto; font-size: 12px; color: var(--a-text-3); opacity: 0; transition: opacity 120ms var(--a-ease); }
+.day:hover .select-day { opacity: 1; }
+.row { display: flex; gap: 4px; margin-bottom: 4px; }
+.tile { position: relative; flex: none; overflow: hidden; background: var(--a-raised); border-radius: 2px; }
+.tile img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 200ms var(--a-ease); }
+.tile img.ready { opacity: 1; }
+.tile.reject::before { content: ""; position: absolute; left: 0; right: 0; top: 0; z-index: 1; height: 3px; background: var(--a-reject); }
+.tile::after { content: ""; position: absolute; inset: 0; border: 2px solid transparent; border-radius: 2px; pointer-events: none; transition: border-color 120ms var(--a-ease); }
+.tile.selected::after { border-color: var(--a-ring); }
+.tile .meta { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: rgba(20, 20, 20, .72); font-size: 12px; color: var(--a-text); opacity: 0; transform: translateY(4px); transition: opacity 120ms var(--a-ease), transform 120ms var(--a-ease); }
+.tile:hover .meta, .tile:focus-visible .meta { opacity: 1; transform: none; }
+.tile .meta .stars { margin-left: auto; color: var(--a-star); letter-spacing: 1px; }
+.tile .badge { position: absolute; top: 6px; left: 6px; display: flex; gap: 4px; }
+.tile .badge i { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-size: 14px; background: rgba(20, 20, 20, .72); }
+.tile .badge .pick { color: var(--a-pick); }
+.tile .badge .reject { color: var(--a-reject); }
+.scrub { position: relative; margin: 14px 0; }
+.scrub .track { position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: var(--a-line); border-radius: 1px; }
+.scrub .thumb { position: absolute; left: 9px; width: 10px; height: 34px; border-radius: 5px; background: var(--a-text-2); transition: top 80ms linear; }
+.scrub .label { position: absolute; right: 30px; transform: translateY(-50%); white-space: nowrap; font-size: 12px; color: var(--a-text-2); padding: 3px 8px; border-radius: 6px; background: var(--a-raised); opacity: 0; transition: opacity 120ms var(--a-ease); pointer-events: none; }
+.scrub:hover .label { opacity: 1; }
+.status { position: absolute; left: 20px; bottom: 12px; display: flex; gap: 8px; align-items: center; padding: 6px 10px 6px 12px; border-radius: 8px; background: var(--a-raised); font-size: 13px; opacity: 0; transform: translateY(8px); transition: opacity 180ms var(--a-ease), transform 180ms var(--a-ease); pointer-events: none; }
+.status.on { opacity: 1; transform: none; pointer-events: auto; }
+.status button { padding: 2px 8px; border-radius: 6px; color: var(--a-text-2); }
+.status button:hover { background: var(--a-window); color: var(--a-text); }
+.viewer { position: absolute; inset: 0; z-index: 10; display: grid; grid-template-rows: 56px 1fr 84px; grid-template-columns: 1fr 0; background: var(--a-stage); visibility: hidden; opacity: 0; transition: opacity 240ms var(--a-ease), grid-template-columns 200ms var(--a-ease), visibility 0s 240ms; }
+.viewer.open { visibility: visible; opacity: 1; transition: opacity 240ms var(--a-ease), grid-template-columns 200ms var(--a-ease); }
+.viewer.info { grid-template-columns: 1fr 300px; }
+.vbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; padding: 0 16px; }
+.vbar .name { font-size: 16px; font-weight: 500; }
+.vbar .sub { color: var(--a-text-3); font-size: 13px; }
+.vbar .grow { flex: 1; }
+.rate { display: flex; gap: 2px; }
+.rate button { width: 28px; height: 28px; display: grid; place-items: center; font-size: 17px; color: var(--a-text-3); border-radius: 6px; }
+.rate button.on { color: var(--a-star); }
+.rate button:hover { background: var(--a-raised); }
+.flagbtn { height: 28px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border-radius: 6px; font-size: 13px; color: var(--a-text-2); }
+.flagbtn:hover { background: var(--a-raised); }
+.flagbtn.pick[aria-pressed="true"] { color: var(--a-pick); background: rgba(134, 207, 156, .12); }
+.flagbtn.reject[aria-pressed="true"] { color: var(--a-reject); background: rgba(232, 120, 111, .12); }
+.stage { grid-column: 1; grid-row: 2; position: relative; overflow: hidden; }
+.stage img { position: absolute; transform-origin: 0 0; will-change: transform; user-select: none; }
+.stage .nav { position: absolute; top: 50%; width: 44px; height: 64px; margin-top: -32px; display: grid; place-items: center; font-size: 22px; color: var(--a-text-2); border-radius: 8px; opacity: 0; transition: opacity 120ms var(--a-ease); }
+.stage:hover .nav { opacity: 1; }
+.stage .nav:hover { background: rgba(255, 255, 255, .06); color: var(--a-text); }
+.stage .prev { left: 12px; }
+.stage .next { right: 12px; }
+.panel { grid-column: 2; grid-row: 2 / 4; min-width: 0; overflow: auto; padding: 4px 20px 20px; border-left: 1px solid var(--a-line); font-size: 13px; }
+.panel h3 { margin: 18px 0 8px; font-size: 16px; font-weight: 500; }
+.exposure { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.exposure div { padding: 10px; border-radius: 8px; background: var(--a-window); }
+.exposure b { display: block; font-size: 16px; font-weight: 500; }
+.exposure span { color: var(--a-text-3); font-size: 12px; }
+.panel dl { display: grid; grid-template-columns: 72px 1fr; gap: 8px 12px; margin: 0; }
+.panel dt { color: var(--a-text-3); }
+.panel dd { margin: 0; color: var(--a-text); overflow-wrap: anywhere; }
+.strip { grid-column: 1; grid-row: 3; display: flex; gap: 4px; align-items: center; padding: 0 16px; overflow-x: auto; scrollbar-width: none; }
+.strip::-webkit-scrollbar { display: none; }
+.strip button { flex: none; height: 56px; border-radius: 2px; overflow: hidden; opacity: .45; transition: opacity 120ms var(--a-ease); position: relative; }
+.strip button:hover { opacity: .8; }
+.strip button[aria-current="true"] { opacity: 1; outline: 2px solid var(--a-ring); outline-offset: 1px; }
+.strip img { height: 100%; display: block; }
+.palette { position: absolute; inset: 0; z-index: 20; display: grid; justify-items: center; align-items: start; padding-top: 12vh; background: rgba(10, 10, 10, .5); visibility: hidden; opacity: 0; transition: opacity 120ms var(--a-ease), visibility 0s 120ms; }
+.palette.open { visibility: visible; opacity: 1; transition: opacity 120ms var(--a-ease); }
+.palette .box { width: min(560px, 90%); border-radius: 12px; background: var(--a-raised); border: 1px solid var(--a-line); overflow: hidden; transform: translateY(-6px); transition: transform 180ms var(--a-ease); }
+.palette.open .box { transform: none; }
+.palette input { width: 100%; height: 52px; padding: 0 18px; border: 0; border-bottom: 1px solid var(--a-line); background: transparent; color: var(--a-text); font: inherit; font-size: 16px; outline: none; }
+.palette ul { list-style: none; margin: 0; padding: 6px; max-height: 320px; overflow: auto; }
+.palette li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; font-size: 14px; color: var(--a-text-2); }
+.palette li i { font-size: 18px; }
+.palette li .hint { margin-left: auto; font-size: 12px; color: var(--a-text-3); }
+.palette li[aria-selected="true"] { background: var(--a-window); color: var(--a-text); }
+.palette .group { padding: 10px 12px 4px; font-size: 12px; color: var(--a-text-3); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0s !important; } }
+</style>
+</head>
+<body>
+<div class="window" id="app">
+  <nav class="rail" aria-label="主导航">
+    <span class="mark" aria-hidden="true"></span>
+    <button aria-current="true" aria-label="图片库"><i class="ti ti-photo" aria-hidden="true"></i></button>
+    <button aria-label="位置"><i class="ti ti-server" aria-hidden="true"></i></button>
+    <button aria-label="导入"><i class="ti ti-download" aria-hidden="true"></i></button>
+    <span class="spacer"></span>
+    <button aria-label="设置"><i class="ti ti-settings" aria-hidden="true"></i></button>
+  </nav>
+  <section class="main">
+    <header class="bar">
+      <h1>2026 关西</h1>
+      <span class="count" id="count"></span>
+      <span class="grow"></span>
+      <button class="find" id="find"><i class="ti ti-search" aria-hidden="true"></i>搜索照片、相机、地点<kbd>⌘K</kbd></button>
+      <div class="seg" role="group" aria-label="显示">
+        <button aria-pressed="true" data-filter="all">全部</button>
+        <button aria-pressed="false" data-filter="pick">留用</button>
+        <button aria-pressed="false" data-filter="rated">三星以上</button>
+      </div>
+      <button class="icon-btn" aria-label="调整缩略图大小" id="zoom"><i class="ti ti-zoom-in" aria-hidden="true"></i></button>
+    </header>
+    <div class="body">
+      <div class="scroll" id="scroll"></div>
+      <div class="scrub" id="scrub" aria-hidden="true"><div class="track"></div><div class="thumb" id="scrubThumb"></div><div class="label" id="scrubLabel"></div></div>
+      <div class="status" id="status" role="status"></div>
+    </div>
+  </section>
+  <section class="viewer" id="viewer" aria-label="查看照片">
+    <header class="vbar">
+      <button class="icon-btn" id="back" aria-label="返回图库（Esc）"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
+      <div><div class="name" id="vName"></div><div class="sub" id="vSub"></div></div>
+      <span class="grow"></span>
+      <div class="rate" id="vRate" aria-label="评级"></div>
+      <button class="flagbtn pick" id="vPick" aria-pressed="false"><i class="ti ti-flag" aria-hidden="true"></i>留用</button>
+      <button class="flagbtn reject" id="vReject" aria-pressed="false"><i class="ti ti-x" aria-hidden="true"></i>淘汰</button>
+      <button class="icon-btn" id="vInfo" aria-label="照片信息（I）"><i class="ti ti-info-circle" aria-hidden="true"></i></button>
+    </header>
+    <div class="stage" id="stage">
+      <button class="nav prev" id="prev" aria-label="上一张"><i class="ti ti-chevron-left" aria-hidden="true"></i></button>
+      <button class="nav next" id="next" aria-label="下一张"><i class="ti ti-chevron-right" aria-hidden="true"></i></button>
+    </div>
+    <aside class="panel" id="panel" aria-label="照片信息"></aside>
+    <div class="strip" id="strip"></div>
+  </section>
+  <div class="palette" id="palette" role="dialog" aria-label="命令面板">
+    <div class="box"><input id="paletteInput" placeholder="搜索照片、图库或操作" aria-label="搜索"><ul id="paletteList" role="listbox"></ul></div>
+  </div>
+</div>
+<script src="photos.js"></script>
+<script>
+const photos = window.PHOTOS;
+const $ = (id) => document.getElementById(id);
+const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const state = { filter: 'all', rowHeight: 200, selected: 0, open: -1, info: false };
+const tiles = new Map();
+const visible = () => photos.filter((p) => state.filter === 'all' || (state.filter === 'pick' ? p.flag === 'pick' : p.rating >= 3));
+const dayLabel = (date) => { const d = new Date(date + 'T00:00:00'); return `${d.getMonth() + 1}月${d.getDate()}日 ${weekdays[d.getDay()]}`; };
+const stars = (n) => '★'.repeat(n);
+function layoutRows(items, width, target) {
+  const rows = []; let row = []; let ratio = 0;
+  for (const item of items) {
+    row.push(item); ratio += item.w / item.h;
+    const height = (width - 4 * (row.length - 1)) / ratio;
+    if (height <= target) { rows.push({ items: row, height }); row = []; ratio = 0; }
+  }
+  if (row.length) rows.push({ items: row, height: target });
+  return rows;
+}
+function render() {
+  const scroll = $('scroll');
+  const width = scroll.clientWidth - 28;
+  const list = visible();
+  $('count').textContent = `${list.length} 张，共 1284 张`;
+  scroll.textContent = ''; tiles.clear();
+  const days = [...new Set(list.map((p) => p.date))];
+  for (const date of days) {
+    const group = list.filter((p) => p.date === date);
+    const day = document.createElement('section'); day.className = 'day'; day.dataset.date = date;
+    day.innerHTML = `<div class="day-head"><h2>${dayLabel(date)}</h2><span>${group[0].place}，${group.length} 张</span><button class="select-day">选择这一天</button></div>`;
+    for (const row of layoutRows(group, width, state.rowHeight)) {
+      const el = document.createElement('div'); el.className = 'row';
+      for (const p of row.items) {
+        const index = photos.indexOf(p);
+        const tile = document.createElement('button');
+        tile.className = `tile${p.flag === 'reject' ? ' reject' : ''}${index === state.selected ? ' selected' : ''}`;
+        tile.style.width = `${Math.floor(row.height * p.w / p.h)}px`; tile.style.height = `${Math.floor(row.height)}px`;
+        tile.setAttribute('aria-label', `${p.file}.${p.raw}，${p.rating} 星`);
+ const badges = p.flag === 'pick' ? '<i class="ti ti-flag pick" aria-hidden="true"></i>' : p.flag === 'reject' ? '<i class="ti ti-x reject" aria-hidden="true"></i>' : '';
+        tile.innerHTML = `<img alt="" loading="lazy" src="${photoUrl(p, 480)}"><span class="badge">${badges}</span><span class="meta">${p.file}${p.paired ? ' +JPG' : ''}<span class="stars">${stars(p.rating)}</span></span>`;
+        tile.querySelector('img').addEventListener('load', (e) => e.target.classList.add('ready'));
+ tile.addEventListener('click', () => select(index));
+        tile.addEventListener('dblclick', () => openViewer(index));
+        tiles.set(index, tile); el.append(tile);
+      }
+      day.append(el);
+    }
+    scroll.append(day);
+  }
+  syncScrub();
+}
+function select(index) {
+  tiles.get(state.selected)?.classList.remove('selected');
+  state.selected = index;
+  const tile = tiles.get(index);
+  if (tile) { tile.classList.add('selected'); tile.focus({ preventScroll: true }); tile.scrollIntoView({ block: 'nearest' }); }
+}
+function syncScrub() {
+  const scroll = $('scroll'); const scrub = $('scrub');
+  const max = scroll.scrollHeight - scroll.clientHeight;
+  const fraction = max > 0 ? scroll.scrollTop / max : 0;
+  const top = fraction * (scrub.clientHeight - 34);
+  $('scrubThumb').style.top = `${top}px`;
+  const days = [...scroll.querySelectorAll('.day')];
+  const current = days.filter((d) => d.offsetTop <= scroll.scrollTop + 20).pop() || days[0];
+  if (current) { $('scrubLabel').textContent = dayLabel(current.dataset.date); $('scrubLabel').style.top = `${top + 17}px`; }
+}
+$('scroll').addEventListener('scroll', syncScrub);
+$('scrub').addEventListener('pointerdown', (event) => {
+  const scrub = $('scrub'); const scroll = $('scroll');
+  const move = (e) => { const rect = scrub.getBoundingClientRect(); const f = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)); scroll.scrollTop = f * (scroll.scrollHeight - scroll.clientHeight); };
+  move(event); scrub.setPointerCapture(event.pointerId);
+  scrub.onpointermove = move; scrub.onpointerup = () => { scrub.onpointermove = null; };
+});
+function fitRect(p) {
+  const stage = $('stage').getBoundingClientRect();
+  const pad = 24; const scale = Math.min((stage.width - pad * 2) / p.w, (stage.height - pad * 2) / p.h);
+  const w = p.w * scale; const h = p.h * scale;
+  return { left: (stage.width - w) / 2, top: (stage.height - h) / 2, width: w, height: h };
+}
+let stageImg;
+function placeImage(p, animateFrom) {
+  const stage = $('stage');
+  const img = document.createElement('img'); img.alt = p.file;
+  const preview = tiles.get(photos.indexOf(p))?.querySelector('img');
+  img.src = preview?.currentSrc || photoUrl(p, 480);
+  const full = new Image(); full.src = photoUrl(p, 1800); full.onload = () => { if (stageImg === img) img.src = full.src; };
+  const target = fitRect(p);
+  Object.assign(img.style, { left: '0px', top: '0px', width: `${target.width}px`, height: `${target.height}px` });
+  const end = `translate(${target.left}px, ${target.top}px)`;
+  if (animateFrom) {
+    const s = stage.getBoundingClientRect();
+    const sx = animateFrom.width / target.width; const sy = animateFrom.height / target.height;
+    img.style.transform = `translate(${animateFrom.left - s.left}px, ${animateFrom.top - s.top}px) scale(${sx}, ${sy})`;
+    stage.prepend(img);
+    void img.offsetWidth;
+    img.style.transition = 'transform 280ms var(--a-ease)';
+    img.style.transform = end;
+  } else {
+    img.style.transform = end; img.style.opacity = '0'; stage.prepend(img);
+    void img.offsetWidth;
+    img.style.transition = 'opacity 140ms var(--a-ease)';
+    img.style.opacity = '1';
+  }
+  const old = stageImg; stageImg = img;
+  if (old) { old.style.transition = 'opacity 140ms var(--a-ease)'; old.style.opacity = '0'; setTimeout(() => old.remove(), 160); }
+}
+function openViewer(index) {
+  const p = photos[index]; state.open = index; select(index);
+  const from = tiles.get(index)?.getBoundingClientRect();
+  $('viewer').classList.add('open');
+  syncViewer();
+  placeImage(p, from);
+  $('back').focus();
+}
+function closeViewer() {
+  const p = photos[state.open]; const tile = tiles.get(state.open);
+  if (tile && stageImg) {
+    tile.scrollIntoView({ block: 'nearest' });
+    const to = tile.getBoundingClientRect(); const s = $('stage').getBoundingClientRect(); const target = fitRect(p);
+    stageImg.style.transition = 'transform 240ms var(--a-ease)';
+    stageImg.style.transform = `translate(${to.left - s.left}px, ${to.top - s.top}px) scale(${to.width / target.width}, ${to.height / target.height})`;
+  }
+  $('viewer').classList.remove('open'); state.open = -1;
+  setTimeout(() => { if (state.open < 0) { stageImg?.remove(); stageImg = null; } }, 260);
+  tile?.focus();
+}
+function step(delta) {
+  const list = visible(); const position = list.indexOf(photos[state.open]);
+  const next = list[position + delta]; if (!next) return;
+  state.open = photos.indexOf(next); select(state.open); syncViewer(); placeImage(next);
+}
+function syncViewer() {
+  const p = photos[state.open];
+  $('vName').textContent = `${p.file}.${p.raw}${p.paired ? ' + JPG' : ''}`;
+  $('vSub').textContent = `${dayLabel(p.date)} ${p.time}，${p.place}`;
+  $('vRate').innerHTML = [1, 2, 3, 4, 5].map((n) => `<button class="${p.rating >= n ? 'on' : ''}" aria-label="评为 ${n} 星" data-n="${n}"><i class="ti ti-star" aria-hidden="true"></i></button>`).join('');
+  $('vPick').setAttribute('aria-pressed', p.flag === 'pick'); $('vReject').setAttribute('aria-pressed', p.flag === 'reject');
+  $('panel').innerHTML = `<h3>曝光</h3><div class="exposure"><div><b>${p.aperture}</b><span>光圈</span></div><div><b>${p.shutter}</b><span>快门</span></div><div><b>${p.iso}</b><span>ISO</span></div></div><h3>拍摄</h3><dl><dt>相机</dt><dd>${p.camera}</dd><dt>镜头</dt><dd>${p.lens}</dd><dt>焦距</dt><dd>${p.focal} mm</dd><dt>时间</dt><dd>${p.date} ${p.time}</dd></dl><h3>文件</h3><dl><dt>尺寸</dt><dd>${p.w} × ${p.h}</dd><dt>位置</dt><dd>/Volumes/Photos/2026/Kansai/${p.file}.${p.raw}</dd></dl>`;
+  const strip = $('strip'); const list = visible();
+  if (!strip.childElementCount || strip.dataset.filter !== state.filter) {
+    strip.dataset.filter = state.filter;
+    strip.innerHTML = list.map((q) => `<button data-i="${photos.indexOf(q)}" aria-label="${q.file}"><img alt="" loading="lazy" src="${photoUrl(q, 160)}"></button>`).join('');
+  }
+  strip.querySelectorAll('button').forEach((b) => { const on = Number(b.dataset.i) === state.open; b.setAttribute('aria-current', on); if (on) b.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' }); });
+}
+function mark(change) {
+  const index = state.open >= 0 ? state.open : state.selected; const p = photos[index];
+  Object.assign(p, change);
+  if (state.open >= 0) syncViewer();
+  const tile = tiles.get(index);
+  if (tile) { tile.classList.toggle('reject', p.flag === 'reject'); tile.querySelector('.stars').textContent = stars(p.rating); tile.querySelector('.badge').innerHTML = p.flag === 'pick' ? '<i class="ti ti-flag pick" aria-hidden="true"></i>' : p.flag === 'reject' ? '<i class="ti ti-x reject" aria-hidden="true"></i>' : ''; }
+  const label = change.rating !== undefined ? (change.rating ? `已评为 ${change.rating} 星` : '已清除评级') : p.flag === 'pick' ? '已标为留用' : p.flag === 'reject' ? '已标为淘汰' : '已清除旗标';
+  showStatus(`${p.file}：${label}`);
+}
+let statusTimer;
+function showStatus(text) {
+  const status = $('status'); status.innerHTML = `<span>${text}</span><button id="undo">撤销</button>`;
+  status.classList.add('on'); clearTimeout(statusTimer); statusTimer = setTimeout(() => status.classList.remove('on'), 2400);
+}
+$('vRate').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) mark({ rating: Number(b.dataset.n) }); });
+$('vPick').addEventListener('click', () => mark({ flag: photos[state.open].flag === 'pick' ? 'none' : 'pick' }));
+$('vReject').addEventListener('click', () => mark({ flag: photos[state.open].flag === 'reject' ? 'none' : 'reject' }));
+$('vInfo').addEventListener('click', () => toggleInfo());
+function toggleInfo() { state.info = !state.info; $('viewer').classList.toggle('info', state.info); setTimeout(() => { if (state.open >= 0 && stageImg) { const t = fitRect(photos[state.open]); stageImg.style.transition = 'transform 200ms var(--a-ease)'; Object.assign(stageImg.style, { width: `${t.width}px`, height: `${t.height}px`, transform: `translate(${t.left}px, ${t.top}px)` }); } }, 210); }
+$('back').addEventListener('click', closeViewer);
+$('prev').addEventListener('click', () => step(-1));
+$('next').addEventListener('click', () => step(1));
+$('strip').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; state.open = Number(b.dataset.i); select(state.open); syncViewer(); placeImage(photos[state.open]); });
+document.querySelectorAll('.seg button').forEach((b) => b.addEventListener('click', () => { document.querySelectorAll('.seg button').forEach((x) => x.setAttribute('aria-pressed', x === b)); state.filter = b.dataset.filter; render(); }));
+$('zoom').addEventListener('click', () => { state.rowHeight = state.rowHeight === 200 ? 280 : state.rowHeight === 280 ? 140 : 200; render(); });
+const commands = [
+  { group: '图库', icon: 'ti-photo', label: '2026 关西', hint: '1284 张' },
+  { group: '图库', icon: 'ti-server', label: '青海 自驾', hint: 'NAS' },
+  { group: '图库', icon: 'ti-photo', label: '城市漫步', hint: '3410 张' },
+  { group: '操作', icon: 'ti-refresh', label: '扫描更新当前图库', hint: '' },
+  { group: '操作', icon: 'ti-flag', label: '只看留用', hint: '' },
+  { group: '操作', icon: 'ti-download', label: '导出所选为 JPEG', hint: '' },
+  { group: '照片', icon: 'ti-camera', label: 'FUJIFILM X-T5 拍摄的照片', hint: '19 张' },
+  { group: '照片', icon: 'ti-calendar', label: '10月19日 伏见稻荷', hint: '11 张' },
+];
+let paletteIndex = 0;
+function renderPalette() {
+  const q = $('paletteInput').value.trim().toLowerCase();
+  const items = commands.filter((c) => !q || c.label.toLowerCase().includes(q));
+  paletteIndex = Math.min(paletteIndex, Math.max(0, items.length - 1));
+  let group = ''; let html = '';
+  items.forEach((c, i) => { if (c.group !== group) { group = c.group; html += `<div class="group">${group}</div>`; } html += `<li role="option" aria-selected="${i === paletteIndex}"><i class="ti ${c.icon}" aria-hidden="true"></i>${c.label}<span class="hint">${c.hint}</span></li>`; });
+  $('paletteList').innerHTML = html || '<div class="group">没有匹配的照片或操作</div>';
+}
+function openPalette() { $('palette').classList.add('open'); $('paletteInput').value = ''; paletteIndex = 0; renderPalette(); setTimeout(() => $('paletteInput').focus(), 0); }
+function closePalette() { $('palette').classList.remove('open'); }
+$('find').addEventListener('click', openPalette);
+$('paletteInput').addEventListener('input', renderPalette);
+$('palette').addEventListener('click', (e) => { if (e.target === $('palette')) closePalette(); });
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); return; }
+  if ($('palette').classList.contains('open')) {
+    if (e.key === 'Escape') closePalette();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); paletteIndex += e.key === 'ArrowDown' ? 1 : -1; paletteIndex = Math.max(0, paletteIndex); renderPalette(); }
+    return;
+  }
+  const viewing = state.open >= 0;
+  if (e.key === 'Escape' && viewing) return closeViewer();
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (viewing) return step(e.key === 'ArrowRight' ? 1 : -1);
+    const list = visible(); const pos = list.indexOf(photos[state.selected]); const next = list[pos + (e.key === 'ArrowRight' ? 1 : -1)];
+    if (next) select(photos.indexOf(next));
+    return;
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && !viewing) { e.preventDefault(); return openViewer(state.selected); }
+  if (/^[0-5]$/.test(e.key)) return mark({ rating: Number(e.key) });
+  if (e.key.toLowerCase() === 'p') return mark({ flag: 'pick' });
+  if (e.key.toLowerCase() === 'x') return mark({ flag: 'reject' });
+  if (e.key.toLowerCase() === 'u') return mark({ flag: 'none' });
+  if (e.key.toLowerCase() === 'i' && viewing) return toggleInfo();
+});
+render();
+new ResizeObserver(() => render()).observe($('scroll'));
+</script>
+</body>
+</html>

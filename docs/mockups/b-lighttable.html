@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebulume 方向 B 灯台选片</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.31.0/dist/tabler-icons.min.css">
+<style>
+:root {
+  --b-table: #e9ecea;
+  --b-panel: #f7f8f7;
+  --b-line: #d3d8d5;
+  --b-film: #1e1f1e;
+  --b-film-edge: #8d8f8c;
+  --b-ink: #1c2421;
+  --b-ink-2: #5b6661;
+  --b-ink-3: #85908b;
+  --b-grease: #d8402c;
+  --b-keep: #1f7a4d;
+  --b-focus: #1c2421;
+  --b-ease: cubic-bezier(.2, 0, 0, 1);
+  --b-font: var(--font-sans, "Anthropic Sans", -apple-system, "PingFang SC", "Helvetica Neue", sans-serif);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: transparent; }
+body { font-family: var(--b-font); color: var(--b-ink); -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--b-focus); outline-offset: 2px; }
+.window { position: relative; display: grid; grid-template-columns: 232px 1fr 380px; grid-template-rows: 52px 1fr; height: 100vh; background: var(--b-table); overflow: hidden; }
+.top { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--b-panel); border-bottom: 1px solid var(--b-line); }
+.brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 500; width: 200px; }
+.brand i { font-size: 20px; }
+.progress { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--b-ink-2); }
+.progress b { color: var(--b-ink); font-weight: 500; }
+.progress .bar { width: 160px; height: 4px; border-radius: 2px; background: var(--b-line); overflow: hidden; }
+.progress .bar span { display: block; height: 100%; background: var(--b-ink); transition: width 180ms var(--b-ease); }
+.chip { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 13px; font-size: 13px; border: 1px solid var(--b-line); color: var(--b-ink-2); }
+.chip.keep { color: var(--b-keep); }
+.chip.drop { color: var(--b-grease); }
+.chip[aria-pressed="true"] { background: var(--b-ink); color: var(--b-panel); border-color: var(--b-ink); }
+.top .grow { flex: 1; }
+.primary { height: 32px; padding: 0 14px; border-radius: 8px; background: var(--b-ink); color: var(--b-panel); font-size: 13px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+.primary:hover { background: #33403b; }
+.ghost { height: 32px; padding: 0 12px; border-radius: 8px; font-size: 13px; color: var(--b-ink-2); display: inline-flex; align-items: center; gap: 6px; }
+.ghost:hover { background: var(--b-table); color: var(--b-ink); }
+.side { overflow: auto; padding: 12px 10px; background: var(--b-panel); border-right: 1px solid var(--b-line); font-size: 13px; }
+.side h2 { margin: 6px 8px 8px; font-size: 12px; font-weight: 500; color: var(--b-ink-3); }
+.lib { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border-radius: 6px; text-align: left; color: var(--b-ink-2); }
+.lib:hover { background: var(--b-table); }
+.lib[aria-current="true"] { color: var(--b-ink); font-weight: 500; }
+.lib .n { margin-left: auto; color: var(--b-ink-3); font-weight: 400; }
+.tree { margin: 2px 0 10px 14px; padding-left: 8px; border-left: 1px solid var(--b-line); }
+.folder { position: relative; display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 8px; border-radius: 6px; text-align: left; color: var(--b-ink-2); }
+.folder:hover { background: var(--b-table); color: var(--b-ink); }
+.folder[aria-current="true"] { background: var(--b-ink); color: var(--b-panel); }
+.folder[aria-current="true"] .n { color: var(--b-panel); }
+.folder .n { margin-left: auto; color: var(--b-ink-3); }
+.folder .more { width: 22px; height: 22px; display: none; place-items: center; border-radius: 5px; }
+.folder:hover .more, .folder[aria-current="true"] .more { display: grid; }
+.folder:hover .n, .folder[aria-current="true"] .n { display: none; }
+.menu { position: absolute; z-index: 30; min-width: 196px; padding: 4px; border-radius: 10px; background: var(--b-panel); border: 1px solid var(--b-line); font-size: 13px; display: none; }
+.menu.open { display: block; }
+.menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border-radius: 6px; text-align: left; }
+.menu button:hover { background: var(--b-table); }
+.menu i { font-size: 16px; color: var(--b-ink-2); }
+.sheet { overflow: auto; padding: 18px 22px 80px; }
+.sheet-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px; }
+.sheet-head h1 { margin: 0; font-size: 22px; font-weight: 500; }
+.sheet-head span { color: var(--b-ink-3); font-size: 13px; }
+.strip { display: grid; grid-template-columns: repeat(var(--cols, 5), 1fr); gap: 0; margin-bottom: 14px; padding: 18px 6px 22px; background: var(--b-film); border-radius: 3px; position: relative; }
+.strip::before, .strip::after { content: ""; position: absolute; left: 6px; right: 6px; height: 0; border-top: 5px dotted #4a4b49; }
+.strip::before { top: 5px; }
+.strip::after { bottom: 7px; }
+.frame { position: relative; padding: 0 5px; text-align: left; }
+.frame .pic { position: relative; aspect-ratio: 3 / 2; overflow: hidden; background: #2b2c2a; }
+.frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.frame .no { display: flex; justify-content: space-between; padding-top: 5px; font-size: 11px; color: var(--b-film-edge); }
+.frame .no .stars { color: #e7b84a; letter-spacing: 1px; }
+.frame::after { content: ""; position: absolute; inset: -4px 1px 14px; border: 2px solid transparent; border-radius: 2px; pointer-events: none; }
+.frame[aria-selected="true"]::after { border-color: #f4f5f3; }
+.frame .grease { position: absolute; inset: -7px -2px -5px; pointer-events: none; }
+.frame .grease ellipse, .frame .grease line { fill: none; stroke: var(--b-grease); stroke-width: 2; stroke-linecap: round; stroke-dasharray: 600; stroke-dashoffset: 600; }
+.frame.pick .grease ellipse { stroke-dashoffset: 0; transition: stroke-dashoffset 260ms var(--b-ease); }
+.frame.reject .grease line { stroke-dashoffset: 0; transition: stroke-dashoffset 200ms var(--b-ease); }
+.frame.hidden { display: none; }
+.loupe { display: grid; grid-template-rows: auto auto 1fr auto; min-height: 0; background: var(--b-panel); border-left: 1px solid var(--b-line); }
+.loupe .view { position: relative; margin: 14px 14px 0; aspect-ratio: 3 / 2; background: var(--b-film); display: grid; place-items: center; overflow: hidden; border-radius: 4px; }
+.loupe .view img { max-width: 100%; max-height: 100%; display: block; }
+.loupe .view .tag { position: absolute; left: 8px; top: 8px; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 500; background: var(--b-panel); }
+.loupe .view .tag.pick { color: var(--b-keep); }
+.loupe .view .tag.reject { color: var(--b-grease); }
+.loupe .name { display: flex; align-items: baseline; gap: 8px; padding: 12px 16px 0; }
+.loupe .name b { font-size: 16px; font-weight: 500; }
+.loupe .name span { font-size: 12px; color: var(--b-ink-3); }
+.loupe .info { overflow: auto; padding: 4px 16px 12px; font-size: 13px; }
+.hist { position: relative; height: 84px; margin: 10px 0 4px; border-radius: 4px; background: var(--b-table); overflow: hidden; }
+.hist svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.hist .cached { position: absolute; right: 6px; top: 4px; font-size: 11px; color: var(--b-ink-3); }
+.expo { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 10px 0; }
+.expo div { padding: 8px; border-radius: 6px; background: var(--b-table); }
+.expo b { display: block; font-size: 15px; font-weight: 500; }
+.expo span { font-size: 11px; color: var(--b-ink-3); }
+.loupe dl { display: grid; grid-template-columns: 64px 1fr; gap: 6px 10px; margin: 8px 0 0; }
+.loupe dt { color: var(--b-ink-3); }
+.loupe dd { margin: 0; overflow-wrap: anywhere; }
+.keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 12px 16px 16px; border-top: 1px solid var(--b-line); }
+.keys button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 0; border-radius: 8px; border: 1px solid var(--b-line); font-size: 13px; }
+.keys button kbd { font: inherit; font-size: 11px; color: var(--b-ink-3); }
+.keys .k-pick:hover, .keys .k-pick[aria-pressed="true"] { border-color: var(--b-keep); color: var(--b-keep); }
+.keys .k-drop:hover, .keys .k-drop[aria-pressed="true"] { border-color: var(--b-grease); color: var(--b-grease); }
+.review { position: absolute; inset: 52px 0 0; z-index: 20; display: grid; grid-template-columns: 1fr 1fr; gap: 0; background: var(--b-table); visibility: hidden; opacity: 0; transform: translateY(12px); transition: opacity 180ms var(--b-ease), transform 180ms var(--b-ease), visibility 0s 180ms; }
+.review.open { visibility: visible; opacity: 1; transform: none; transition: opacity 180ms var(--b-ease), transform 180ms var(--b-ease); }
+.col { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; padding: 22px 24px; }
+.col + .col { border-left: 1px solid var(--b-line); }
+.col h2 { margin: 0 0 4px; font-size: 18px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.col p { margin: 0 0 14px; font-size: 13px; color: var(--b-ink-2); line-height: 1.6; max-width: 46ch; }
+.col .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; align-content: start; overflow: auto; }
+.col .grid img { width: 100%; height: auto; aspect-ratio: 3 / 2; object-fit: cover; display: block; border-radius: 2px; background: var(--b-line); }
+.col .grid figure { margin: 0; font-size: 11px; color: var(--b-ink-3); }
+.col .grid figcaption { padding-top: 3px; display: flex; justify-content: space-between; }
+.col .actions { display: flex; align-items: center; gap: 8px; padding-top: 16px; flex-wrap: wrap; }
+.col .actions .note { font-size: 12px; color: var(--b-ink-3); flex-basis: 100%; }
+.danger { height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--b-grease); color: var(--b-grease); font-size: 13px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+.danger:hover { background: var(--b-grease); color: var(--b-panel); }
+.toast { position: absolute; left: 50%; bottom: 18px; z-index: 40; transform: translate(-50%, 10px); display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; border-radius: 10px; background: var(--b-ink); color: var(--b-panel); font-size: 13px; opacity: 0; transition: opacity 180ms var(--b-ease), transform 180ms var(--b-ease); pointer-events: none; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.toast button { padding: 3px 8px; border-radius: 6px; color: #b9d7c7; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0s !important; } }
+</style>
+</head>
+<body>
+<div class="window">
+  <header class="top">
+    <div class="brand"><i class="ti ti-aperture" aria-hidden="true"></i>Nebulume</div>
+    <div class="progress" aria-label="选片进度"><span>已看 <b id="seen">0</b> / <span id="total"></span></span><span class="bar"><span id="seenBar" style="width:0"></span></span></div>
+    <button class="chip keep" id="fPick" aria-pressed="false"><i class="ti ti-circle" aria-hidden="true"></i><span id="nPick">0</span> 留用</button>
+    <button class="chip drop" id="fReject" aria-pressed="false"><i class="ti ti-x" aria-hidden="true"></i><span id="nReject">0</span> 淘汰</button>
+    <button class="chip" id="fHide" aria-pressed="false">隐藏淘汰</button>
+    <span class="grow"></span>
+    <button class="ghost"><i class="ti ti-search" aria-hidden="true"></i>搜索</button>
+    <button class="primary" id="finish"><i class="ti ti-checks" aria-hidden="true"></i>完成选片</button>
+  </header>
+  <aside class="side" aria-label="图片库与文件夹">
+    <h2>图片库</h2>
+    <button class="lib" aria-current="true"><i class="ti ti-folder" aria-hidden="true"></i>2026 关西<span class="n">1284</span></button>
+    <div class="tree" id="tree"></div>
+    <button class="lib"><i class="ti ti-server" aria-hidden="true"></i>青海 自驾<span class="n">862</span></button>
+    <button class="lib"><i class="ti ti-folder" aria-hidden="true"></i>城市漫步<span class="n">3410</span></button>
+    <button class="lib"><i class="ti ti-server" aria-hidden="true"></i>家庭<span class="n">9120</span></button>
+  </aside>
+  <main class="sheet" id="sheet" aria-label="印样">
+    <div class="sheet-head"><h1 id="title"></h1><span id="subtitle"></span></div>
+    <div id="strips"></div>
+  </main>
+  <aside class="loupe" aria-label="放大镜">
+    <div class="view" id="view"></div>
+    <div class="name"><b id="lName"></b><span id="lSub"></span></div>
+    <div class="info" id="lInfo"></div>
+    <div class="keys">
+      <button class="k-pick" id="kPick"><span>留用</span><kbd>P</kbd></button>
+      <button id="kNone"><span>清除</span><kbd>U</kbd></button>
+      <button class="k-drop" id="kDrop"><span>淘汰</span><kbd>X</kbd></button>
+    </div>
+  </aside>
+  <section class="review" id="review" aria-label="完成选片">
+    <div class="col">
+      <div><h2><i class="ti ti-circle" aria-hidden="true" style="color:var(--b-keep)"></i>留用 <span id="rPickN"></span> 张</h2><p>把留用的照片按裁剪导出为 JPEG，或复制原片（RAW 与同名 JPEG 一起）到另一个文件夹。</p></div>
+      <div class="grid" id="rPick"></div>
+      <div class="actions"><button class="primary"><i class="ti ti-download" aria-hidden="true"></i>导出 JPEG…</button><button class="ghost"><i class="ti ti-copy" aria-hidden="true"></i>复制原片到…</button><button class="ghost"><i class="ti ti-folder-plus" aria-hidden="true"></i>存为精选集</button></div>
+    </div>
+    <div class="col">
+      <div><h2><i class="ti ti-x" aria-hidden="true" style="color:var(--b-grease)"></i>淘汰 <span id="rDropN"></span> 张</h2><p>移到系统废纸篓，RAW 与同名 JPEG 一起移动，评级与记录保留 30 天，可在废纸篓或这里恢复。</p></div>
+      <div class="grid" id="rDrop"></div>
+      <div class="actions"><button class="danger" id="trash"><i class="ti ti-trash" aria-hidden="true"></i>移到废纸篓</button><button class="ghost" id="backToSheet"><i class="ti ti-arrow-back-up" aria-hidden="true"></i>回到印样</button><span class="note" id="trashNote"></span></div>
+    </div>
+  </section>
+  <div class="menu" id="menu" role="menu">
+    <button role="menuitem"><i class="ti ti-refresh" aria-hidden="true"></i>只扫描此文件夹</button>
+    <button role="menuitem"><i class="ti ti-player-play" aria-hidden="true"></i>从此文件夹开始选片</button>
+    <button role="menuitem"><i class="ti ti-download" aria-hidden="true"></i>导出此文件夹的留用…</button>
+    <button role="menuitem"><i class="ti ti-external-link" aria-hidden="true"></i>在访达中显示</button>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+</div>
+<script src="photos.js"></script>
+<script>
+const photos = window.PHOTOS;
+const $ = (id) => document.getElementById(id);
+const folders = [...new Map(photos.map((p) => [p.date, p.place])).entries()].map(([date, place]) => ({ date, name: `${date.slice(5)} ${place.replace('京都，', '')}`, items: photos.filter((p) => p.date === date) }));
+const state = { folder: 0, index: 0, seen: new Set(), hide: false, filter: 'all' };
+const current = () => folders[state.folder].items;
+const histCache = new Map();
+function renderTree() {
+  $('tree').innerHTML = folders.map((f, i) => `<button class="folder" data-i="${i}" aria-current="${i === state.folder}"><i class="ti ti-folder" aria-hidden="true"></i>${f.name}<span class="n">${f.items.length}</span><span class="more" data-more="${i}" aria-label="文件夹操作"><i class="ti ti-dots" aria-hidden="true"></i></span></button>`).join('');
+}
+function renderSheet() {
+  const f = folders[state.folder];
+  $('title').textContent = f.name;
+  $('subtitle').textContent = `${f.items.length} 张，${f.items[0].camera}`;
+  const cols = 5;
+  let html = '';
+  f.items.forEach((p, i) => {
+    if (i % cols === 0) html += `<div class="strip" style="--cols:${cols}">`;
+    const hidden = (state.hide && p.flag === 'reject') || (state.filter === 'pick' && p.flag !== 'pick') || (state.filter === 'reject' && p.flag !== 'reject');
+    html += `<button class="frame ${p.flag}${hidden ? ' hidden' : ''}" data-i="${i}" aria-selected="${i === state.index}" aria-label="${p.file}，${p.flag === 'pick' ? '留用' : p.flag === 'reject' ? '淘汰' : '未标记'}"><div class="pic"><img alt="" loading="lazy" src="${photoUrl(p, 420)}"></div><div class="no"><span>${p.file.replace(/\D/g, '')}</span><span class="stars">${'★'.repeat(p.rating)}</span></div><svg class="grease" viewBox="0 0 100 80" preserveAspectRatio="none" aria-hidden="true"><ellipse cx="50" cy="36" rx="48" ry="36"/><line x1="18" y1="14" x2="82" y2="62"/><line x1="82" y1="14" x2="18" y2="62"/></svg></button>`;
+    if (i % cols === cols - 1 || i === f.items.length - 1) html += '</div>';
+  });
+  $('strips').innerHTML = html;
+  renderCounts();
+}
+function renderCounts() {
+  const all = photos;
+  $('total').textContent = all.length;
+  $('seen').textContent = state.seen.size;
+  $('seenBar').style.width = `${(state.seen.size / all.length) * 100}%`;
+  $('nPick').textContent = all.filter((p) => p.flag === 'pick').length;
+  $('nReject').textContent = all.filter((p) => p.flag === 'reject').length;
+}
+function frameEl(i) { return document.querySelector(`.frame[data-i="${i}"]`); }
+function select(i) {
+  const items = current(); if (i < 0 || i >= items.length) return;
+  frameEl(state.index)?.setAttribute('aria-selected', 'false');
+  state.index = i; state.seen.add(items[i].id);
+  const el = frameEl(i); el?.setAttribute('aria-selected', 'true'); el?.scrollIntoView({ block: 'nearest' }); el?.focus({ preventScroll: true });
+  renderLoupe(); renderCounts();
+}
+function histogram(p) {
+  if (histCache.has(p.id)) return Promise.resolve({ ...histCache.get(p.id), cached: true });
+  return new Promise((resolve) => {
+    const img = new Image(); img.crossOrigin = 'anonymous'; img.src = photoUrl(p, 420);
+    img.onload = () => {
+      const c = document.createElement('canvas'); c.width = 160; c.height = Math.round(160 * img.height / img.width);
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0, c.width, c.height);
+      const data = g.getImageData(0, 0, c.width, c.height).data; const bins = [new Array(64).fill(0), new Array(64).fill(0), new Array(64).fill(0)];
+      for (let k = 0; k < data.length; k += 4) for (let ch = 0; ch < 3; ch++) bins[ch][data[k + ch] >> 2]++;
+      const result = { bins }; histCache.set(p.id, result); resolve({ ...result, cached: false });
+    };
+    img.onerror = () => resolve(null);
+  });
+}
+function histPath(bin, max) { return 'M0,84 ' + bin.map((v, i) => `L${(i / 63) * 340},${84 - (v / max) * 80}`).join(' ') + ' L340,84 Z'; }
+async function renderLoupe() {
+  const p = current()[state.index];
+  $('view').innerHTML = `<img alt="${p.file}" src="${photoUrl(p, 760)}">${p.flag !== 'none' ? `<span class="tag ${p.flag}">${p.flag === 'pick' ? '留用' : '淘汰'}</span>` : ''}`;
+  $('lName').textContent = `${p.file}.${p.raw}`;
+  $('lSub').textContent = p.paired ? '含同名 JPEG' : '';
+  $('kPick').setAttribute('aria-pressed', p.flag === 'pick'); $('kDrop').setAttribute('aria-pressed', p.flag === 'reject');
+  $('lInfo').innerHTML = `<div class="hist" id="hist"></div><div class="expo"><div><b>${p.aperture}</b><span>光圈</span></div><div><b>${p.shutter}</b><span>快门</span></div><div><b>${p.iso}</b><span>ISO</span></div><div><b>${p.focal}mm</b><span>焦距</span></div></div><dl><dt>相机</dt><dd>${p.camera}</dd><dt>镜头</dt><dd>${p.lens}</dd><dt>时间</dt><dd>${p.date} ${p.time}</dd><dt>文件夹</dt><dd>${folders[state.folder].name}</dd></dl>`;
+  const id = p.id; const h = await histogram(p);
+  if (!h || current()[state.index].id !== id || !$('hist')) return;
+  const max = Math.max(...h.bins.flat()) || 1;
+  const colors = ['#d8402c', '#1f7a4d', '#2f5fb3'];
+  $('hist').innerHTML = `<svg viewBox="0 0 340 84" preserveAspectRatio="none" aria-label="RGB 直方图">${h.bins.map((b, ch) => `<path d="${histPath(b, max)}" fill="${colors[ch]}" fill-opacity=".28"/>`).join('')}</svg>${h.cached ? '<span class="cached">已缓存</span>' : ''}`;
+}
+let toastTimer;
+function toast(text, undo) {
+  $('toast').innerHTML = `<span>${text}</span>${undo ? '<button id="undo">撤销</button>' : ''}`;
+  $('toast').classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('on'), 2600);
+  if (undo) $('undo').onclick = () => { undo(); $('toast').classList.remove('on'); };
+}
+function mark(change, advance = true) {
+  const i = state.index; const p = current()[i]; const before = { flag: p.flag, rating: p.rating };
+  Object.assign(p, change);
+  const el = frameEl(i);
+  if (el) { el.classList.remove('pick', 'reject', 'none'); void el.offsetWidth; el.classList.add(p.flag); el.querySelector('.stars').textContent = '★'.repeat(p.rating); if (state.hide && p.flag === 'reject') setTimeout(() => el.classList.add('hidden'), 260); }
+  renderLoupe(); renderCounts();
+  toast(`${p.file} ${change.flag === 'pick' ? '留用' : change.flag === 'reject' ? '淘汰' : change.rating !== undefined ? `评为 ${change.rating} 星` : '已清除'}`, () => { Object.assign(p, before); renderSheet(); select(i); });
+  if (advance && change.flag && change.flag !== 'none') setTimeout(() => select(i + 1), 220);
+}
+$('strips').addEventListener('click', (e) => { const f = e.target.closest('.frame'); if (f) select(Number(f.dataset.i)); });
+$('tree').addEventListener('click', (e) => {
+  const more = e.target.closest('[data-more]');
+  if (more) { e.stopPropagation(); const r = more.getBoundingClientRect(); Object.assign($('menu').style, { left: `${r.right + 4}px`, top: `${r.top}px` }); $('menu').classList.add('open'); return; }
+  const f = e.target.closest('.folder'); if (!f) return;
+  state.folder = Number(f.dataset.i); state.index = 0; renderTree(); renderSheet(); select(0);
+});
+document.addEventListener('click', (e) => { if (!e.target.closest('#menu')) $('menu').classList.remove('open'); });
+$('kPick').onclick = () => mark({ flag: 'pick' });
+$('kDrop').onclick = () => mark({ flag: 'reject' });
+$('kNone').onclick = () => mark({ flag: 'none' }, false);
+$('fHide').onclick = () => { state.hide = !state.hide; $('fHide').setAttribute('aria-pressed', state.hide); renderSheet(); };
+$('fPick').onclick = () => { state.filter = state.filter === 'pick' ? 'all' : 'pick'; $('fPick').setAttribute('aria-pressed', state.filter === 'pick'); $('fReject').setAttribute('aria-pressed', 'false'); renderSheet(); };
+$('fReject').onclick = () => { state.filter = state.filter === 'reject' ? 'all' : 'reject'; $('fReject').setAttribute('aria-pressed', state.filter === 'reject'); $('fPick').setAttribute('aria-pressed', 'false'); renderSheet(); };
+function figure(p) { return `<figure><img alt="" src="${photoUrl(p, 260)}"><figcaption><span>${p.file}</span><span>${p.paired ? 'RAW+JPG' : p.raw}</span></figcaption></figure>`; }
+function openReview() {
+  const picks = photos.filter((p) => p.flag === 'pick'); const drops = photos.filter((p) => p.flag === 'reject');
+  $('rPickN').textContent = picks.length; $('rDropN').textContent = drops.length;
+  $('rPick').innerHTML = picks.map(figure).join(''); $('rDrop').innerHTML = drops.map(figure).join('');
+  const files = drops.reduce((n, p) => n + (p.paired ? 2 : 1), 0);
+  $('trashNote').textContent = `共 ${files} 个文件。`;
+  $('review').classList.add('open');
+}
+$('finish').onclick = openReview;
+$('backToSheet').onclick = () => $('review').classList.remove('open');
+$('trash').onclick = () => { const n = photos.filter((p) => p.flag === 'reject').length; $('review').classList.remove('open'); toast(`已把 ${n} 张淘汰照片移到废纸篓`, () => {}); };
+document.addEventListener('keydown', (e) => {
+  if ($('review').classList.contains('open')) { if (e.key === 'Escape') $('review').classList.remove('open'); return; }
+  const cols = 5;
+  const moves = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols };
+  if (moves[e.key]) { e.preventDefault(); return select(state.index + moves[e.key]); }
+  const k = e.key.toLowerCase();
+  if (k === 'p') return mark({ flag: 'pick' });
+  if (k === 'x') return mark({ flag: 'reject' });
+  if (k === 'u') return mark({ flag: 'none' }, false);
+  if (/^[0-5]$/.test(e.key)) return mark({ rating: Number(e.key) }, false);
+});
+renderTree(); renderSheet(); select(0);
+</script>
+</body>
+</html>

@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebulume 独立查看器窗口</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.31.0/dist/tabler-icons.min.css">
+<style>
+:root {
+  --v-window: #1b1b1b;
+  --v-chrome: rgba(30, 30, 30, .86);
+  --v-raised: #303030;
+  --v-line: #3a3a3a;
+  --v-text: #ececec;
+  --v-text-2: #a6a6a6;
+  --v-text-3: #7a7a7a;
+  --v-star: #f0c050;
+  --v-pick: #86cf9c;
+  --v-reject: #e8786f;
+  --v-ring: #f5f5f5;
+  --v-ease: cubic-bezier(.2, 0, 0, 1);
+  --v-font: var(--font-sans, "Anthropic Sans", -apple-system, "PingFang SC", "Helvetica Neue", sans-serif);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: transparent; }
+body { font-family: var(--v-font); color: var(--v-text); -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--v-ring); outline-offset: 2px; }
+.win { position: relative; display: grid; grid-template-columns: 1fr 0; height: 100vh; background: var(--v-window); overflow: hidden; transition: grid-template-columns 200ms var(--v-ease); }
+.win.info { grid-template-columns: 1fr 300px; }
+.stage { position: relative; overflow: hidden; cursor: default; }
+.stage.zoomed { cursor: grab; }
+.stage.dragging { cursor: grabbing; }
+.stage img { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; -webkit-user-drag: none; }
+.titlebar { position: absolute; left: 0; right: 0; top: 0; z-index: 3; display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 12px 0 16px; background: var(--v-chrome); transition: opacity 200ms var(--v-ease), transform 200ms var(--v-ease); }
+.lights { display: flex; gap: 8px; margin-right: 6px; }
+.lights span { width: 12px; height: 12px; border-radius: 6px; background: #5a5a5a; }
+.lights span:nth-child(1) { background: #ec6a5e; }
+.lights span:nth-child(2) { background: #f4bf4f; }
+.lights span:nth-child(3) { background: #61c554; }
+.title { min-width: 0; }
+.title b { display: block; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.title span { display: block; font-size: 12px; color: var(--v-text-3); white-space: nowrap; }
+.titlebar .grow { flex: 1; }
+.tool { height: 30px; min-width: 30px; padding: 0 8px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: var(--v-text-2); font-size: 13px; }
+.tool i { font-size: 18px; }
+.tool:hover { background: rgba(255, 255, 255, .08); color: var(--v-text); }
+.tool[aria-pressed="true"] { color: var(--v-text); background: rgba(255, 255, 255, .1); }
+.tool.pick[aria-pressed="true"] { color: var(--v-pick); }
+.tool.reject[aria-pressed="true"] { color: var(--v-reject); }
+.stars { display: flex; }
+.stars button { width: 26px; height: 30px; display: grid; place-items: center; font-size: 16px; color: var(--v-text-3); border-radius: 6px; }
+.stars button.on { color: var(--v-star); }
+.stars button:hover { background: rgba(255, 255, 255, .08); }
+.sep { width: 1px; height: 18px; background: var(--v-line); margin: 0 4px; }
+.zoombadge { position: absolute; left: 50%; top: 60px; z-index: 3; transform: translateX(-50%); padding: 4px 10px; border-radius: 12px; background: var(--v-chrome); font-size: 12px; color: var(--v-text-2); opacity: 0; transition: opacity 160ms var(--v-ease); pointer-events: none; }
+.zoombadge.on { opacity: 1; }
+.side-nav { position: absolute; top: 50%; z-index: 2; width: 48px; height: 72px; margin-top: -36px; border-radius: 10px; display: grid; place-items: center; font-size: 24px; color: var(--v-text-2); background: var(--v-chrome); transition: opacity 200ms var(--v-ease); }
+.side-nav:hover { color: var(--v-text); }
+.side-nav.prev { left: 14px; }
+.side-nav.next { right: 14px; }
+.bottom { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 10px 14px; background: var(--v-chrome); transition: opacity 200ms var(--v-ease), transform 200ms var(--v-ease); }
+.where { font-size: 12px; color: var(--v-text-2); white-space: nowrap; }
+.where b { color: var(--v-text); font-weight: 500; }
+.film { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; justify-content: safe center; }
+.film::-webkit-scrollbar { display: none; }
+.film button { position: relative; flex: none; height: 46px; border-radius: 2px; overflow: hidden; opacity: .5; transition: opacity 120ms var(--v-ease); }
+.film button:hover { opacity: .85; }
+.film button[aria-current="true"] { opacity: 1; outline: 2px solid var(--v-ring); outline-offset: 1px; }
+.film img { height: 100%; display: block; }
+.film .mark { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; }
+.film .mark.pick { background: var(--v-pick); }
+.film .mark.reject { background: var(--v-reject); }
+.zoomctl { display: flex; align-items: center; gap: 2px; }
+.win.idle .titlebar { opacity: 0; transform: translateY(-6px); pointer-events: none; }
+.win.idle .bottom { opacity: 0; transform: translateY(6px); pointer-events: none; }
+.win.idle .side-nav { opacity: 0; pointer-events: none; }
+.win.idle .stage { cursor: none; }
+.banner { position: absolute; left: 50%; top: 60px; z-index: 3; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 12px; border-radius: 10px; background: var(--v-chrome); font-size: 13px; color: var(--v-text-2); white-space: nowrap; transition: opacity 200ms var(--v-ease); }
+.banner button { height: 26px; padding: 0 10px; border-radius: 6px; background: var(--v-raised); color: var(--v-text); font-size: 12px; }
+.banner button:hover { background: var(--v-line); }
+.banner .x { background: none; color: var(--v-text-3); padding: 0 6px; }
+.win.idle .banner { opacity: 0; pointer-events: none; }
+.panel { overflow: auto; min-width: 0; padding: 60px 20px 20px; background: #232323; font-size: 13px; }
+.panel h3 { margin: 16px 0 8px; font-size: 16px; font-weight: 500; }
+.panel h3:first-child { margin-top: 0; }
+.hist { height: 72px; border-radius: 6px; background: var(--v-window); position: relative; overflow: hidden; }
+.hist svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.exposure { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+.exposure div { padding: 8px; border-radius: 8px; background: var(--v-raised); }
+.exposure b { display: block; font-size: 15px; font-weight: 500; }
+.exposure span { color: var(--v-text-3); font-size: 11px; }
+.panel dl { display: grid; grid-template-columns: 56px 1fr; gap: 6px 10px; margin: 0; }
+.panel dt { color: var(--v-text-3); }
+.panel dd { margin: 0; overflow-wrap: anywhere; }
+.menu { position: absolute; z-index: 30; right: 12px; top: 46px; min-width: 220px; padding: 4px; border-radius: 10px; background: var(--v-raised); border: 1px solid var(--v-line); font-size: 13px; display: none; }
+.menu.open { display: block; }
+.menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border-radius: 6px; text-align: left; }
+.menu button:hover { background: var(--v-line); }
+.menu i { font-size: 16px; color: var(--v-text-2); }
+.menu kbd { margin-left: auto; font: inherit; font-size: 11px; color: var(--v-text-3); }
+.menu hr { border: 0; border-top: 1px solid var(--v-line); margin: 4px 6px; }
+.toast { position: absolute; left: 50%; bottom: 84px; z-index: 40; display: flex; gap: 8px; align-items: center; padding: 6px 8px 6px 12px; border-radius: 8px; background: var(--v-text); color: var(--v-window); font-size: 13px; opacity: 0; transform: translate(-50%, 8px); transition: opacity 180ms var(--v-ease), transform 180ms var(--v-ease); pointer-events: none; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.toast button { padding: 2px 8px; border-radius: 6px; font-weight: 500; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0s !important; } }
+</style>
+</head>
+<body>
+<div class="win" id="win">
+  <div class="stage" id="stage" aria-label="照片">
+    <header class="titlebar">
+      <div class="lights" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="title"><b id="tName"></b><span id="tSub"></span></div>
+      <span class="grow"></span>
+      <div class="stars" id="stars" aria-label="评级"></div>
+      <button class="tool pick" id="bPick" aria-pressed="false" aria-label="留用（P）"><i class="ti ti-flag" aria-hidden="true"></i></button>
+      <button class="tool reject" id="bReject" aria-pressed="false" aria-label="淘汰（X）"><i class="ti ti-x" aria-hidden="true"></i></button>
+      <span class="sep"></span>
+      <button class="tool" aria-label="向左旋转（不修改原片）"><i class="ti ti-rotate-2" aria-hidden="true"></i></button>
+      <button class="tool" aria-label="裁剪"><i class="ti ti-crop" aria-hidden="true"></i></button>
+      <button class="tool" aria-label="分享"><i class="ti ti-share" aria-hidden="true"></i></button>
+      <button class="tool" id="bTrash" aria-label="移到废纸篓（⌘⌫）"><i class="ti ti-trash" aria-hidden="true"></i></button>
+      <button class="tool" id="bInfo" aria-pressed="false" aria-label="照片信息（I）"><i class="ti ti-info-circle" aria-hidden="true"></i></button>
+      <button class="tool" id="bMore" aria-label="更多"><i class="ti ti-dots" aria-hidden="true"></i></button>
+    </header>
+    <div class="banner" id="banner">这个文件夹不在图片库里，评级和旗标只保存在本机<button id="addLib">加入图片库</button><button class="x" id="closeBanner" aria-label="不再提示"><i class="ti ti-x" aria-hidden="true"></i></button></div>
+    <div class="zoombadge" id="zoomBadge"></div>
+    <button class="side-nav prev" id="prev" aria-label="上一张（←）"><i class="ti ti-chevron-left" aria-hidden="true"></i></button>
+    <button class="side-nav next" id="next" aria-label="下一张（→）"><i class="ti ti-chevron-right" aria-hidden="true"></i></button>
+    <footer class="bottom">
+      <div class="where" id="where"></div>
+      <div class="film" id="film"></div>
+      <div class="zoomctl"><button class="tool" id="zOut" aria-label="缩小"><i class="ti ti-minus" aria-hidden="true"></i></button><button class="tool" id="zLabel" aria-label="在适应窗口与 100% 之间切换"></button><button class="tool" id="zIn" aria-label="放大"><i class="ti ti-plus" aria-hidden="true"></i></button><button class="tool" aria-label="全屏（F）"><i class="ti ti-arrows-maximize" aria-hidden="true"></i></button></div>
+    </footer>
+  </div>
+  <aside class="panel" id="panel" aria-label="照片信息"></aside>
+  <div class="menu" id="menu" role="menu">
+    <button role="menuitem"><i class="ti ti-photo" aria-hidden="true"></i>在图片库中显示</button>
+    <button role="menuitem"><i class="ti ti-folder-plus" aria-hidden="true"></i>把这个文件夹加入图片库</button>
+    <hr>
+    <button role="menuitem"><i class="ti ti-download" aria-hidden="true"></i>导出 JPEG…<kbd>⌘E</kbd></button>
+    <button role="menuitem"><i class="ti ti-copy" aria-hidden="true"></i>拷贝照片<kbd>⌘C</kbd></button>
+    <button role="menuitem"><i class="ti ti-external-link" aria-hidden="true"></i>在访达中显示<kbd>⌘R</kbd></button>
+    <hr>
+    <button role="menuitem"><i class="ti ti-player-play" aria-hidden="true"></i>幻灯片播放<kbd>空格</kbd></button>
+    <button role="menuitem"><i class="ti ti-layout-columns" aria-hidden="true"></i>与下一张对比<kbd>C</kbd></button>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+</div>
+<script src="photos.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const folder = window.PHOTOS.filter((p) => p.date === '2026-10-18' || p.date === '2026-10-19').slice(0, 18);
+const state = { index: 4, zoom: 'fit', scale: 1, x: 0, y: 0, info: false };
+let img;
+let idleTimer;
+function fit(p) { const s = $('stage').getBoundingClientRect(); const k = Math.min(s.width / p.w, s.height / p.h); return { k, x: (s.width - p.w * k) / 2, y: (s.height - p.h * k) / 2 }; }
+function apply(animate) {
+  const p = folder[state.index];
+  img.style.transition = animate ? 'transform 200ms var(--v-ease)' : 'none';
+  img.style.width = `${p.w}px`; img.style.height = `${p.h}px`;
+  img.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.scale})`;
+  const f = fit(p); const pct = Math.round((state.scale / 1) * 100);
+  $('zLabel').textContent = Math.abs(state.scale - f.k) < 0.001 ? '适应窗口' : `${pct}%`;
+  $('stage').classList.toggle('zoomed', state.scale > f.k + 0.001);
+}
+function badge(text) { const b = $('zoomBadge'); b.textContent = text; b.classList.add('on'); clearTimeout(badge.t); badge.t = setTimeout(() => b.classList.remove('on'), 900); }
+function show(index) {
+  state.index = index; const p = folder[index];
+  const next = document.createElement('img'); next.alt = p.file; next.draggable = false;
+  next.src = photoUrl(p, 600);
+  const full = new Image(); full.src = photoUrl(p, 2400); full.onload = () => { if (img === next) next.src = full.src; };
+  const f = fit(p); state.scale = f.k; state.x = f.x; state.y = f.y; state.zoom = 'fit';
+  if (img) { const old = img; old.style.transition = 'opacity 120ms var(--v-ease)'; old.style.opacity = '0'; setTimeout(() => old.remove(), 140); }
+  img = next; $('stage').prepend(next); apply(false);
+  $('tName').textContent = `${p.file}.${p.raw}${p.paired ? ' + JPG' : ''}`;
+  $('tSub').textContent = `${p.w} × ${p.h}，${p.camera}`;
+  $('where').innerHTML = `<b>${index + 1}</b> / ${folder.length}  Kyoto 岚山`;
+  $('stars').innerHTML = [1, 2, 3, 4, 5].map((n) => `<button class="${p.rating >= n ? 'on' : ''}" data-n="${n}" aria-label="评为 ${n} 星"><i class="ti ti-star" aria-hidden="true"></i></button>`).join('');
+  $('bPick').setAttribute('aria-pressed', p.flag === 'pick'); $('bReject').setAttribute('aria-pressed', p.flag === 'reject');
+  $('film').innerHTML = folder.map((q, i) => `<button data-i="${i}" aria-current="${i === index}" aria-label="${q.file}"><img alt="" src="${photoUrl(q, 140)}">${q.flag !== 'none' ? `<span class="mark ${q.flag}"></span>` : ''}</button>`).join('');
+  $('film').querySelector('[aria-current="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest' });
+  $('prev').style.visibility = index > 0 ? 'visible' : 'hidden'; $('next').style.visibility = index < folder.length - 1 ? 'visible' : 'hidden';
+  renderPanel(p);
+  for (const n of [index + 1, index - 1]) if (folder[n]) new Image().src = photoUrl(folder[n], 2400);
+}
+function renderPanel(p) {
+  $('panel').innerHTML = `<h3>直方图</h3><div class="hist" id="hist"></div><div class="exposure"><div><b>${p.aperture}</b><span>光圈</span></div><div><b>${p.shutter}</b><span>快门</span></div><div><b>${p.iso}</b><span>ISO</span></div></div><h3>拍摄</h3><dl><dt>相机</dt><dd>${p.camera}</dd><dt>镜头</dt><dd>${p.lens}</dd><dt>焦距</dt><dd>${p.focal} mm</dd><dt>时间</dt><dd>${p.date} ${p.time}</dd></dl><h3>文件</h3><dl><dt>尺寸</dt><dd>${p.w} × ${p.h}</dd><dt>位置</dt><dd>~/Pictures/Kyoto/01 岚山/${p.file}.${p.raw}</dd></dl>`;
+  if (!state.info) return;
+  const src = new Image(); src.crossOrigin = 'anonymous'; src.src = photoUrl(p, 300);
+  src.onload = () => { if (folder[state.index] !== p) return; const c = document.createElement('canvas'); c.width = 120; c.height = Math.max(1, Math.round(120 * src.height / src.width)); const g = c.getContext('2d'); g.drawImage(src, 0, 0, c.width, c.height); const d = g.getImageData(0, 0, c.width, c.height).data; const bins = [0, 1, 2].map(() => new Array(64).fill(0)); for (let k = 0; k < d.length; k += 4) for (let ch = 0; ch < 3; ch++) bins[ch][d[k + ch] >> 2]++; const max = Math.max(...bins.flat()); const colors = ['#e8786f', '#86cf9c', '#5b8fd9']; $('hist').innerHTML = `<svg viewBox="0 0 260 72" preserveAspectRatio="none" role="img" aria-label="RGB 直方图">${bins.map((b, ch) => `<path d="M0,72 ${b.map((v, i) => `L${(i / 63) * 260},${72 - (v / max) * 68}`).join(' ')} L260,72 Z" fill="${colors[ch]}" fill-opacity=".35"/>`).join('')}</svg>`; };
+}
+function zoomAt(factor, cx, cy) {
+  const p = folder[state.index]; const f = fit(p);
+  const scale = Math.min(8, Math.max(f.k, state.scale * factor));
+  const r = $('stage').getBoundingClientRect(); const px = cx - r.left; const py = cy - r.top;
+  state.x = px - (px - state.x) * (scale / state.scale); state.y = py - (py - state.y) * (scale / state.scale); state.scale = scale;
+  if (Math.abs(scale - f.k) < 0.001) { state.x = f.x; state.y = f.y; }
+  apply(true); badge(Math.abs(scale - f.k) < 0.001 ? '适应窗口' : `${Math.round(scale * 100)}%`);
+}
+function toggle100(cx, cy) {
+  const p = folder[state.index]; const f = fit(p); const r = $('stage').getBoundingClientRect();
+  if (state.scale > f.k + 0.001) { state.scale = f.k; state.x = f.x; state.y = f.y; apply(true); badge('适应窗口'); }
+  else zoomAt(1 / state.scale, cx ?? r.left + r.width / 2, cy ?? r.top + r.height / 2);
+}
+$('stage').addEventListener('dblclick', (e) => { if (e.target === img) toggle100(e.clientX, e.clientY); });
+$('stage').addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY); }, { passive: false });
+$('stage').addEventListener('pointerdown', (e) => {
+  if (e.target !== img || !$('stage').classList.contains('zoomed')) return;
+  const start = { x: e.clientX, y: e.clientY, sx: state.x, sy: state.y }; $('stage').classList.add('dragging'); $('stage').setPointerCapture(e.pointerId);
+  $('stage').onpointermove = (m) => { state.x = start.sx + m.clientX - start.x; state.y = start.sy + m.clientY - start.y; apply(false); };
+  $('stage').onpointerup = () => { $('stage').onpointermove = null; $('stage').classList.remove('dragging'); };
+});
+$('zIn').onclick = () => { const r = $('stage').getBoundingClientRect(); zoomAt(1.25, r.left + r.width / 2, r.top + r.height / 2); };
+$('zOut').onclick = () => { const r = $('stage').getBoundingClientRect(); zoomAt(0.8, r.left + r.width / 2, r.top + r.height / 2); };
+$('zLabel').onclick = () => toggle100();
+$('prev').onclick = () => state.index > 0 && show(state.index - 1);
+$('next').onclick = () => state.index < folder.length - 1 && show(state.index + 1);
+$('film').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) show(Number(b.dataset.i)); });
+function mark(change) { const p = folder[state.index]; const before = { flag: p.flag, rating: p.rating }; Object.assign(p, change); show(state.index); toast(`${p.file} ${change.rating !== undefined ? `评为 ${change.rating} 星` : p.flag === 'pick' ? '留用' : p.flag === 'reject' ? '淘汰' : '清除旗标'}`, () => { Object.assign(p, before); show(state.index); }); }
+$('stars').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) mark({ rating: Number(b.dataset.n) }); });
+$('bPick').onclick = () => mark({ flag: folder[state.index].flag === 'pick' ? 'none' : 'pick' });
+$('bReject').onclick = () => mark({ flag: folder[state.index].flag === 'reject' ? 'none' : 'reject' });
+function trash() {
+  const i = state.index; const [p] = folder.splice(i, 1);
+  show(Math.min(i, folder.length - 1));
+  toast(`已把 ${p.file}${p.paired ? ' 和同名 JPEG' : ''} 移到废纸篓`, () => { folder.splice(i, 0, p); show(i); });
+}
+$('bTrash').onclick = trash;
+$('bInfo').onclick = () => { state.info = !state.info; $('win').classList.toggle('info', state.info); $('bInfo').setAttribute('aria-pressed', state.info); setTimeout(() => show(state.index), 210); };
+$('bMore').onclick = (e) => { e.stopPropagation(); $('menu').classList.toggle('open'); };
+document.addEventListener('click', (e) => { if (!e.target.closest('#menu')) $('menu').classList.remove('open'); });
+$('closeBanner').onclick = () => $('banner').remove();
+$('addLib').onclick = () => { $('banner').remove(); toast('已把“01 岚山”加入图片库，正在建立索引'); };
+let toastTimer;
+function toast(text, undo) { const t = $('toast'); t.innerHTML = `<span>${text}</span>${undo ? '<button id="undo">撤销</button>' : ''}`; t.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 3000); if (undo) $('undo').onclick = () => { undo(); t.classList.remove('on'); }; }
+function wake() { $('win').classList.remove('idle'); clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (!$('menu').classList.contains('open')) $('win').classList.add('idle'); }, 2200); }
+document.addEventListener('pointermove', wake);
+document.addEventListener('keydown', (e) => {
+  wake();
+  if (e.key === 'ArrowRight') return $('next').click();
+  if (e.key === 'ArrowLeft') return $('prev').click();
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Backspace') { e.preventDefault(); return trash(); }
+  if (e.key === 'z' || e.key === 'Z') return toggle100();
+  const k = e.key.toLowerCase();
+  if (/^[0-5]$/.test(e.key)) return mark({ rating: Number(e.key) });
+  if (k === 'p') return mark({ flag: 'pick' });
+  if (k === 'x') return mark({ flag: 'reject' });
+  if (k === 'u') return mark({ flag: 'none' });
+  if (k === 'i') return $('bInfo').click();
+});
+show(state.index); wake();
+new ResizeObserver(() => { if (img) { const f = fit(folder[state.index]); if (state.scale <= f.k + 0.001 || state.zoom === 'fit') { state.scale = f.k; state.x = f.x; state.y = f.y; apply(false); } } }).observe($('stage'));
+</script>
+</body>
+</html>
