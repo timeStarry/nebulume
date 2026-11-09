@@ -12,6 +12,12 @@ export interface Library {
   availability?: Availability;
   hidden?: boolean;
   pair_raw_jpeg?: boolean;
+  /** From library.list: photos in the index that are not missing. */
+  asset_count?: number;
+  /** Newest camera-local capture day, YYYY-MM-DD. */
+  latest_capture?: string | null;
+  /** Up to four recent photos for the overview card. */
+  cover_asset_ids?: string[];
 }
 export interface Crop {
   x: number;

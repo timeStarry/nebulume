@@ -363,3 +363,20 @@ describe('update controller', () => {
     expect(other).not.toHaveBeenCalled();
   });
 });
+
+describe('update controller with a malformed support answer', () => {
+  it('treats a null answer as unsupported without throwing', async () => {
+    const controller = createUpdateController({
+      support: async () => null as unknown as { supported: boolean; kind: string },
+      check: async () => null,
+      prepare: async () => undefined,
+      relaunch: async () => undefined,
+      now: () => 0,
+      setTimer: () => () => undefined,
+      readAuto: () => true,
+      writeAuto: () => undefined,
+    });
+    await expect(controller.start()).resolves.toBeUndefined();
+    expect(controller.state()).toEqual({ kind: 'unsupported', reason: 'unsupported_platform' });
+  });
+});

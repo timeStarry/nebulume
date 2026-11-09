@@ -120,7 +120,16 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       };
       break;
     case 'library.list':
-      result = libraryVisible ? [{ ...browserLibrary }] : [];
+      result = libraryVisible
+        ? [
+            {
+              ...browserLibrary,
+              asset_count: [...assets.values()].length,
+              latest_capture: null,
+              cover_asset_ids: [...assets.values()].slice(0, 4).map((asset) => asset.id),
+            },
+          ]
+        : [];
       break;
     case 'library.update':
       if (params.id !== browserLibrary.id || !libraryVisible) throw new Error('图片库不存在。');

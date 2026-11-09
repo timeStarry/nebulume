@@ -251,3 +251,40 @@ fn locations_list_folder_and_remote_libraries_with_availability() {
         1
     );
 }
+
+#[test]
+fn library_list_reports_photo_count_and_up_to_four_covers() {
+    let data = tempfile::tempdir().unwrap();
+    let photos = tempfile::tempdir().unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    for index in 0..6 {
+        fs::write(photos.path().join(format!("photo-{index}.ppm")), PHOTO).unwrap();
+    }
+    let svc = Service::open(data.path()).unwrap();
+    let full = svc
+        .execute("library.add", json!({"name":"满","root":photos.path()}))
+        .unwrap();
+    svc.execute("library.add", json!({"name":"空","root":empty.path()}))
+        .unwrap();
+    svc.execute("library.scan", json!({"library_id":full["id"]}))
+        .unwrap();
+    let listed = svc.execute("library.list", json!({})).unwrap();
+    let by_name = |name: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|library| library["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let full = by_name("满");
+    assert_eq!(full["asset_count"], 6);
+    let covers = full["cover_asset_ids"].as_array().unwrap();
+    assert_eq!(covers.len(), 4);
+    let ids: std::collections::HashSet<_> = covers.iter().collect();
+    assert_eq!(ids.len(), 4, "covers are distinct photos");
+    let empty = by_name("空");
+    assert_eq!(empty["asset_count"], 0);
+    assert_eq!(empty["cover_asset_ids"], json!([]));
+}

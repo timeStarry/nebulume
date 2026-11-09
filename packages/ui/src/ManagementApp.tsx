@@ -17,7 +17,7 @@ import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import { Thumbnail } from './PhotoView';
-import { gridTier, watchDevicePixelRatio } from './preview-url';
+import { gridTier, previewUrl, watchDevicePixelRatio } from './preview-url';
 import StorageWorkspace from './StorageWorkspace';
 import ImportWorkspace from './ImportWorkspace';
 import Viewer, { type CullQueue, type ViewerMode } from './Viewer';
@@ -1203,6 +1203,7 @@ export default function ManagementApp() {
                           onClick={() => enterLibrary(library)}
                           aria-label={`打开图片库 ${library.name}，${availabilityPresentation(library).label}`}
                         >
+                          <LibraryCovers library={library} />
                           <div class="library-card-top">
                             <Icon name="folder" size={26} />
                             <span>{sourceKind(library.source_kind)}</span>
@@ -1215,7 +1216,17 @@ export default function ManagementApp() {
                             <Icon name="right" size={17} />
                           </div>
                           <h2>{library.name}</h2>
-                          <p title={libraryLocation(library)}>{libraryLocation(library)}</p>
+                          <p class="library-card-stats">
+                            {library.asset_count
+                              ? `${library.asset_count.toLocaleString()} 张照片`
+                              : '尚无照片'}
+                            <Show when={library.latest_capture}>
+                              {(day) => <span> · 最近拍摄 {day()}</span>}
+                            </Show>
+                          </p>
+                          <p class="library-card-location" title={libraryLocation(library)}>
+                            {libraryLocation(library)}
+                          </p>
                           <Show
                             when={
                               (library.source_name && library.source_name !== library.name) ||
@@ -1258,9 +1269,6 @@ export default function ManagementApp() {
                     )}
                   </For>
                 </div>
-                <Show when={!desktop}>
-                  <div class="workspace-note">关闭页面后，当前会话的图片与编辑记录会清除。</div>
-                </Show>
               </section>
             }
           >
@@ -2070,12 +2078,60 @@ function CullingSettings() {
     </section>
   );
 }
+/** Up to four recent photos as a mosaic; an empty library shows its kind instead. */
+function LibraryCovers(props: { library: Library }) {
+  const ids = () => props.library.cover_asset_ids || [];
+  return (
+    <div class={`library-covers count-${Math.min(4, ids().length)}`} aria-hidden="true">
+      <Show when={ids().length} fallback={<Icon name="photo" size={30} />}>
+        <For each={ids()}>{(id) => <CoverImage id={id} />}</For>
+      </Show>
+    </div>
+  );
+}
+function CoverImage(props: { id: string }) {
+  const [src, setSrc] = createSignal<string>();
+  void Promise.resolve(previewUrl({ id: props.id }, 't256')).then(setSrc, () => undefined);
+  return (
+    <Show when={src()}>{(url) => <img src={url()} alt="" loading="lazy" draggable={false} />}</Show>
+  );
+}
+const SETTINGS_SECTIONS = [
+  { id: 'settings-appearance', label: '外观与浏览' },
+  { id: 'settings-cache', label: '缓存与离线' },
+  { id: 'settings-shortcuts', label: '快捷键' },
+  { id: 'settings-owners', label: '其他配置' },
+  { id: 'settings-about', label: '关于与诊断' },
+] as const;
 /** Settings holds only app-wide preferences and this machine's resources.
  *  Everything owned by a location, library, card or preset is edited where it lives. */
 function Settings(props: {
   system?: Record<string, unknown>;
   onNavigate: (section: WorkspaceSection) => void;
 }) {
+  const [current, setCurrent] = createSignal<string>(SETTINGS_SECTIONS[0].id);
+  let content!: HTMLDivElement;
+  onMount(() => {
+    // Highlight the section nearest the top of the scrolled settings page.
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        if (visible) setCurrent(visible.target.id);
+      },
+      { rootMargin: '0px 0px -60% 0px' },
+    );
+    for (const section of SETTINGS_SECTIONS) {
+      const element = content.querySelector(`#${section.id}`);
+      if (element) observer.observe(element);
+    }
+    onCleanup(() => observer.disconnect());
+  });
+  function jump(id: string) {
+    setCurrent(id);
+    content.querySelector(`#${id}`)?.scrollIntoView({ block: 'start' });
+  }
   const owners: { what: string; where: string; section: WorkspaceSection }[] = [
     { what: '连接地址、凭据、证书信任、测试连接', where: '位置', section: 'sources' },
     {
@@ -2093,95 +2149,118 @@ function Settings(props: {
           <h1>设置</h1>
         </div>
       </header>
-      <section class="settings-panel">
-        <h2>外观</h2>
-        <div class="settings-row">
-          <ThemeControl />
-        </div>
-      </section>
-      <CullingSettings />
-      <CacheSettings />
-      <section class="settings-panel">
-        <h2>快捷键</h2>
-        <h3>图片库网格</h3>
-        <div class="settings-shortcuts">
-          <span>独立查看照片</span>
-          <kbd>Enter / 双击</kbd>
-          <span>移动焦点（左右 / 上下一行）</span>
-          <kbd>← → ↑ ↓</kbd>
-          <span>首张 / 末张 / 翻一屏</span>
-          <kbd>Home / End / PgUp PgDn</kbd>
-          <span>范围选择 / 增减选择 / 全选</span>
-          <kbd>Shift 点击 / Ctrl ⌘ 点击 / Ctrl ⌘ A</kbd>
-          <span>评级 / 清除评级（作用于所选）</span>
-          <kbd>1–5 / 0</kbd>
-          <span>留用 / 淘汰 / 清除旗标（作用于所选）</span>
-          <kbd>P / X / U</kbd>
-          <span>照片菜单</span>
-          <kbd>右键 / Shift F10</kbd>
-          <span>取消多选，否则关闭信息</span>
-          <kbd>Esc</kbd>
-          <span>显示或隐藏信息</span>
-          <kbd>I</kbd>
-          <span>搜索当前图片库</span>
-          <kbd>Ctrl / ⌘ F</kbd>
-          <span>以当前筛选开始选图</span>
-          <kbd>Shift C</kbd>
-        </div>
-        <h3>查看窗口</h3>
-        <div class="settings-shortcuts">
-          <span>上一张 / 下一张</span>
-          <kbd>← / →</kbd>
-          <span>评级 / 清除评级</span>
-          <kbd>1–5 / 0</kbd>
-          <span>裁剪</span>
-          <kbd>C</kbd>
-          <span>显示或隐藏相机对焦点</span>
-          <kbd>P</kbd>
-          <span>全屏</span>
-          <kbd>F</kbd>
-          <span>切换到选图模式</span>
-          <kbd>Shift C</kbd>
-          <span>退出裁剪 / 全屏 / 关闭</span>
-          <kbd>Esc</kbd>
-        </div>
-        <h3>选图模式</h3>
-        <div class="settings-shortcuts">
-          <span>打星 / 清除星级</span>
-          <kbd>1–5 / 0</kbd>
-          <span>留用 / 淘汰 / 清除旗标</span>
-          <kbd>P / X / U</kbd>
-          <span>单张 / 对比视图</span>
-          <kbd>G / C</kbd>
-          <span>适合窗口 ↔ 1:1</span>
-          <kbd>Z</kbd>
-          <span>撤销上一次标记</span>
-          <kbd>Ctrl / ⌘ Z</kbd>
-          <span>显示或隐藏选图信息</span>
-          <kbd>Tab</kbd>
-          <span>显示或隐藏相机对焦点</span>
-          <kbd>Shift F</kbd>
-          <span>切回普通查看</span>
-          <kbd>Shift C</kbd>
-        </div>
-      </section>
-      <section class="settings-panel">
-        <h2>其他配置在哪里</h2>
-        <p>以下配置属于具体的位置、图片库或存储卡，在各自页面中修改。</p>
-        <ul class="settings-owners">
-          <For each={owners}>
-            {(owner) => (
-              <li>
-                <span>{owner.what}</span>
-                <button class="button small" onClick={() => props.onNavigate(owner.section)}>
-                  {owner.where}
-                </button>
-              </li>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="设置分区">
+          <For each={SETTINGS_SECTIONS}>
+            {(section) => (
+              <button
+                class={`settings-nav-item ${current() === section.id ? 'active' : ''}`}
+                aria-current={current() === section.id ? 'true' : undefined}
+                onClick={() => jump(section.id)}
+              >
+                {section.label}
+              </button>
             )}
           </For>
-        </ul>
-      </section>
-      <AboutPanel system={props.system} />
+        </nav>
+        <div class="settings-content" ref={content}>
+          <div id="settings-appearance" class="settings-group">
+            <section class="settings-panel">
+              <h2>外观</h2>
+              <div class="settings-row">
+                <ThemeControl />
+              </div>
+            </section>
+            <CullingSettings />
+          </div>
+          <div id="settings-cache" class="settings-group">
+            <CacheSettings />
+          </div>
+          <section id="settings-shortcuts" class="settings-panel">
+            <h2>快捷键</h2>
+            <h3>图片库网格</h3>
+            <div class="settings-shortcuts">
+              <span>独立查看照片</span>
+              <kbd>Enter / 双击</kbd>
+              <span>移动焦点（左右 / 上下一行）</span>
+              <kbd>← → ↑ ↓</kbd>
+              <span>首张 / 末张 / 翻一屏</span>
+              <kbd>Home / End / PgUp PgDn</kbd>
+              <span>范围选择 / 增减选择 / 全选</span>
+              <kbd>Shift 点击 / Ctrl ⌘ 点击 / Ctrl ⌘ A</kbd>
+              <span>评级 / 清除评级（作用于所选）</span>
+              <kbd>1–5 / 0</kbd>
+              <span>留用 / 淘汰 / 清除旗标（作用于所选）</span>
+              <kbd>P / X / U</kbd>
+              <span>照片菜单</span>
+              <kbd>右键 / Shift F10</kbd>
+              <span>取消多选，否则关闭信息</span>
+              <kbd>Esc</kbd>
+              <span>显示或隐藏信息</span>
+              <kbd>I</kbd>
+              <span>搜索当前图片库</span>
+              <kbd>Ctrl / ⌘ F</kbd>
+              <span>以当前筛选开始选图</span>
+              <kbd>Shift C</kbd>
+            </div>
+            <h3>查看窗口</h3>
+            <div class="settings-shortcuts">
+              <span>上一张 / 下一张</span>
+              <kbd>← / →</kbd>
+              <span>评级 / 清除评级</span>
+              <kbd>1–5 / 0</kbd>
+              <span>裁剪</span>
+              <kbd>C</kbd>
+              <span>显示或隐藏相机对焦点</span>
+              <kbd>P</kbd>
+              <span>全屏</span>
+              <kbd>F</kbd>
+              <span>切换到选图模式</span>
+              <kbd>Shift C</kbd>
+              <span>退出裁剪 / 全屏 / 关闭</span>
+              <kbd>Esc</kbd>
+            </div>
+            <h3>选图模式</h3>
+            <div class="settings-shortcuts">
+              <span>打星 / 清除星级</span>
+              <kbd>1–5 / 0</kbd>
+              <span>留用 / 淘汰 / 清除旗标</span>
+              <kbd>P / X / U</kbd>
+              <span>单张 / 对比视图</span>
+              <kbd>G / C</kbd>
+              <span>适合窗口 ↔ 1:1</span>
+              <kbd>Z</kbd>
+              <span>撤销上一次标记</span>
+              <kbd>Ctrl / ⌘ Z</kbd>
+              <span>显示或隐藏选图信息</span>
+              <kbd>Tab</kbd>
+              <span>显示或隐藏相机对焦点</span>
+              <kbd>Shift F</kbd>
+              <span>切回普通查看</span>
+              <kbd>Shift C</kbd>
+            </div>
+          </section>
+          <section id="settings-owners" class="settings-panel">
+            <h2>其他配置在哪里</h2>
+            <p>以下配置属于具体的位置、图片库或存储卡，在各自页面中修改。</p>
+            <ul class="settings-owners">
+              <For each={owners}>
+                {(owner) => (
+                  <li>
+                    <span>{owner.what}</span>
+                    <button class="button small" onClick={() => props.onNavigate(owner.section)}>
+                      {owner.where}
+                    </button>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </section>
+          <div id="settings-about" class="settings-group">
+            <AboutPanel system={props.system} />
+          </div>
+        </div>
+      </div>
     </section>
   );
 }

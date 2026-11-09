@@ -587,10 +587,19 @@ impl Service {
     }
 
     fn library_list(&self) -> Result<Value> {
+        let summaries = self.core.library_summaries()?;
+        let empty = json!({"asset_count": 0, "latest_capture": null, "cover_asset_ids": []});
         self.core
             .libraries()?
             .iter()
-            .map(|library| self.library_value(library))
+            .map(|library| {
+                let mut value = self.library_value(library)?;
+                let summary = summaries.get(&library.id).unwrap_or(&empty);
+                for key in ["asset_count", "latest_capture", "cover_asset_ids"] {
+                    value[key] = summary[key].clone();
+                }
+                Ok(value)
+            })
             .collect::<Result<Vec<_>>>()
             .map(|libraries| json!(libraries))
     }

@@ -1692,6 +1692,40 @@ impl Core {
         library.context("E_INVALID: A batch must contain 1 to 1000 assets")
     }
 
+    /// Photo count, latest capture day and up to four cover photos per library,
+    /// newest first. Read from the index only; no file or network access.
+    pub fn library_summaries(&self) -> Result<HashMap<String, Value>> {
+        let db = self.db()?;
+        let mut counts = db.prepare(
+     "SELECT library_id,COUNT(*),MAX(NULLIF(substr(captured_at,1,10),'')) FROM assets WHERE availability<>'missing' GROUP BY library_id",
+        )?;
+        let mut summaries: HashMap<String, Value> = counts
+            .query_map([], |row| {
+         Ok((
+      row.get::<_, String>(0)?,
+      json!({"asset_count": row.get::<_, i64>(1)?, "latest_capture": row.get::<_, Option<String>>(2)?, "cover_asset_ids": []}),
+         ))
+     })?
+     .collect::<rusqlite::Result<_>>()?;
+        let mut covers = db.prepare(
+            "SELECT library_id,id FROM (SELECT library_id,id,ROW_NUMBER() OVER (PARTITION BY library_id ORDER BY (captured_at='') ,captured_at DESC,modified_at DESC,id) AS rank FROM assets WHERE availability IN ('available','remote')) WHERE rank<=4 ORDER BY library_id,rank",
+ )?;
+        let rows = covers
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (library, id) in rows {
+            if let Some(ids) = summaries
+                .get_mut(&library)
+                .and_then(|summary| summary["cover_asset_ids"].as_array_mut())
+            {
+                ids.push(json!(id));
+            }
+        }
+        Ok(summaries)
+    }
+
     /// Camera models and lenses present in a library, most common first, for filter menus.
     fn asset_facets(&self, library_id: &str) -> Result<Value> {
         self.library(library_id)?;

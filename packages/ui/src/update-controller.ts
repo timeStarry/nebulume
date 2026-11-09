@@ -37,10 +37,17 @@ export interface UpdateEffects {
 export const FIRST_CHECK_DELAY_MS = 10_000;
 export const CHECK_INTERVAL_MS = 86_400_000;
 
-const UNSUPPORTED_REASONS: readonly UnsupportedReason[] = ['portable', 'development', 'unsupported_platform', 'browser'];
+const UNSUPPORTED_REASONS: readonly UnsupportedReason[] = [
+  'portable',
+  'development',
+  'unsupported_platform',
+  'browser',
+];
 
 function unsupportedReason(kind: string): UnsupportedReason {
-  return (UNSUPPORTED_REASONS as readonly string[]).includes(kind) ? (kind as UnsupportedReason) : 'unsupported_platform';
+  return (UNSUPPORTED_REASONS as readonly string[]).includes(kind)
+    ? (kind as UnsupportedReason)
+    : 'unsupported_platform';
 }
 
 function errorMessage(error: unknown): string {
@@ -90,7 +97,12 @@ export function createUpdateController(effects: UpdateEffects) {
       lastCheckedAt = effects.now();
       pending = update;
       if (update) {
-        set({ kind: 'available', version: update.version, notes: update.body ?? '', date: update.date });
+        set({
+          kind: 'available',
+          version: update.version,
+          notes: update.body ?? '',
+          date: update.date,
+        });
       } else {
         set({ kind: 'up-to-date', checkedAt: lastCheckedAt });
       }
@@ -122,7 +134,12 @@ export function createUpdateController(effects: UpdateEffects) {
       if (disposed) return;
       let result: { supported: boolean; kind: string };
       try {
-        result = await effects.support();
+        const answer = await effects.support();
+        // A missing or malformed answer is as untrustworthy as a failed one.
+        result =
+          answer && typeof answer.supported === 'boolean'
+            ? answer
+            : { supported: false, kind: 'unsupported_platform' };
       } catch {
         // Unknown support means the updater cannot be trusted here; never throw out of start.
         result = { supported: false, kind: 'unsupported_platform' };
