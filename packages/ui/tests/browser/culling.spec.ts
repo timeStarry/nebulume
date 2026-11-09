@@ -184,7 +184,7 @@ async function fixture(page: Page, options: { failFlag?: boolean } = {}) {
 
 const hud = (page: Page) => page.locator('.cull-hud');
 
-test('grid opens the culling window with the filtered queue description', async ({ page }) => {
+test('grid culls inside the library window over the filtered queue', async ({ page }) => {
   const { calls } = await fixture(page);
   await page.addInitScript(() => localStorage.setItem('nebulume.filters-open', 'true'));
   await page.goto('/');
@@ -195,13 +195,13 @@ test('grid opens the culling window with the filtered queue description', async 
   await page.getByRole('combobox', { name: '旗标筛选' }).selectOption('none');
   await expect(page.locator('.thumbnail')).toHaveCount(3);
   await page.locator('.thumbnail').first().click();
+  const listsBefore = calls.filter((call) => call.command === 'asset.list').length;
   await page.keyboard.press('Shift+C');
-  await expect
-    .poll(() => calls.find((call) => call.command === '$native/open_viewer')?.params)
-    .toMatchObject({
-      mode: 'cull',
-      queue: { library_id: library.id, options: { flag: 'none', library_id: library.id } },
-    });
+  await expect(hud(page)).toContainText('1 / 3');
+  // The queue is frozen from the same filter the grid shows.
+  const snapshot = calls.filter((call) => call.command === 'asset.list').slice(listsBefore);
+  expect(snapshot.at(-1)?.params).toMatchObject({ flag: 'none', library_id: library.id });
+  expect(calls.some((call) => call.command === '$native/open_viewer')).toBe(false);
 });
 
 test('marks advance after confirmation, keep a frozen queue and undo across photos', async ({

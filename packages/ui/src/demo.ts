@@ -154,6 +154,19 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
     case 'storage.list':
       result = [];
       break;
+    case 'asset.stats': {
+      const listed = browserAssetList(
+        [...assets.values()],
+        { ...(params as AssetListOptions), limit: 100000, offset: 0 },
+        browserLibrary.pair_raw_jpeg,
+      ).items;
+      result = browserStats(listed);
+      break;
+    }
+    case 'library.folders':
+      // Browser files have no folders.
+      result = { library_id: String(params.library_id), total: assets.size, folders: [] };
+      break;
     case 'asset.facets':
       result = browserAssetFacets([...assets.values()], String(params.library_id));
       break;
@@ -356,4 +369,49 @@ function localStamp(time: number): string {
   const d = new Date(time);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** Overview numbers for the demo, from the same list the grid shows. */
+function browserStats(items: Asset[]) {
+  const days = new Map<string, number>();
+  const cameras = new Map<string, number>();
+  const lenses = new Map<string, number>();
+  let picks = 0;
+  let rejects = 0;
+  let rated = 0;
+  let undated = 0;
+  for (const item of items) {
+    if (item.flag === 'pick') picks++;
+    else if (item.flag === 'reject') rejects++;
+    else if (item.rating > 0) rated++;
+    const day = item.captured_at?.slice(0, 10);
+    if (day) days.set(day, (days.get(day) ?? 0) + 1);
+    else undated++;
+    const camera = item.metadata?.Camera;
+    if (camera) cameras.set(camera, (cameras.get(camera) ?? 0) + 1);
+    const lens = item.metadata?.Lens;
+    if (lens) lenses.set(lens, (lenses.get(lens) ?? 0) + 1);
+  }
+  const ranked = (map: Map<string, number>) =>
+    [...map]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 12)
+      .map(([name, count]) => ({ name, count }));
+  return {
+    photos: items.length,
+    files: items.length,
+    bytes: items.reduce((sum, item) => sum + item.size, 0),
+    picks,
+    rejects,
+    rated,
+    unprocessed: items.length - picks - rejects - rated,
+    undated,
+    days: [...days]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([day, count]) => ({ day, count })),
+    cameras: ranked(cameras),
+    lenses: ranked(lenses),
+    focal: [],
+    iso: [],
+  };
 }

@@ -126,6 +126,7 @@ export function browserAssetList(
     (!query ||
       `${item.filename} ${Object.values(item.metadata).join(' ')}`.toLowerCase().includes(query)) &&
     item.rating >= (options.rating || 0) &&
+    (options.rating_max === undefined || item.rating <= options.rating_max) &&
     matchesFlag(item.flag || 'none', options.flag) &&
     (!options.camera || item.metadata.Camera === options.camera) &&
     (!options.lens || item.metadata.Lens === options.lens) &&

@@ -224,6 +224,41 @@ async function fixture(
       case 'asset.facets':
         result = browserAssetFacets(assets, 'library');
         break;
+      case 'asset.stats': {
+        const listed = browserAssetList(
+          assets,
+          { ...(call.params as AssetListOptions), limit: 100000, offset: 0 },
+          paired,
+        ).items;
+        const picks = listed.filter((item) => item.flag === 'pick').length;
+        const rejects = listed.filter((item) => item.flag === 'reject').length;
+        const rated = listed.filter(
+          (item) => item.flag !== 'pick' && item.flag !== 'reject' && item.rating > 0,
+        ).length;
+        const days = new Map<string, number>();
+        for (const item of listed)
+          if (item.captured_at)
+            days.set(
+              item.captured_at.slice(0, 10),
+              (days.get(item.captured_at.slice(0, 10)) ?? 0) + 1,
+            );
+        result = {
+          photos: listed.length,
+          files: listed.length,
+          bytes: listed.length * 100,
+          picks,
+          rejects,
+          rated,
+          unprocessed: listed.length - picks - rejects - rated,
+          undated: 0,
+          days: [...days].sort().map(([day, count]) => ({ day, count })),
+          cameras: [{ name: 'Fixture camera', count: listed.length }],
+          lenses: [],
+          focal: [],
+          iso: [{ label: '≤100', min: 0, max: 100, count: listed.length }],
+        };
+        break;
+      }
       default:
         result = null;
     }
@@ -1212,4 +1247,35 @@ test('opening a photo zooms it out of its tile and closing returns to the photo 
     'aria-label',
     (await cells.nth(1).getAttribute('aria-label'))!,
   );
+});
+
+test('the overview counts the filtered library and every figure leads back to its photos', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page, 12, 0, false, false, false, (assets) => {
+    assets[0].flag = 'pick';
+    assets[1].flag = 'pick';
+    assets[2].flag = 'reject';
+    assets[3].rating = 3;
+  });
+  await expect(page.locator('.collection-status')).toContainText('已载入 12 / 12');
+  await page.getByRole('tab', { name: '概览' }).click();
+  const overview = page.getByLabel('图片库概览');
+  await expect(overview).toContainText('12张照片');
+  await expect(overview).toContainText('17%留用率');
+  await expect(overview.getByRole('button', { name: '未处理 8 张' })).toBeVisible();
+  expect(calls.find((call) => call.command === 'asset.stats')?.params).toMatchObject({
+    library_id: 'library',
+  });
+  // A segment of the culling bar becomes a filter on the photo wall.
+  await overview.getByRole('button', { name: '未处理 8 张' }).click();
+  await expect(page.getByRole('tab', { name: '照片' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.filter-chip').filter({ hasText: '未处理' })).toBeVisible();
+  await expect
+    .poll(() => calls.filter((call) => call.command === 'asset.list').at(-1)?.params)
+    .toMatchObject({ flag: 'none', rating_max: 0 });
+  await expect(page.locator('.collection-status')).toContainText('已载入 8 / 8');
+  // The overview then follows the same filter as the grid.
+  await page.keyboard.press('Meta+3');
+  await expect(overview).toContainText('8张照片');
 });

@@ -31,6 +31,7 @@ import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, { type FolderAction } from './LibrarySidebar';
+import LibraryOverview from './LibraryOverview';
 import { Thumbnail } from './PhotoView';
 import { gridTier, previewUrl, watchDevicePixelRatio } from './preview-url';
 import StorageWorkspace from './StorageWorkspace';
@@ -117,6 +118,8 @@ export default function ManagementApp() {
   // A filter picked from an overview chart, shown as one removable chip.
   const [extra, setExtra] = createSignal<{ label: string; options: Partial<AssetListOptions> }>();
   const [folders, setFolders] = createSignal<LibraryFolders>();
+  // 照片 shows the grid, 概览 the statistics for the same filter; 选片 opens culling.
+  const [view, setView] = createSignal<'photos' | 'overview'>('photos');
   // Culling started from a folder waits for that folder's first page.
   const [cullWhenLoaded, setCullWhenLoaded] = createSignal(false);
   const [facets, setFacets] = createSignal<AssetFacets>();
@@ -392,6 +395,7 @@ export default function ManagementApp() {
     setBatches([]);
     setFolder('');
     setExtra(undefined);
+    setView('photos');
     clearMetadataFilters();
     setFacets(undefined);
     void loadFacets(library.id);
@@ -814,11 +818,8 @@ export default function ManagementApp() {
     // The viewer snapshots the whole filtered result, not just the loaded page.
     const queue = { library_id: id, options: { ...listOptions(), library_id: id } };
     const loaded = assets().map((item) => item.id);
-    if (desktop)
-      await action('正在打开选图…', async () => {
-        await openViewerWindow(start.id, loaded, { mode: 'cull', queue });
-      });
-    else setOverlay({ id: start.id, ids: loaded, mode: 'cull', queue });
+    viewerCurrent = start.id;
+    setOverlay({ id: start.id, ids: loaded, mode: 'cull', queue });
   }
   async function openFile() {
     if (!desktop) {
@@ -906,7 +907,26 @@ export default function ManagementApp() {
       if (!selectedId()) setSelectedId(assets()[0].id);
       return;
     }
-    if (event.ctrlKey || event.metaKey || event.altKey || section() !== 'libraries' || !libraryId())
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      ['1', '2', '3'].includes(event.key) &&
+      section() === 'libraries' &&
+      libraryId()
+    ) {
+      event.preventDefault();
+      if (event.key === '1') setView('photos');
+      else if (event.key === '2') void startCulling();
+      else setView('overview');
+      return;
+    }
+    if (
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      section() !== 'libraries' ||
+      !libraryId() ||
+      view() === 'overview'
+    )
       return;
     const index = assets().findIndex((asset) => asset.id === selectedId());
     const step = gridStep(event.key, index);
@@ -1134,7 +1154,7 @@ export default function ManagementApp() {
     setFolder(path);
     if (kind === 'cull') return setCullWhenLoaded(true);
     if (kind === 'scan') return void scan(library);
-    if (kind === 'overview') return setNotice('概览视图将显示这个文件夹的统计。');
+    if (kind === 'overview') return setView('overview');
     // Every pick in the folder, not only the loaded page.
     const ids: string[] = [];
     for (let offset = 0; ; offset += 1000) {
@@ -1508,6 +1528,39 @@ export default function ManagementApp() {
                     </button>
                     <span>/</span>
                     <h1>{library().name}</h1>
+                    <Show when={folder()}>
+                      <span class="heading-folder">{folder().replaceAll('/', ' / ')}</span>
+                    </Show>
+                  </div>
+                  <div class="view-switch" role="tablist" aria-label="视图">
+                    <button
+                      role="tab"
+                      aria-selected={view() === 'photos'}
+                      aria-keyshortcuts="Meta+1"
+                      onClick={() => setView('photos')}
+                    >
+                      <Icon name="grid" size={15} />
+                      照片
+                    </button>
+                    <button
+                      role="tab"
+                      aria-selected={false}
+                      aria-keyshortcuts="Meta+2"
+                      disabled={!assets().length || !!busy()}
+                      onClick={() => void startCulling()}
+                    >
+                      <Icon name="star" size={15} />
+                      选片
+                    </button>
+                    <button
+                      role="tab"
+                      aria-selected={view() === 'overview'}
+                      aria-keyshortcuts="Meta+3"
+                      onClick={() => setView('overview')}
+                    >
+                      <Icon name="info" size={15} />
+                      概览
+                    </button>
                   </div>
                   <div class="collection-actions">
                     <button
@@ -1919,6 +1972,21 @@ export default function ManagementApp() {
                   </div>
                 </Show>
                 <div class="collection-body">
+                  <Show when={view() === 'overview'}>
+                    <div class="overview-layer">
+                      <LibraryOverview
+                        options={{ ...listOptions(), limit: undefined, offset: undefined }}
+                        onPick={(pick) => {
+                          setExtra(pick);
+                          setView('photos');
+                        }}
+                        onCull={() => {
+                          setView('photos');
+                          void startCulling();
+                        }}
+                      />
+                    </div>
+                  </Show>
                   <div class="collection-scroll" ref={collectionScroll}>
                     <Show
                       when={assets().length}
