@@ -48,7 +48,9 @@ async function fixture(
     rating: 0,
     metadata: { Camera: 'Fixture' },
     availability: 'available',
-    captured_at: capturePending ? '' : `2026-10-${String(25 - (i % 20)).padStart(2, '0')}T00:00:00`,
+    captured_at: capturePending
+      ? ''
+      : `2026-10-${String(25 - Math.floor(i / 60)).padStart(2, '0')}T${String(23 - (i % 24)).padStart(2, '0')}:${String(59 - (Math.floor(i / 24) % 60)).padStart(2, '0')}:00`,
     capture_status: capturePending ? 'pending' : 'available',
     modified_at: `2026-10-${String(25 - (i % 20)).padStart(2, '0')}`,
   }));
@@ -840,24 +842,47 @@ test('select all marks every loaded photo and a plain click returns to one photo
     .toBe(3);
 });
 
-test('arrow keys move by cell and row, Home and End jump, and only one thumbnail is tabbable', async ({
+test('arrow keys move by photo and row, Home and End jump, and only one thumbnail is tabbable', async ({
   page,
 }) => {
   await fixture(page, 24);
   const cells = page.locator('.photo-grid .thumbnail');
   await expect(cells).toHaveCount(24);
   await expect(page.locator('.photo-grid .thumbnail[tabindex="0"]')).toHaveCount(1);
-  const columns = await page
-    .locator('.photo-grid')
-    .evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(' ').length);
-  expect(columns).toBeGreaterThan(1);
   await cells.first().click();
   await expect(cells.first()).toBeFocused();
   await page.keyboard.press('ArrowRight');
   await expect(cells.nth(1)).toBeFocused();
   await expect(cells.nth(1)).toHaveClass(/focused/);
+  // Positions relative to the grid, since moving focus may scroll it.
+  const start = await cells.nth(1).evaluate((cell) => {
+    const grid = cell.closest('.photo-grid')!.getBoundingClientRect();
+    const r = cell.getBoundingClientRect();
+    return { bottom: r.bottom - grid.top, center: r.left + r.width / 2 - grid.left };
+  });
   await page.keyboard.press('ArrowDown');
-  await expect(cells.nth(1 + columns)).toBeFocused();
+  // Focus follows one frame after the grid scrolls the row into view.
+  await expect(cells.nth(1)).not.toBeFocused();
+  // Rows hold different numbers of photos: Down lands on the next row, on the
+  // photo whose center is horizontally nearest the one it left.
+  const landed = await page.evaluate((center) => {
+    const focused = document.activeElement as HTMLElement;
+    const grid = focused.closest('.photo-grid')!.getBoundingClientRect();
+    const box = focused.getBoundingClientRect();
+    const row = [...document.querySelectorAll<HTMLElement>('.photo-grid .thumbnail')].filter(
+      (cell) => Math.abs(cell.getBoundingClientRect().top - box.top) < 1,
+    );
+    const distance = (cell: HTMLElement) => {
+      const r = cell.getBoundingClientRect();
+      return Math.abs(r.left + r.width / 2 - grid.left - center);
+    };
+    return {
+      top: box.top - grid.top,
+      nearest: row.every((cell) => distance(focused) <= distance(cell)),
+    };
+  }, start.center);
+  expect(landed.top).toBeGreaterThan(start.bottom - 1);
+  expect(landed.nearest).toBe(true);
   await page.keyboard.press('ArrowUp');
   await expect(cells.nth(1)).toBeFocused();
   await page.keyboard.press('End');

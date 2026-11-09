@@ -88,8 +88,9 @@ export async function addBrowserFiles(
         kind: 'raster',
         size: file.size,
         created_at: '',
-        captured_at: '',
-        capture_status: 'pending',
+        // Browser files carry no readable EXIF here; the file time stands in so the demo groups by day.
+        captured_at: localStamp(file.lastModified),
+        capture_status: 'available',
         modified_at: new Date(file.lastModified).toISOString(),
         width: canvas.width,
         height: canvas.height,
@@ -348,4 +349,11 @@ export async function demoPreviewUrl(
   revision = 0,
 ): Promise<string> {
   return (await renderDemoPreview(id, tier, uncropped, revision)).url;
+}
+
+/** Camera-style local wall time, `YYYY-MM-DDTHH:mm:ss`, as the catalog stores it. */
+function localStamp(time: number): string {
+  const d = new Date(time);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }

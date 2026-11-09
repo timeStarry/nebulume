@@ -44,7 +44,7 @@ import CacheSettings from './CacheSettings';
 import CaptureIndexControl from './CaptureIndexControl';
 import OverflowMenu from './OverflowMenu';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
-import VirtualGrid, { type VirtualGridApi } from './VirtualGrid';
+import JustifiedGrid, { type JustifiedGridApi } from './JustifiedGrid';
 import { AboutPanel, UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
@@ -177,7 +177,7 @@ export default function ManagementApp() {
   let navigationButton: HTMLButtonElement | undefined;
   let navigationElement: HTMLElement | undefined;
   let collectionScroll: HTMLDivElement | undefined;
-  let photoGrid: VirtualGridApi | undefined;
+  let photoGrid: JustifiedGridApi | undefined;
   let request = 0;
   const revisions = new Map<string, number>();
   const recentUpdates = new Map<string, { sequence: number; asset: Asset }>();
@@ -973,37 +973,47 @@ export default function ManagementApp() {
       ],
     });
   }
+  /** What a tile shows: the oriented, cropped frame, grouped by day when sorted by a date. */
+  function tileShape(asset: Asset) {
+    const crop = asset.crop;
+    const ratio =
+      asset.width && asset.height
+        ? (asset.width * (crop?.width ?? 1)) / (asset.height * (crop?.height ?? 1))
+        : 1.5;
+    const field = sort();
+    const stamp =
+      field === 'captured_at'
+        ? asset.captured_at
+        : field === 'created_at'
+          ? asset.created_at
+          : field === 'modified_at'
+            ? asset.modified_at
+            : undefined;
+    return {
+      ratio,
+      group:
+        field === 'filename' || field === 'rating' ? undefined : stamp?.slice(0, 10) || 'undated',
+    };
+  }
+  const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  function daySection(key: string, items: Asset[]) {
+    const count = `${items.length} 张`;
+    if (key === 'undated') return { label: '没有拍摄时间', detail: count };
+    const day = new Date(`${key}T00:00:00`);
+    if (Number.isNaN(day.getTime())) return undefined;
+    const year = day.getFullYear() === new Date().getFullYear() ? '' : `${day.getFullYear()}年`;
+    return {
+      label: `${year}${day.getMonth() + 1}月${day.getDate()}日 ${WEEKDAYS[day.getDay()]}`,
+      detail: count,
+    };
+  }
   /** Columns in the rendered grid, read from layout so it follows the size slider. */
   function gridColumns() {
     return photoGrid?.columns() ?? 1;
   }
   function gridStep(key: string, index: number): number | undefined {
-    const last = assets().length - 1;
-    if (last < 0) return undefined;
-    if (index < 0)
-      return ['ArrowRight', 'ArrowDown', 'Home', 'PageDown'].includes(key) ? 0 : undefined;
-    const columns = gridColumns();
-    const page = columns * (photoGrid?.rowsPerPage() ?? 1);
-    switch (key) {
-      case 'ArrowRight':
-        return Math.min(last, index + 1);
-      case 'ArrowLeft':
-        return Math.max(0, index - 1);
-      case 'ArrowDown':
-        return Math.min(last, index + columns);
-      case 'ArrowUp':
-        return Math.max(0, index - columns);
-      case 'Home':
-        return 0;
-      case 'End':
-        return last;
-      case 'PageDown':
-        return Math.min(last, index + page);
-      case 'PageUp':
-        return Math.max(0, index - page);
-      default:
-        return undefined;
-    }
+    if (!assets().length) return undefined;
+    return photoGrid?.step(index, key);
   }
   function focusThumbnail(id: string) {
     // Move DOM focus only when the grid already owns it (or lost it because the
@@ -1918,19 +1928,20 @@ export default function ManagementApp() {
                         </Show>
                       }
                     >
-                      <VirtualGrid
+                      <JustifiedGrid
                         items={assets()}
-                        itemSize={thumbSize()}
+                        measure={tileShape}
+                        section={daySection}
+                        rowHeight={thumbSize()}
                         scroller={() => collectionScroll}
-                        class="photo-grid"
-                        style={{ '--thumbnail-size': `${thumbSize()}px` }}
                         ref={(api) => (photoGrid = api)}
                       >
-                        {(asset) => (
-                          <div class="asset-card">
+                        {(asset, size) => (
+                          <div class="asset-card tile-card">
                             <Thumbnail
+                              tile
                               asset={asset}
-                              tier={gridTier(thumbSize(), devicePixelRatio())}
+                              tier={gridTier(Math.max(size.width, size.height), devicePixelRatio())}
                               selected={selectedIds().includes(asset.id)}
                               focused={selectedId() === asset.id}
                               tabbable={
@@ -1964,7 +1975,7 @@ export default function ManagementApp() {
                             </Show>
                           </div>
                         )}
-                      </VirtualGrid>
+                      </JustifiedGrid>
                       <Show when={assets().length < total()}>
                         <div
                           class="load-more"

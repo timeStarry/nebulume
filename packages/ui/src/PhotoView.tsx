@@ -78,6 +78,8 @@ export function Thumbnail(props: {
   /** Grid roving focus: only one thumbnail is in the Tab order. Omitted means tabbable. */
   tabbable?: boolean;
   compact?: boolean;
+  /** Fills a justified-grid tile; name and stars show on hover instead of below. */
+  tile?: boolean;
   onSelect: (event: MouseEvent) => void;
   onOpen: () => void;
   /** Right-click, Shift+F10 or the Menu key; receives the anchor point. */
@@ -195,7 +197,7 @@ export function Thumbnail(props: {
   return (
     <button
       ref={element}
-      class={`thumbnail ${props.selected ? 'selected' : ''} ${props.focused ? 'focused' : ''} ${props.compact ? 'compact' : ''} flag-${props.asset.flag || 'none'}`}
+      class={`thumbnail ${props.selected ? 'selected' : ''} ${props.focused ? 'focused' : ''} ${props.compact ? 'compact' : ''} ${props.tile ? 'tile' : ''} flag-${props.asset.flag || 'none'}`}
       data-asset-id={props.asset.id}
       tabIndex={props.tabbable === false ? -1 : 0}
       onClick={(event) => props.onSelect(event)}
@@ -236,14 +238,27 @@ export function Thumbnail(props: {
           </div>
         </Show>
         <For each={layers()}>{(layer) => layer.image}</For>
-        <span class="filetype">{props.asset.extension.toUpperCase()}</span>
+        <Show when={!props.tile}>
+          <span class="filetype">{props.asset.extension.toUpperCase()}</span>
+        </Show>
+        <Show when={props.tile}>
+          <Show when={props.asset.flag === 'pick' || props.asset.flag === 'reject'}>
+            <span class={`tile-flag ${props.asset.flag}`} aria-hidden="true">
+              <Icon name={props.asset.flag === 'pick' ? 'check' : 'close'} size={13} />
+            </span>
+          </Show>
+          <span class="tile-meta" aria-hidden="true">
+            <span>{props.asset.filename}</span>
+            <span class="tile-stars">{'★'.repeat(props.asset.rating)}</span>
+          </span>
+        </Show>
         <Show when={props.asset.crop}>
           <span class="crop-badge" title="含裁剪配方">
             <Icon name="crop" size={13} />
           </span>
         </Show>
       </div>
-      <Show when={!props.compact}>
+      <Show when={!props.compact && !props.tile}>
         <div class="thumbnail-caption">
           <span>{props.asset.filename}</span>
           <small>
