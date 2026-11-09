@@ -293,6 +293,8 @@ export default function PhotoView(props: {
   focusRegions?: FocusRegion[];
   /** Each change toggles between fit-to-window and preview-pixel 1:1. */
   zoomToggle?: number;
+  /** Fill the window edge to edge (standalone viewer); chrome floats over the photo. */
+  fill?: boolean;
   onPreviewStateChange?: (state: {
     key: string;
     loading: boolean;
@@ -392,7 +394,11 @@ export default function PhotoView(props: {
     if (!p) return 1;
     return Math.max(
       0.01,
-      Math.min((size().width - 96) / p.width, (size().height - 72) / p.height, 1),
+      Math.min(
+        (size().width - (props.fill ? 0 : 96)) / p.width,
+        (size().height - (props.fill ? 0 : 72)) / p.height,
+        1,
+      ),
     );
   });
   const imageSize = createMemo(() => ({
@@ -402,6 +408,24 @@ export default function PhotoView(props: {
   function fit() {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+  }
+  /** Zooms so the image point under the cursor stays under it. */
+  function zoomAt(next: number, clientX?: number, clientY?: number) {
+    const target = Math.min(8 / fitScale(), Math.max(0.2, next));
+    const factor = target / zoom();
+    const rect = stage.getBoundingClientRect();
+    const cx = clientX === undefined ? 0 : clientX - (rect.left + rect.width / 2);
+    const cy = clientY === undefined ? 0 : clientY - (rect.top + rect.height / 2);
+    const current = pan();
+    setZoom(target);
+    if (Math.abs(target - 1) < 0.001) return setPan({ x: 0, y: 0 });
+    setPan({ x: cx - (cx - current.x) * factor, y: cy - (cy - current.y) * factor });
+  }
+  /** Fit ⇄ 100 %, centred on the cursor when there is one. */
+  function toggleActual(clientX?: number, clientY?: number) {
+    if (props.cropMode) return;
+    if (Math.abs(zoom() - 1) < 0.001) zoomAt(1 / fitScale(), clientX, clientY);
+    else fit();
   }
   createEffect(() => {
     props.asset.id;
@@ -413,13 +437,7 @@ export default function PhotoView(props: {
   createEffect(
     on(
       () => props.zoomToggle,
-      () => {
-        if (props.cropMode) return;
-        if (Math.abs(zoom() - 1) < 0.001) {
-          setZoom(1 / fitScale());
-          setPan({ x: 0, y: 0 });
-        } else fit();
-      },
+      () => toggleActual(),
       { defer: true },
     ),
   );
@@ -471,7 +489,17 @@ export default function PhotoView(props: {
         onWheel={(event) => {
           if (props.cropMode) return;
           event.preventDefault();
-          setZoom((z) => Math.min(8, Math.max(0.2, z * (event.deltaY < 0 ? 1.12 : 1 / 1.12))));
+          // Trackpad pinches arrive as small ctrl-wheel deltas; mouse wheels as large steps.
+          const step = event.ctrlKey
+            ? Math.exp(-event.deltaY / 100)
+            : event.deltaY < 0
+              ? 1.12
+              : 1 / 1.12;
+          zoomAt(zoom() * step, event.clientX, event.clientY);
+        }}
+        onDblClick={(event) => {
+          if ((event.target as HTMLElement).closest('button')) return;
+          toggleActual(event.clientX, event.clientY);
         }}
       >
         <Show

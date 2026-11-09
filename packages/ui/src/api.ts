@@ -69,7 +69,7 @@ export interface ViewerQueueContext {
 export function openViewerWindow(
   assetId: string,
   assetIds: string[],
-  extra: { mode?: 'view' | 'cull'; queue?: ViewerQueueContext } = {},
+  extra: { mode?: 'view' | 'cull'; queue?: ViewerQueueContext; fromFile?: boolean } = {},
 ): Promise<string> {
   // Ordinary viewing keeps its original payload; culling adds mode and queue.
   return invoke<string>('open_viewer', {
@@ -77,6 +77,7 @@ export function openViewerWindow(
     assetIds,
     ...(extra.mode ? { mode: extra.mode } : {}),
     ...(extra.queue ? { queue: extra.queue } : {}),
+    ...(extra.fromFile ? { fromFile: true } : {}),
   });
 }
 export function viewerContext(): Promise<{
@@ -84,6 +85,8 @@ export function viewerContext(): Promise<{
   asset_ids: string[];
   mode?: 'view' | 'cull';
   queue?: ViewerQueueContext | null;
+  /** Opened from a file: a single photo browses the images in its folder. */
+  from_file?: boolean;
 }> {
   return invoke('viewer_context');
 }

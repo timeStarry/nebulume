@@ -56,6 +56,9 @@ import {
   trashSummary,
 } from './photo-actions';
 import { chooseDirectory } from './api';
+import { FolderBrowser, listFolder } from './folder-browser';
+import ContextMenu, { type ContextMenuState } from './ContextMenu';
+import type { Library } from './model';
 import './viewer-focus.css';
 import './culling.css';
 
@@ -108,6 +111,10 @@ export default function Viewer(props: {
   const [zoomToggle, setZoomToggle] = createSignal(0);
   const [compareAssets, setCompareAssets] = createSignal<Record<string, Asset>>({});
   const [queueLoading, setQueueLoading] = createSignal(false);
+  // Opened from a file: browse its folder, and offer to make the folder a library.
+  const [folder, setFolder] = createSignal<FolderBrowser>();
+  const [outside, setOutside] = createSignal(false);
+  const [menu, setMenu] = createSignal<ContextMenuState>();
   // Culling: the queue's photos for the strip and counts, those already looked at, and the review.
   const [items, setItems] = createSignal<Record<string, Asset>>({});
   const [seen, setSeen] = createSignal(new Set<string>());
@@ -167,7 +174,17 @@ export default function Viewer(props: {
     on(asset, (current) => {
       if (!current || current.source_key || compareIds().length) return;
       const position = ids().indexOf(current.id);
-      const neighbours = [ids()[position + 1] ?? ids()[position - 1]].filter(
+      const browser = folder();
+      const ahead = ids()[position + 1] ?? ids()[position - 1];
+      if (browser && ahead && FolderBrowser.isPlaceholder(ahead)) {
+        // Index the next file of the folder in the background; prefetch it once it has an id.
+        void browser
+          .resolve(ahead)
+          .then(() => setIds([...browser.ids]))
+          .catch(() => undefined);
+        return;
+      }
+      const neighbours = [ahead].filter(
         (neighbour): neighbour is string => !!neighbour && !prefetched.has(neighbour),
       );
       if (!neighbours.length) return;
@@ -300,6 +317,14 @@ export default function Viewer(props: {
     setAsset(undefined);
     setCropMode(false);
     try {
+      const browser = folder();
+      if (browser && FolderBrowser.isPlaceholder(nextId)) {
+        const opened = await browser.resolve(nextId);
+        if (token !== request || id() !== nextId) return;
+        setIds([...browser.ids]);
+        setId(opened.id);
+        return;
+      }
       const loaded = await execute<Asset>('asset.get', { id: nextId });
       const pending = optimistic.get(nextId);
       const next = pending ? { ...loaded, rating: pending.rating, flag: pending.flag } : loaded;
@@ -322,6 +347,79 @@ export default function Viewer(props: {
       if (next) void loadAsset(next);
     }),
   );
+  async function adoptFolder(startId: string) {
+    try {
+      const start = await execute<Asset>('asset.get', { id: startId });
+      const [listing, libraries] = await Promise.all([
+        listFolder(start.path),
+        execute<Library[]>('library.list').catch(() => [] as Library[]),
+      ]);
+      // A hidden library holds files opened outside every visible one.
+      setOutside(!libraries.some((library) => library.id === start.library_id));
+      if (!listing || ids().length > 1) return;
+      const browser = new FolderBrowser(listing, startId);
+      setFolder(browser);
+      setIds([...browser.ids]);
+    } catch {
+      /* The single photo stays viewable. */
+    }
+  }
+  async function addFolderToLibraries() {
+    const browser = folder();
+    const target = asset();
+    if (!target) return;
+    const root = browser?.listing.folder ?? target.path.replace(/[\\/][^\\/]+$/, '');
+    const name = root.split(/[\\/]/).filter(Boolean).at(-1) || root;
+    await action(`正在把 ${name} 加入图片库…`, async () => {
+      const library = await execute<Library>('library.add', { name, root, pair_raw_jpeg: true });
+      const result = await execute<{ indexed: number }>('library.scan', { library_id: library.id });
+      setOutside(false);
+      setNotice(`已加入图片库“${library.name}”，索引了 ${result.indexed} 张。`);
+      if (desktop) await emit('library-changed', { library_id: library.id }).catch(() => undefined);
+    });
+  }
+  function moreMenu(event: MouseEvent) {
+    const target = asset();
+    const button = event.currentTarget as HTMLElement;
+    const rect = button.getBoundingClientRect();
+    setMenu({
+      x: rect.right - 220,
+      y: rect.bottom + 4,
+      label: '更多操作',
+      returnFocus: button,
+      items: [
+        { label: '在图片库中显示', disabled: !target || outside(), onSelect: () => void manager() },
+        ...(outside()
+          ? [{ label: '把此文件夹加入图片库…', onSelect: () => void addFolderToLibraries() }]
+          : []),
+        'separator',
+        {
+          label: '导出为 JPEG…',
+          disabled: !target || !!busy(),
+          onSelect: () => void exportImage(),
+        },
+        {
+          label: '复制文件路径',
+          disabled: !target?.path,
+          onSelect: () =>
+            void navigator.clipboard
+              .writeText(target!.path)
+              .then(() => setNotice('已复制文件路径。'))
+              .catch(() => setError('无法写入剪贴板。')),
+        },
+        ...(target && !target.source_key
+          ? [
+              'separator' as const,
+              {
+                label: '移到废纸篓',
+                disabled: !!busy() || cropMode(),
+                onSelect: () => void trash([target.id]),
+              },
+            ]
+          : []),
+      ],
+    });
+  }
   async function adoptQueue(startId: string, ids: string[], queue?: CullQueue | null) {
     setIds(viewerIds(startId, ids));
     if (!queue) return;
@@ -356,6 +454,8 @@ export default function Viewer(props: {
           setMode(context.mode === 'cull' ? 'cull' : 'view');
           setId(context.asset_id);
           void adoptQueue(context.asset_id, context.asset_ids, context.queue);
+          if (context.from_file && context.asset_ids.length <= 1)
+            void adoptFolder(context.asset_id);
         })
         .catch((e) => {
           setError(errorMessage(e));
@@ -747,6 +847,12 @@ export default function Viewer(props: {
     if (!result.trashed.length) return;
     const gone = new Set(result.trashed);
     const remaining = before.filter((each) => !gone.has(each));
+    const browser = folder();
+    if (browser)
+      for (const each of gone) {
+        const at = browser.ids.indexOf(each);
+        if (at >= 0) browser.ids.splice(at, 1);
+      }
     setIds(remaining);
     undo.forget(gone);
     if (gone.has(id() || '')) {
@@ -762,6 +868,8 @@ export default function Viewer(props: {
       const restored = await restorePhotos(moved);
       const back = new Set(restored.restored);
       setIds((list) => before.filter((each) => back.has(each) || list.includes(each)));
+      const browser = folder();
+      if (browser) browser.ids.splice(0, browser.ids.length, ...ids());
       if (!id() && restored.restored[0]) setId(before.find((each) => back.has(each)));
       if (restored.failed.length)
         setError(`${restored.failed.length} 张未能放回：${restored.failed[0].message}`);
@@ -877,7 +985,12 @@ export default function Viewer(props: {
           </button>
           <div class="viewer-filename">
             <Show when={!info() || !asset()}>
-              <strong title={asset()?.filename}>{asset()?.filename || '影像查看器'}</strong>
+              <strong title={asset()?.path || asset()?.filename}>
+                {asset()?.filename || folder()?.nameOf(id() || '') || '影像查看器'}
+              </strong>
+              <Show when={folder()}>
+                <span class="viewer-folder">{folder()!.folderName}</span>
+              </Show>
             </Show>
             <Show when={ids().length > 1}>
               <span aria-label={`第 ${Math.max(0, index() + 1)} 张，共 ${ids().length} 张`}>
@@ -997,6 +1110,15 @@ export default function Viewer(props: {
             </button>
             <button
               class="icon-button"
+              aria-label="更多操作"
+              aria-haspopup="menu"
+              title="更多"
+              onClick={moreMenu}
+            >
+              <Icon name="more" />
+            </button>
+            <button
+              class="icon-button"
               onClick={close}
               aria-label="关闭查看器（Esc）"
               aria-keyshortcuts="Escape"
@@ -1006,6 +1128,24 @@ export default function Viewer(props: {
             </button>
           </div>
         </header>
+        <Show when={outside() && !props.onClose}>
+          <div class="viewer-banner" role="note">
+            <span>
+              {folder() ? `“${folder()!.folderName}”不在图片库中，` : '这张照片不在图片库中，'}
+              评级和旗标只保存在本机。
+            </span>
+            <button
+              class="button small"
+              disabled={!!busy()}
+              onClick={() => void addFolderToLibraries()}
+            >
+              加入图片库
+            </button>
+            <button class="icon-button" aria-label="关闭提示" onClick={() => setOutside(false)}>
+              <Icon name="close" size={15} />
+            </button>
+          </div>
+        </Show>
         <Show when={error()}>
           <div class="viewer-alert error" role="alert">
             <Icon name="info" />
@@ -1111,6 +1251,7 @@ export default function Viewer(props: {
               focusEnabled={focusVisible()}
               focusRegions={focus().regions}
               zoomToggle={zoomToggle()}
+              fill={!props.onClose && mode() === 'view' && !info()}
               onPreviewStateChange={(state) => {
                 if (current().id !== id() || state.key !== currentPreviewKey()) return;
                 setPreviewKey(state.key);
@@ -1204,6 +1345,9 @@ export default function Viewer(props: {
             onFinish={() => setReview(true)}
           />
         )}
+      </Show>
+      <Show when={menu()}>
+        {(state) => <ContextMenu menu={state()} onClose={() => setMenu(undefined)} />}
       </Show>
       <Show when={review()}>
         <CullReview

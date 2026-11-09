@@ -28,10 +28,11 @@ const photo = (index: number): Asset => ({
   modified_at: '2026-10-01T10:00:00Z',
 });
 
-async function fixture(page: Page, options: { failFlag?: boolean } = {}) {
+async function fixture(page: Page, options: { failFlag?: boolean; fromFile?: boolean } = {}) {
   const calls: Call[] = [];
   const assets = new Map([1, 2, 3].map((index) => [`photo-${index}`, photo(index)]));
   const trashed = new Map<string, Asset>();
+  let added = false;
   await page.route('**/__culling_rpc', async (route) => {
     const call = route.request().postDataJSON() as Call;
     calls.push(call);
@@ -40,7 +41,30 @@ async function fixture(page: Page, options: { failFlag?: boolean } = {}) {
     try {
       switch (call.command) {
         case 'library.list':
-          result = [library];
+          result = options.fromFile && !added ? [] : [library];
+          break;
+        case 'file.siblings':
+          result = {
+            folder: '/photos/Trip',
+            index: 0,
+            files: [1, 2, 3].map((n) => ({
+              name: `Frame-${n}.png`,
+              path: `/photos/Trip/Frame-${n}.png`,
+              size: 1000,
+            })),
+          };
+          break;
+        case 'file.open': {
+          const n = String(call.params.path).match(/Frame-(\d)/)![1];
+          result = { ...assets.get(`photo-${n}`) };
+          break;
+        }
+        case 'library.add':
+          added = true;
+          result = { ...library, name: String(call.params.name), root: String(call.params.root) };
+          break;
+        case 'library.scan':
+          result = { indexed: 3, skipped: 0, errors: [] };
           break;
         case 'storage.list':
           result = [];
@@ -139,8 +163,9 @@ async function fixture(page: Page, options: { failFlag?: boolean } = {}) {
           result = {
             asset_id: 'photo-1',
             asset_ids: ['photo-1'],
-            mode: 'cull',
-            queue: { library_id: library.id, options: { flag: 'none' } },
+            mode: options.fromFile ? 'view' : 'cull',
+            queue: options.fromFile ? null : { library_id: library.id, options: { flag: 'none' } },
+            from_file: options.fromFile,
           };
           break;
         case '$native/plugin:window|theme':
@@ -349,4 +374,68 @@ test('⌘⌫ moves the photo on screen to the Trash and the viewer moves on', as
   await expect(
     page.getByRole('status').filter({ hasText: '已把 1 张照片移到废纸篓' }),
   ).toBeVisible();
+});
+
+test('a file opened from the Finder browses its folder and can join the libraries', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page, { fromFile: true });
+  await page.goto('/?viewer=1');
+  const viewer = page.getByLabel('沉浸影像查看器');
+  await expect(
+    viewer
+      .getByText('第 1 张，共 3 张', { exact: false })
+      .or(viewer.getByLabel('第 1 张，共 3 张')),
+  ).toBeVisible();
+  await expect(viewer.locator('.viewer-folder')).toHaveText('Trip');
+  const banner = viewer.getByRole('note');
+  await expect(banner).toContainText('“Trip”不在图片库中');
+  // Only the file shown is indexed; the next one is indexed when it is about to be needed.
+  await expect
+    .poll(() => calls.filter((call) => call.command === 'file.open').length)
+    .toBeLessThanOrEqual(1);
+  await page.keyboard.press('ArrowRight');
+  await expect(viewer.getByLabel('第 2 张，共 3 张')).toBeVisible();
+  await expect(viewer.locator('.viewer-filename strong')).toHaveText('Frame-2.png');
+  expect(
+    calls.some(
+      (call) => call.command === 'file.open' && call.params.path === '/photos/Trip/Frame-2.png',
+    ),
+  ).toBe(true);
+  await expect
+    .poll(() =>
+      calls.some(
+        (call) => call.command === 'file.open' && String(call.params.path).includes('Frame-3'),
+      ),
+    )
+    .toBe(true);
+
+  await banner.getByRole('button', { name: '加入图片库' }).click();
+  await expect(banner).toBeHidden();
+  expect(calls.find((call) => call.command === 'library.add')?.params).toEqual({
+    name: 'Trip',
+    root: '/photos/Trip',
+    pair_raw_jpeg: true,
+  });
+  await expect(
+    viewer.getByRole('status').filter({ hasText: '已加入图片库“Trip”，索引了 3 张' }),
+  ).toBeVisible();
+});
+
+test('the viewer’s more menu reaches export, the path and the Trash', async ({ page }) => {
+  const { calls } = await fixture(page, { fromFile: true });
+  await page.goto('/?viewer=1');
+  const viewer = page.getByLabel('沉浸影像查看器');
+  await expect(viewer.locator('.viewer-filename strong')).toHaveText('Frame-1.png');
+  await viewer.getByRole('button', { name: '更多操作' }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: '把此文件夹加入图片库…' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '在图片库中显示' })).toBeDisabled();
+  await menu.getByRole('menuitem', { name: '移到废纸篓' }).click();
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.trash')?.params)
+    .toEqual({
+      ids: ['photo-1'],
+    });
+  await expect(viewer.locator('.viewer-filename strong')).toHaveText('Frame-2.png');
 });

@@ -863,7 +863,7 @@ export default function ManagementApp() {
       const path = await chooseImage();
       if (!path) return;
       const asset = await execute<Asset>('file.open', { path });
-      await openViewerWindow(asset.id, [asset.id]);
+      await openViewerWindow(asset.id, [asset.id], { fromFile: true });
     });
   }
   async function importBrowser(event: Event) {

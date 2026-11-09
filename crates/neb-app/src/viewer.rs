@@ -22,6 +22,9 @@ pub struct ViewerContext {
     pub mode: String,
     /// A culling queue description; the window snapshots matching ids itself.
     pub queue: Option<ViewerQueue>,
+    /// Opened from a file (Finder, file association, drop) rather than from a library:
+    /// a single file browses the other images in its folder.
+    pub from_file: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -73,6 +76,7 @@ fn context(asset_id: String, asset_ids: Vec<String>) -> Result<ViewerContext, Co
         asset_ids,
         mode: "view".into(),
         queue: None,
+        from_file: false,
     })
 }
 
@@ -108,7 +112,9 @@ pub async fn open(
     asset_id: String,
     asset_ids: Vec<String>,
 ) -> Result<String, CommandError> {
-    open_context(app, context(asset_id, asset_ids)?).await
+    let mut context = context(asset_id, asset_ids)?;
+    context.from_file = true;
+    open_context(app, context).await
 }
 
 async fn open_context(app: AppHandle, context: ViewerContext) -> Result<String, CommandError> {
@@ -163,8 +169,11 @@ pub async fn open_viewer(
     asset_ids: Vec<String>,
     mode: Option<String>,
     queue: Option<ViewerQueue>,
+    from_file: Option<bool>,
 ) -> Result<String, CommandError> {
-    open_context(app, culling_context(asset_id, asset_ids, mode, queue)?).await
+    let mut context = culling_context(asset_id, asset_ids, mode, queue)?;
+    context.from_file = from_file.unwrap_or(false);
+    open_context(app, context).await
 }
 
 #[tauri::command]
