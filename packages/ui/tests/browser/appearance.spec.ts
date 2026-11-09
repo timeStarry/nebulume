@@ -25,7 +25,7 @@ test('Appearance persists and uses a dark mark on a light surface', async ({ pag
         : source?.includes('brand-mark-ink');
     })
     .toBe(true);
-  await expect(page.locator('body')).toHaveCSS('color', 'rgb(46, 52, 64)');
+  await expect(page.locator('body')).toHaveCSS('color', 'rgb(31, 31, 31)');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(await appearance(page)).toHaveValue('light');
@@ -87,7 +87,7 @@ test('light UI keeps the actual image and immersive canvas neutral', async ({ pa
   await page.getByRole('button', { name: 'appearance-fixture.png，0 星' }).dblclick();
   const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
   await expect(page.locator('.main-photo')).toBeVisible();
-  await expect(page.locator('.photo-stage')).toHaveCSS('background-color', 'rgb(24, 24, 24)');
+  await expect(page.locator('.photo-stage')).toHaveCSS('background-color', 'rgb(27, 27, 27)');
   await expect(page.locator('.main-photo')).toHaveCSS('filter', 'none');
   await expect(page.locator('.main-photo')).toHaveCSS('opacity', '1');
   await expect(page.locator('.main-photo')).toHaveCSS('mix-blend-mode', 'normal');

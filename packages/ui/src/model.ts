@@ -72,6 +72,52 @@ export interface AssetListOptions {
   sort_direction?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+  /** Library-relative folder such as `Kyoto/01 岚山`, including its subfolders. */
+  folder?: string;
+  /** Highest rating to include; with `flag: 'none'` and 0 this is "not yet processed". */
+  rating_max?: number;
+  /** Inclusive EXIF focal length range in mm. */
+  focal_min?: number;
+  focal_max?: number;
+  /** Inclusive ISO range. */
+  iso_min?: number;
+  iso_max?: number;
+}
+export interface FolderNode {
+  path: string;
+  name: string;
+  count: number;
+  children: FolderNode[];
+}
+export interface LibraryFolders {
+  library_id: string;
+  total: number;
+  folders: FolderNode[];
+}
+export interface StatsBin {
+  label: string;
+  min: number;
+  max: number | null;
+  count: number;
+}
+export interface LibraryStats {
+  photos: number;
+  files: number;
+  bytes: number;
+  picks: number;
+  rejects: number;
+  rated: number;
+  unprocessed: number;
+  undated: number;
+  days: { day: string; count: number }[];
+  cameras: { name: string; count: number }[];
+  lenses: { name: string; count: number }[];
+  focal: StatsBin[];
+  iso: StatsBin[];
+}
+export interface TrashResult {
+  trashed: string[];
+  failed: { id: string; message: string }[];
 }
 export interface AssetFacets {
   cameras: { value: string; count: number }[];

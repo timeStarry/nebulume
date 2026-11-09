@@ -30,6 +30,7 @@ import {
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
+import LibrarySidebar, { type FolderAction } from './LibrarySidebar';
 import { Thumbnail } from './PhotoView';
 import { gridTier, previewUrl, watchDevicePixelRatio } from './preview-url';
 import StorageWorkspace from './StorageWorkspace';
@@ -57,6 +58,7 @@ import {
   type FlagFilter,
   type ImportBatch,
   type Library,
+  type LibraryFolders,
   type ScanResult,
   type StorageConfig,
 } from './model';
@@ -109,6 +111,13 @@ export default function ManagementApp() {
   const [lens, setLens] = createSignal('');
   const [capturedFrom, setCapturedFrom] = createSignal('');
   const [capturedTo, setCapturedTo] = createSignal('');
+  // Library-relative folder chosen in the sidebar tree; '' is the whole library.
+  const [folder, setFolder] = createSignal('');
+  // A filter picked from an overview chart, shown as one removable chip.
+  const [extra, setExtra] = createSignal<{ label: string; options: Partial<AssetListOptions> }>();
+  const [folders, setFolders] = createSignal<LibraryFolders>();
+  // Culling started from a folder waits for that folder's first page.
+  const [cullWhenLoaded, setCullWhenLoaded] = createSignal(false);
   const [facets, setFacets] = createSignal<AssetFacets>();
   const [filtersOpen, setFiltersOpen] = createSignal(readFiltersOpen());
   const [batches, setBatches] = createSignal<ImportBatch[]>([]);
@@ -257,6 +266,8 @@ export default function ManagementApp() {
       lens: lens() || undefined,
       captured_from: capturedFrom() || undefined,
       captured_to: capturedTo() || undefined,
+      folder: folder() || undefined,
+      ...extra()?.options,
       sort_by: sort(),
       sort_direction: direction(),
     };
@@ -326,6 +337,8 @@ export default function ManagementApp() {
     lens();
     capturedFrom();
     capturedTo();
+    folder();
+    extra();
     sort();
     direction();
     const initialized = ready();
@@ -374,6 +387,8 @@ export default function ManagementApp() {
     setFlag('any');
     setBatchId('');
     setBatches([]);
+    setFolder('');
+    setExtra(undefined);
     clearMetadataFilters();
     setFacets(undefined);
     void loadFacets(library.id);
@@ -422,6 +437,8 @@ export default function ManagementApp() {
         },
       });
     if (batchId()) chips.push({ label: '本次导入', clear: () => setBatchId('') });
+    const picked = extra();
+    if (picked) chips.push({ label: picked.label, clear: () => setExtra(undefined) });
     return chips;
   });
   function clearAllFilters() {
@@ -429,6 +446,7 @@ export default function ManagementApp() {
     setFlag('any');
     setFormat('all');
     setBatchId('');
+    setExtra(undefined);
     clearMetadataFilters();
   }
   function clearMetadataFilters() {
@@ -814,9 +832,10 @@ export default function ManagementApp() {
       return;
     }
     if (navigationOpen() && compactNavigation() && event.key === 'Tab') {
+      // Only buttons that are actually shown: the rail's open-file item is hidden in the drawer.
       const buttons = Array.from(
         navigationElement?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || [],
-      );
+      ).filter((button) => button.offsetParent !== null);
       const first = buttons[0];
       const last = buttons[buttons.length - 1];
       if (!navigationElement?.contains(document.activeElement)) {
@@ -1037,6 +1056,46 @@ export default function ManagementApp() {
   }
   // Local library folders are watched; the backend scans after changes settle and
   // reports here, so the open grid refreshes in place without a manual scan.
+  createEffect(
+    on([libraryId, libraries], ([id]) => {
+      if (!id) return setFolders(undefined);
+      void execute<LibraryFolders>('library.folders', { library_id: id })
+        .then((tree) => libraryId() === id && setFolders(tree))
+        .catch(() => setFolders(undefined));
+    }),
+  );
+  createEffect(() => {
+    if (!cullWhenLoaded() || loading() || !assets().length) return;
+    setCullWhenLoaded(false);
+    void untrack(startCulling);
+  });
+  async function folderAction(kind: FolderAction, path: string) {
+    const library = currentLibrary();
+    if (!library) return;
+    setFolder(path);
+    if (kind === 'cull') return setCullWhenLoaded(true);
+    if (kind === 'scan') return void scan(library);
+    if (kind === 'overview') return setNotice('概览视图将显示这个文件夹的统计。');
+    // Every pick in the folder, not only the loaded page.
+    const ids: string[] = [];
+    for (let offset = 0; ; offset += 1000) {
+      const page = await execute<AssetListResult>('asset.list', {
+        library_id: library.id,
+        folder: path,
+        flag: 'pick',
+        limit: 1000,
+        offset,
+      }).catch((e) => {
+        setError(errorMessage(e));
+        return undefined;
+      });
+      if (!page) return;
+      ids.push(...page.items.map((item) => item.id));
+      if (ids.length >= page.total || !page.items.length) break;
+    }
+    if (!ids.length) return setNotice('这个文件夹里还没有留用的照片。');
+    await exportSelection(ids);
+  }
   const watchKey = createMemo(() =>
     libraries()
       .filter((library) => library.source_kind === 'local' && library.availability === 'online')
@@ -1169,9 +1228,6 @@ export default function ManagementApp() {
           <strong>Nebulume</strong>
         </div>
         <div>
-          <Show when={!desktop}>
-            <span class="demo-label">浏览器演示</span>
-          </Show>
           <button class="button small" onClick={openFile} disabled={!!busy()}>
             <Icon name="photo" size={15} />
             打开文件…
@@ -1217,47 +1273,38 @@ export default function ManagementApp() {
                 onClick={() => navigate(item.id)}
               >
                 <Icon name={item.icon} size={19} />
-                <span>{item.label}</span>
+                <span class="rail-label">{item.label}</span>
               </button>
-              <Show when={item.id === 'libraries' && visibleLibraries().length}>
-                <ul class="nav-library-list" aria-label="图片库列表">
-                  <For each={visibleLibraries()}>
-                    {(library) => (
-                      <li>
-                        <button
-                          class={`nav-library-item ${section() === 'libraries' && libraryId() === library.id ? 'active' : ''}`}
-                          aria-current={
-                            section() === 'libraries' && libraryId() === library.id
-                              ? 'page'
-                              : undefined
-                          }
-                          title={libraryLocation(library)}
-                          onClick={() =>
-                            section() === 'libraries' && libraryId() === library.id
-                              ? closeNavigation()
-                              : enterLibrary(library)
-                          }
-                        >
-                          <span
-                            class={`nav-library-dot ${availabilityPresentation(library).usable ? '' : 'unavailable'}`}
-                            aria-hidden="true"
-                          />
-                          <span class="nav-library-name">{library.name}</span>
-                          <Show when={!availabilityPresentation(library).usable}>
-                            <span class="visually-hidden">
-                              ，{availabilityPresentation(library).label}
-                            </span>
-                          </Show>
-                        </button>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              </Show>
             </>
           )}
         </For>
+        <button
+          class="workspace-nav-item rail-open"
+          aria-label="打开文件…"
+          onClick={openFile}
+          disabled={!!busy()}
+        >
+          <Icon name="photo" size={19} />
+          <span class="rail-label">打开文件…</span>
+        </button>
       </nav>
+      <LibrarySidebar
+        libraries={visibleLibraries()}
+        currentId={section() === 'libraries' ? libraryId() : undefined}
+        folder={folder()}
+        folders={folders()}
+        usable={(library) => availabilityPresentation(library).usable}
+        unavailableLabel={(library) => availabilityPresentation(library).label}
+        location={libraryLocation}
+        demoLabel={!desktop}
+        onLibrary={(library) => enterLibrary(library)}
+        onFolder={(path) => {
+          closeNavigation();
+          setFolder(path);
+        }}
+        onFolderAction={(kind, path) => void folderAction(kind, path)}
+        onAddLibrary={() => newLibrary()}
+      />
       <Show when={dropActive()}>
         <div class="drop-overlay" aria-hidden="true">
           <div class="drop-overlay-card">

@@ -129,6 +129,9 @@ async function openInspector(
       case 'watch_libraries':
         result = [];
         break;
+      case 'library.folders':
+        result = { library_id: asset.library_id, total: 1, folders: [] };
+        break;
       case 'update_support':
         result = { supported: false, kind: 'development' };
         break;

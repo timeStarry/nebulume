@@ -124,11 +124,6 @@
   border: 1px solid var(--nl-photo-control-border);
   border-radius: var(--nl-radius-sm);
   background: var(--nl-photo-canvas);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 23px,
-    var(--nl-photo-panel) 23px 24px
-  );
 }
 .asset-inspector .histogram svg {
   width: 100%;
@@ -171,8 +166,8 @@
 }
 .asset-inspector .histogram-axis i {
   flex: 1;
-  height: 4px;
-  background: linear-gradient(to right, var(--nl-photo-canvas), var(--nl-photo-text));
+  height: 1px;
+  background: var(--nl-photo-control-border);
 }
 .asset-inspector .histogram-source {
   margin-top: var(--nl-space-3);
