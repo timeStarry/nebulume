@@ -1,5 +1,7 @@
 .nl-page-header {
-  display: flex;
+  /* Title | centre | actions: the centre stays put whatever the title says. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: var(--nl-s-4);
   flex: none;
@@ -9,14 +11,15 @@
   border-bottom: 1px solid var(--nl-line);
 }
 .nl-page-title {
+  grid-column: 1;
   display: flex;
   align-items: baseline;
-  flex: 1 1 auto;
   gap: var(--nl-s-2);
   min-width: 0;
 }
 .nl-page-title h1 {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   margin: 0;
   overflow: hidden;
@@ -32,17 +35,17 @@
   white-space: nowrap;
 }
 .nl-page-center {
+  grid-column: 2;
   display: flex;
   align-items: center;
-  flex: none;
 }
 .nl-page-actions {
+  grid-column: 3;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  flex: 1 1 0;
   gap: var(--nl-s-2);
-  min-width: max-content;
+  min-width: 0;
 }
 .nl-toolbar {
   display: flex;
@@ -188,15 +191,19 @@
 }
 @media (max-width: 720px) {
   .nl-page-header {
-    flex-wrap: wrap;
+    grid-template-columns: minmax(0, 1fr) auto;
     height: auto;
     min-height: var(--nl-header-height);
     padding-block: var(--nl-s-2);
     row-gap: var(--nl-s-2);
   }
+  .nl-page-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
   .nl-page-center {
-    order: 3;
-    flex: 1 0 100%;
+    grid-column: 1 / -1;
+    grid-row: 2;
     min-width: 0;
     overflow-x: auto;
     scrollbar-width: none;

@@ -1516,3 +1516,31 @@ test('the library sidebar can be widened by dragging its edge, and the width is 
     (await page.getByRole('complementary', { name: '图片库与文件夹' }).boundingBox())!.width,
   ).toBeGreaterThan(before + 80);
 });
+
+test('the header view switch stays centred whatever the title and subtitle are', async ({
+  page,
+}) => {
+  await fixture(page, (call) =>
+    call.command === 'library.list'
+      ? [
+          { ...local, name: '短' },
+          { ...remote, name: '一个名字非常非常长的图片库，用来撑开标题区域' },
+        ]
+      : undefined,
+  );
+  const centre = async () => {
+    const header = (await page.locator('.nl-page-header:visible').boundingBox())!;
+    const views = (await page.locator('.nl-page-header:visible .nl-seg').boundingBox())!;
+    return { offset: views.x + views.width / 2 - (header.x + header.width / 2), x: views.x };
+  };
+  await page.getByRole('button', { name: /打开图片库 短/ }).click();
+  await expect(
+    page.locator('.nl-page-header:visible').getByRole('heading', { name: '短' }),
+  ).toBeVisible();
+  const short = await centre();
+  await page.getByRole('button', { name: /打开图片库 一个名字非常非常长/ }).click();
+  await expect(page.locator('.nl-page-header:visible h1')).toContainText('一个名字');
+  const long = await centre();
+  expect(Math.abs(short.offset)).toBeLessThan(1);
+  expect(Math.abs(long.x - short.x)).toBeLessThan(1);
+});
