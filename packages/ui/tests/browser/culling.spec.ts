@@ -248,8 +248,8 @@ test('marks advance after confirmation, keep a frozen queue and undo across phot
 }) => {
   const { assets } = await fixture(page);
   await page.goto('/?viewer=1');
-  await expect(page.getByRole('button', { name: '选图', exact: true })).toHaveAttribute(
-    'aria-pressed',
+  await expect(page.getByRole('tab', { name: '选片', exact: true })).toHaveAttribute(
+    'aria-selected',
     'true',
   );
   await expect(hud(page)).toContainText('1 / 3');
@@ -308,8 +308,8 @@ test('mode switch restores ordinary viewer shortcuts', async ({ page }) => {
   await page.goto('/?viewer=1');
   await expect(hud(page)).toBeVisible();
   await page.keyboard.press('Shift+C');
-  await expect(page.getByRole('button', { name: '查看', exact: true })).toHaveAttribute(
-    'aria-pressed',
+  await expect(page.getByRole('tab', { name: '查看', exact: true })).toHaveAttribute(
+    'aria-selected',
     'true',
   );
   await expect(hud(page)).toHaveCount(0);
@@ -427,7 +427,7 @@ test('the viewer’s more menu reaches export, the path and the Trash', async ({
   await page.goto('/?viewer=1');
   const viewer = page.getByLabel('沉浸影像查看器');
   await expect(viewer.locator('.viewer-filename strong')).toHaveText('Frame-1.png');
-  await viewer.getByRole('button', { name: '更多操作' }).click();
+  await viewer.getByRole('button', { name: '更多', exact: true }).click();
   const menu = page.getByRole('menu');
   await expect(menu.getByRole('menuitem', { name: '把此文件夹加入图片库…' })).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: '在图片库中显示' })).toBeDisabled();
@@ -456,4 +456,18 @@ test('the mark confirmation plays on the panel even with no rating widget in the
   await expect(page.locator('.cull-panel')).toHaveClass(/pulse-rate/);
   await expect(hud(page)).toContainText('2 / 3');
   await expect(page.locator('.cull-hud')).toHaveCount(0);
+});
+
+test('the viewer top bar has one entry per action', async ({ page }) => {
+  await fixture(page, { fromFile: true });
+  await page.goto('/?viewer=1');
+  const bar = page.locator('.nl-viewer-bar');
+  for (const name of ['叠加信息（D）', '影像信息（I）', '裁剪（C）', '更多'])
+    await expect(bar.getByRole('button', { name, exact: true })).toBeVisible();
+  await expect(bar.getByRole('button', { name: '导出 JPEG' })).toHaveCount(0);
+  await expect(bar.getByRole('button', { name: '重新读取原图' })).toHaveCount(0);
+  await expect(bar.getByRole('button', { name: /切换全屏/ })).toHaveCount(0);
+  await bar.getByRole('button', { name: '更多', exact: true }).click();
+  for (const name of ['导出为 JPEG…', '全屏', '复制文件路径', '编辑叠加信息…', '移到废纸篓'])
+    await expect(page.getByRole('menuitem', { name })).toBeVisible();
 });

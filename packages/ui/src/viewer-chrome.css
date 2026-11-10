@@ -1,0 +1,77 @@
+/* Viewer top bar: floats over the photo, dark in both themes. */
+.nl-viewer-bar {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-3);
+  height: 48px;
+  min-height: 48px;
+  padding: 0 var(--nl-s-3);
+  border-bottom: 0;
+  background: var(--nl-v-overlay);
+  color: var(--nl-v-text);
+}
+.nl-viewer-bar .viewer-filename {
+  gap: var(--nl-s-2);
+}
+.nl-viewer-bar .viewer-filename strong {
+  color: var(--nl-v-text);
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+}
+.nl-viewer-bar .viewer-filename > span {
+  color: var(--nl-v-text-2);
+  font-size: var(--nl-t-12);
+}
+.nl-viewer-bar .viewer-toolbar-actions {
+  gap: var(--nl-s-1);
+}
+.immersive-viewer .nl-icon-btn {
+  color: var(--nl-v-text-2);
+}
+.immersive-viewer .nl-icon-btn:hover:not(:disabled):not([aria-disabled='true']) {
+  background: var(--nl-v-hover);
+  color: var(--nl-v-text);
+}
+.immersive-viewer .nl-icon-btn[aria-pressed='true'],
+.immersive-viewer .nl-icon-btn.active {
+  background: var(--nl-v-pressed);
+  color: var(--nl-v-text);
+}
+.immersive-viewer .nl-seg {
+  border-color: var(--nl-v-line);
+  background: transparent;
+}
+.immersive-viewer .nl-seg button {
+  color: var(--nl-v-text-2);
+}
+.immersive-viewer .nl-seg button:hover:not(:disabled) {
+  color: var(--nl-v-text);
+}
+.immersive-viewer .nl-seg button[aria-selected='true'] {
+  background: var(--nl-v-pressed);
+  color: var(--nl-v-text);
+  box-shadow: none;
+}
+.immersive-viewer .nl-toggle {
+  color: var(--nl-v-text-2);
+}
+.immersive-viewer .nl-toggle:hover:not(:disabled),
+.immersive-viewer .nl-toggle[aria-pressed='true'] {
+  background: var(--nl-v-pressed);
+  color: var(--nl-v-text);
+}
+.immersive-viewer [data-tooltip]::after {
+  background: var(--nl-v-text);
+  color: var(--nl-v-stage);
+}
+.immersive-viewer .nl-icon-btn:focus-visible,
+.immersive-viewer .nl-seg button:focus-visible,
+.immersive-viewer .nl-toggle:focus-visible {
+  outline: 2px solid var(--nl-v-ring);
+  box-shadow: none;
+}

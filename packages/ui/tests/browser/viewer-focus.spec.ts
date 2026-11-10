@@ -254,7 +254,8 @@ test('automatic detection rejects late image and revision responses while refres
   releaseFirst!(focusInfo(0.1));
   await expect(toggle).toHaveAttribute('aria-disabled', 'true');
   await expect(page.locator('.focus-overlay')).toHaveCount(0);
-  await page.getByRole('button', { name: '重新读取原图', exact: true }).click();
+  await page.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '重新读取原图' }).click();
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
   await page.keyboard.press('p');
   await expect(page.locator('.focus-region.selected')).toBeVisible();
@@ -265,7 +266,8 @@ test('automatic detection rejects late image and revision responses while refres
       page.locator('.focus-region.selected').evaluate((node) => (node as HTMLElement).style.left),
     )
     .toBe('50%');
-  await page.getByRole('button', { name: '重新读取原图', exact: true }).click();
+  await page.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '重新读取原图' }).click();
   await expect.poll(() => !!releaseRefresh).toBe(true);
   await expect(toggle).toHaveAttribute('aria-disabled', 'true');
   await expect(toggle).not.toHaveClass(/active/);
@@ -460,7 +462,8 @@ test('disabled missing and failed images retain the preference, reuse detections
   await expect(page.locator('.main-photo')).toHaveAttribute('alt', 'error.jpg');
   await expect(toggle).toHaveAttribute('title', /相机对焦记录读取失败/);
   expect(detections()).toHaveLength(4);
-  await page.getByRole('button', { name: '重新读取原图', exact: true }).click();
+  await page.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '重新读取原图' }).click();
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.focus-overlay')).toBeVisible();

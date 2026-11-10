@@ -46,6 +46,7 @@ import {
   type Mark,
 } from './culling';
 import CullPanel, { CullStatus } from './CullPanel';
+import { IconButton, Segmented, Toggle } from './ui';
 import CullStrip from './CullStrip';
 import CullReview from './CullReview';
 import {
@@ -60,7 +61,7 @@ import { FolderBrowser, listFolder } from './folder-browser';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import type { Library } from './model';
 import './viewer-focus.css';
-import './culling.css';
+import './viewer-chrome.css';
 import './cull.css';
 
 export type ViewerMode = 'view' | 'cull';
@@ -107,6 +108,7 @@ export default function Viewer(props: {
   const [cullView, setCullView] = createSignal<'single' | 'compare'>('single');
   const [compareCount] = createSignal(2);
   const [overlayVisible, setOverlayVisible] = createSignal(true);
+  const [editingOverlay, setEditingOverlay] = createSignal(false);
   const [autoAdvance, setAutoAdvance] = createSignal(readAutoAdvance());
   const [pulse, setPulse] = createSignal<{ kind: 'rate' | 'flag'; value: string; key: number }>();
   const [zoomToggle, setZoomToggle] = createSignal(0);
@@ -383,24 +385,33 @@ export default function Viewer(props: {
     const target = asset();
     const button = event.currentTarget as HTMLElement;
     const rect = button.getBoundingClientRect();
+    const local = !!target && !target.source_key;
     setMenu({
-      x: rect.right - 220,
+      x: rect.right - 232,
       y: rect.bottom + 4,
-      label: '更多操作',
+      label: '更多',
       returnFocus: button,
       items: [
-        { label: '在图片库中显示', disabled: !target || outside(), onSelect: () => void manager() },
-        ...(outside()
-          ? [{ label: '把此文件夹加入图片库…', onSelect: () => void addFolderToLibraries() }]
-          : []),
-        'separator',
         {
           label: '导出为 JPEG…',
-          disabled: !target || !!busy(),
+          icon: 'export',
+          disabled: !target || !!busy() || cropMode(),
           onSelect: () => void exportImage(),
         },
+        ...(desktop
+          ? [
+              {
+                label: '重新读取原图',
+                icon: 'refresh' as const,
+                disabled: !target || !!busy() || cropMode(),
+                onSelect: () => void refreshOriginal(),
+              },
+            ]
+          : []),
+        { label: '全屏', icon: 'expand', shortcut: 'F', onSelect: () => void fullscreen() },
         {
           label: '复制文件路径',
+          icon: 'copy',
           disabled: !target?.path,
           onSelect: () =>
             void navigator.clipboard
@@ -408,13 +419,40 @@ export default function Viewer(props: {
               .then(() => setNotice('已复制文件路径。'))
               .catch(() => setError('无法写入剪贴板。')),
         },
-        ...(target && !target.source_key
+        'separator',
+        {
+          label: '在图片库中显示',
+          icon: 'grid',
+          disabled: !target || outside(),
+          onSelect: () => void manager(),
+        },
+        ...(outside()
+          ? [
+              {
+                label: '把此文件夹加入图片库…',
+                icon: 'folder-plus' as const,
+                onSelect: () => void addFolderToLibraries(),
+              },
+            ]
+          : []),
+        {
+          label: '编辑叠加信息…',
+          icon: 'layout-dashboard',
+          onSelect: () => {
+            setOverlayVisible(true);
+            setEditingOverlay(true);
+          },
+        },
+        ...(local
           ? [
               'separator' as const,
               {
                 label: '移到废纸篓',
+                icon: 'trash' as const,
+                shortcut: '⌘⌫',
+                danger: true,
                 disabled: !!busy() || cropMode(),
-                onSelect: () => void trash([target.id]),
+                onSelect: () => void trash([target!.id]),
               },
             ]
           : []),
@@ -773,6 +811,7 @@ export default function Viewer(props: {
       event.preventDefault();
       toggleFocus();
     } else if (key === 'f') void fullscreen();
+    else if (key === 'd') setOverlayVisible((value) => !value);
     else if (key === 'escape') {
       event.preventDefault();
       void escape();
@@ -980,18 +1019,16 @@ export default function Viewer(props: {
       aria-label="沉浸影像查看器"
     >
       <div class="viewer-image-area">
-        <header class="immersive-toolbar viewer-chrome">
-          <button class="icon-button" aria-label="返回图片库" title="返回图片库" onClick={manager}>
-            <Icon name="grid" />
-          </button>
+        <header class="nl-viewer-bar immersive-toolbar viewer-chrome">
+          <IconButton icon="arrow-left" size="sm" label="返回图片库" onClick={manager} />
           <div class="viewer-filename">
             <Show when={!info() || !asset()}>
               <strong title={asset()?.path || asset()?.filename}>
                 {asset()?.filename || folder()?.nameOf(id() || '') || '影像查看器'}
               </strong>
-              <Show when={folder()}>
-                <span class="viewer-folder">{folder()!.folderName}</span>
-              </Show>
+            </Show>
+            <Show when={folder()}>
+              <span class="viewer-folder">{folder()!.folderName}</span>
             </Show>
             <Show when={ids().length > 1}>
               <span aria-label={`第 ${Math.max(0, index() + 1)} 张，共 ${ids().length} 张`}>
@@ -1000,37 +1037,31 @@ export default function Viewer(props: {
             </Show>
           </div>
           <div class="viewer-toolbar-actions">
-            <div class="viewer-mode-switch" role="group" aria-label="查看模式">
-              <button
-                class={mode() === 'view' ? 'active' : ''}
-                aria-pressed={mode() === 'view'}
-                onClick={() => mode() !== 'view' && toggleMode()}
-                title="普通查看（Shift+C 切换）"
-              >
-                查看
-              </button>
-              <button
-                class={mode() === 'cull' ? 'active' : ''}
-                aria-pressed={mode() === 'cull'}
-                aria-keyshortcuts="Shift+C"
-                onClick={() => mode() !== 'cull' && toggleMode()}
-                title="选图（Shift+C 切换）"
-              >
-                选图
-              </button>
-            </div>
+            <Segmented
+              size="sm"
+              label="查看模式"
+              value={mode()}
+              onChange={(next) => next !== mode() && toggleMode()}
+              options={[
+                { value: 'view', label: '查看' },
+                { value: 'cull', label: '选片', shortcut: 'Shift+C' },
+              ]}
+            />
             <Show when={mode() === 'cull'}>
-              <button
-                class={`button compact cull-auto ${autoAdvance() ? 'active' : ''}`}
-                aria-pressed={autoAdvance()}
-                onClick={toggleAutoAdvance}
-                title="打分或打旗后自动前进到下一张"
-              >
+              <Toggle pressed={autoAdvance()} onChange={() => toggleAutoAdvance()}>
                 自动下一张
-              </button>
+              </Toggle>
             </Show>
+            <IconButton
+              size="sm"
+              icon="layout-dashboard"
+              label="叠加信息（D）"
+              shortcut="D"
+              pressed={overlayVisible()}
+              onClick={() => setOverlayVisible((value) => !value)}
+            />
             <button
-              class={`icon-button focus-toggle ${focusVisible() ? 'active' : ''}`}
+              class={`nl-icon-btn nl-icon-btn--sm focus-toggle ${focusVisible() ? 'active' : ''}`}
               onClick={toggleFocus}
               aria-disabled={!!focusUnavailableReason()}
               aria-label={mode() === 'cull' ? '显示对焦点（Shift+F）' : '显示对焦点（P）'}
@@ -1042,91 +1073,45 @@ export default function Viewer(props: {
                 `对焦点（${mode() === 'cull' ? 'Shift+F' : 'P'}）· 实线选定，虚线活动`
               }
             >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.6"
-                aria-hidden="true"
-              >
-                <path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5" />
-                <rect x="8" y="8" width="8" height="8" rx="1" />
-              </svg>
+              <Icon name="focus-2" size={16} />
             </button>
             <span id={focusHelpId} class="visually-hidden">
               {focusUnavailableReason() ||
                 '显示相机记录的对焦区域。实线为选定区域，虚线为活动区域。'}
             </span>
-            <Show when={desktop}>
-              <button
-                class="icon-button"
-                onClick={refreshOriginal}
-                disabled={!asset() || !!busy() || cropMode()}
-                aria-label="重新读取原图"
-                title="重新读取原图"
-              >
-                <Icon name="refresh" />
-              </button>
-            </Show>
-            <button
-              class={`icon-button ${cropMode() ? 'active' : ''}`}
-              onClick={() => (cropMode() ? setCropMode(false) : beginCrop())}
-              disabled={!asset() || !!busy() || mode() === 'cull'}
-              aria-label={cropMode() ? '退出裁剪' : '裁剪（C）'}
-              aria-pressed={cropMode()}
-              aria-keyshortcuts="C"
-              title="裁剪（C）"
-            >
-              <Icon name="crop" />
-            </button>
-            <button
-              class={`icon-button ${info() ? 'active' : ''}`}
+            <IconButton
+              size="sm"
+              icon="info"
+              label="影像信息（I）"
+              shortcut="I"
+              pressed={info()}
               onClick={() => setInfo((value) => !value)}
-              aria-label="影像信息（I）"
-              aria-pressed={info()}
-              aria-keyshortcuts="I"
-              title="影像信息（I）"
-            >
-              <Icon name="info" />
-            </button>
-            <button
-              class="icon-button"
-              onClick={exportImage}
-              disabled={!asset() || !!busy() || cropMode()}
-              aria-label="导出 JPEG"
-              title="导出 JPEG"
-            >
-              <Icon name="export" />
-            </button>
-            <button
-              class="icon-button"
-              onClick={fullscreen}
-              aria-label="切换全屏（F）"
-              aria-keyshortcuts="F"
-              title="切换全屏（F）"
-            >
-              <Icon name="expand" />
-            </button>
-            <button
-              class="icon-button"
-              aria-label="更多操作"
+            />
+            <IconButton
+              size="sm"
+              icon="crop"
+              label={cropMode() ? '退出裁剪' : '裁剪（C）'}
+              shortcut="C"
+              pressed={cropMode()}
+              disabled={!asset() || !!busy() || mode() === 'cull'}
+              onClick={() => (cropMode() ? setCropMode(false) : beginCrop())}
+            />
+            <IconButton
+              size="sm"
+              icon="more"
+              label="更多"
               aria-haspopup="menu"
-              title="更多"
               onClick={moreMenu}
-            >
-              <Icon name="more" />
-            </button>
-            <button
-              class="icon-button"
-              onClick={close}
-              aria-label="关闭查看器（Esc）"
-              aria-keyshortcuts="Escape"
-              title="关闭（Esc）"
-            >
-              <Icon name="close" />
-            </button>
+            />
+            <Show when={!props.onClose}>
+              <IconButton
+                size="sm"
+                icon="close"
+                label="关闭查看器（Esc）"
+                shortcut="Esc"
+                onClick={close}
+              />
+            </Show>
           </div>
         </header>
         <Show when={outside() && !props.onClose}>

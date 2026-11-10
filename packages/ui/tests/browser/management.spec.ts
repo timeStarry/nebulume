@@ -940,7 +940,8 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
   );
   const previewsBefore = calls.filter((call) => call.command === 'asset.preview').length;
   const histogramsBefore = calls.filter((call) => call.command === 'asset.histogram').length;
-  await page.getByRole('button', { name: '重新读取原图', exact: true }).first().click();
+  await page.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '重新读取原图' }).click();
   await expect(page.getByText('Refreshed camera metadata')).toBeVisible();
   await expect
     .poll(() => calls.filter((call) => call.command === 'asset.preview').length)

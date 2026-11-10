@@ -57,7 +57,8 @@ test('real browser files support review, crop invalidation, reset and JPEG expor
   await page.getByRole('button', { name: '退出裁剪' }).click();
   await expect(page.locator('.main-photo')).toHaveJSProperty('naturalWidth', 400);
   const downloadEvent = page.waitForEvent('download');
-  await viewer.getByRole('button', { name: '导出 JPEG', exact: true }).first().click();
+  await viewer.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '导出为 JPEG…' }).click();
   const download = await downloadEvent;
   expect(download.suggestedFilename()).toBe('review-fixture-edited.jpg');
   const data = await fs.readFile((await download.path())!);
