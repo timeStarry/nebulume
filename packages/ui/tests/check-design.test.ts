@@ -59,3 +59,15 @@ test('forbidden values on their own line are still caught', () => {
 test('removing a shadow is allowed', () => {
   expect(checkCss('src/x.css', '.a {\n  box-shadow: none;\n}')).toEqual([]);
 });
+
+test('a declared mask is allowed, an undeclared shadow is not', () => {
+  expect(
+    checkCss(
+      'src/x.css',
+      '.a {\n  /* design: mask */\n  box-shadow: 0 0 0 10000px var(--nl-crop-mask);\n}',
+    ),
+  ).toEqual([]);
+  expect(
+    checkCss('src/x.css', '.a {\n  box-shadow: 0 0 0 10000px var(--nl-crop-mask);\n}'),
+  ).toHaveLength(1);
+});

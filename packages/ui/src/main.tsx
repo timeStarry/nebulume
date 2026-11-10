@@ -2,7 +2,7 @@ import { render } from 'solid-js/web';
 import App from './App';
 import Viewer from './Viewer';
 import { initializeTheme } from './theme';
-import './theme.css';
+import './tokens.css';
 import './ui';
 import './styles.css';
 import './viewer.css';

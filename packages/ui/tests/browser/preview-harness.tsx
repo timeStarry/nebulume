@@ -3,7 +3,7 @@ import { For, Show, createSignal } from 'solid-js';
 import { render } from 'solid-js/web';
 import PhotoView, { Thumbnail } from '../../src/PhotoView';
 import type { Asset } from '../../src/model';
-import '../../src/theme.css';
+import '../../src/tokens.css';
 import '../../src/styles.css';
 import '../../src/viewer.css';
 

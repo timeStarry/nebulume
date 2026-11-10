@@ -5,47 +5,47 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--nl-space-3);
+  gap: var(--nl-s-3);
 }
 .update-note {
-  color: var(--nl-text-secondary);
-  font-size: var(--nl-text-sm);
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-13);
 }
 .update-note.error {
-  color: var(--nl-danger);
+  color: var(--nl-reject);
 }
 .update-auto {
   display: inline-flex;
   align-items: center;
-  gap: var(--nl-space-2);
-  font-size: var(--nl-text-sm);
+  gap: var(--nl-s-2);
+  font-size: var(--nl-t-13);
   white-space: nowrap;
 }
 .update-prompt {
   flex-shrink: 0;
   display: grid;
-  gap: var(--nl-space-3);
-  padding: var(--nl-space-4) var(--nl-space-5);
-  border-bottom: 1px solid var(--nl-border);
-  background: var(--nl-surface);
+  gap: var(--nl-s-3);
+  padding: var(--nl-s-4) var(--nl-s-5);
+  border-bottom: 1px solid var(--nl-line);
+  background: var(--nl-side);
 }
 .update-prompt > h2 {
-  font-size: var(--nl-text-base);
-  font-weight: var(--nl-weight-medium);
+  font-size: var(--nl-t-14);
+  font-weight: 500;
 }
 .update-notes {
-  max-height: calc(12 * var(--nl-line-height-body) * 1em);
+  max-height: calc(12 * var(--nl-leading-prose) * 1em);
   overflow-y: auto;
   white-space: pre-wrap;
-  font-size: var(--nl-text-sm);
-  line-height: var(--nl-line-height-body);
-  color: var(--nl-text-secondary);
+  font-size: var(--nl-t-13);
+  line-height: var(--nl-leading-prose);
+  color: var(--nl-text-2);
 }
 .update-progress {
   display: flex;
   align-items: center;
-  gap: var(--nl-space-3);
-  font-size: var(--nl-text-sm);
+  gap: var(--nl-s-3);
+  font-size: var(--nl-t-13);
 }
 .update-progress progress {
   inline-size: 240px;

@@ -148,3 +148,8 @@
     background: var(--nl-scrim);
   }
 }
+.brand-mark {
+  display: block;
+  flex: none;
+  object-fit: contain;
+}

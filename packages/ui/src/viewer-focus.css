@@ -1,5 +1,5 @@
 .immersive-viewer .viewer-toolbar-actions .focus-toggle[aria-disabled='true'] {
-  color: var(--nl-text-disabled);
+  color: var(--nl-text-3);
   background: transparent;
   border-color: transparent;
   box-shadow: none;
@@ -15,11 +15,11 @@
 .focus-region {
   position: absolute;
   box-sizing: border-box;
-  border: 2px solid #ff7060;
-  box-shadow: 0 0 0 1px #181818cc;
+  border: 2px solid var(--nl-af-selected);
+  outline: 1px solid var(--nl-af-halo);
   pointer-events: none;
 }
 .focus-region.active {
-  border-color: #ffcf74;
+  border-color: var(--nl-af-active);
   border-style: dashed;
 }

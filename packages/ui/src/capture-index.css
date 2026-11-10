@@ -3,7 +3,7 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
-  font-size: var(--nl-text-xs);
+  font-size: var(--nl-t-12);
 }
 .capture-index-control:empty {
   display: none;
@@ -12,22 +12,22 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  color: var(--nl-text-secondary);
+  color: var(--nl-text-2);
   white-space: nowrap;
 }
 .capture-index-progress progress {
   width: 100%;
   height: 3px;
-  accent-color: var(--nl-interactive);
+  accent-color: var(--nl-primary);
 }
 .capture-index-error {
-  color: var(--nl-danger);
+  color: var(--nl-reject);
   max-width: 220px;
   overflow-wrap: anywhere;
 }
 .capture-index-notice {
   max-width: 180px;
-  color: var(--nl-text-secondary);
+  color: var(--nl-text-2);
 }
 .collection-thumbnail-size {
   display: flex;
@@ -41,6 +41,6 @@
 }
 @media (max-width: 719px) {
   .collection-thumbnail-size > input[type='range'] {
-    height: var(--nl-touch-target);
+    height: var(--nl-h-lg);
   }
 }

@@ -22,11 +22,17 @@ const exempt = (path) => {
 /** Returns one finding per rule per line. Comments are stripped first, keeping line numbers. */
 export function checkCss(path, text) {
   if (exempt(path)) return [];
+  // A box-shadow used as a mask (the crop overlay) is declared on the line before it.
+  const masked = new Set();
+  text.split('\n').forEach((line, index) => {
+    if (/\/\*\s*design:\s*mask\s*\*\//.test(line)) masked.add(index + 2);
+  });
   const stripped = text.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
   const findings = [];
   stripped.split('\n').forEach((line, index) => {
     for (const [rule, pattern] of RULES) {
       const match = line.match(pattern);
+      if (rule === 'shadow' && masked.has(index + 1)) continue;
       if (match) findings.push({ line: index + 1, rule, snippet: match[0].trim() });
     }
   });

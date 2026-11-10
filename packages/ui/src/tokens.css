@@ -58,6 +58,13 @@
   --nl-hist-blue-fill: #6f8fc777;
   --nl-hist-blue-stroke: #8eadd4;
 
+  --nl-af-selected: #ff7060;
+  --nl-af-active: #ffcf74;
+  --nl-af-halo: #181818cc;
+  --nl-crop-mask: rgba(0, 0, 0, 0.4);
+  --nl-crop-mask-edit: rgba(0, 0, 0, 0.47);
+  --nl-crop-grid: rgba(255, 255, 255, 0.4);
+
   /* The viewer is dark in both themes. */
   --nl-v-stage: #1b1b1b;
   --nl-v-panel: #212121;
@@ -73,7 +80,8 @@
 }
 
 :root,
-[data-theme='dark'] {
+[data-theme='dark'],
+.immersive-viewer {
   color-scheme: dark;
   --nl-stage: #1b1b1b;
   --nl-rail: #1d1d1d;
@@ -152,86 +160,4 @@
     --nl-d-base: 0ms;
     --nl-d-slow: 0ms;
   }
-}
-
-/* legacy aliases, removed in Task 13 */
-:root,
-[data-theme] {
-  --nl-font-ui: var(--nl-font);
-  --nl-font-mono: var(--nl-mono);
-  --nl-text-xs: var(--nl-t-12);
-  --nl-text-sm: var(--nl-t-13);
-  --nl-text-base: var(--nl-t-14);
-  --nl-text-lg: var(--nl-t-18);
-  --nl-text-xl: var(--nl-t-22);
-  --nl-line-height-ui: var(--nl-leading);
-  --nl-line-height-body: var(--nl-leading-prose);
-  --nl-weight-normal: 400;
-  --nl-weight-medium: 500;
-  --nl-weight-semibold: 500;
-  --nl-space-1: var(--nl-s-1);
-  --nl-space-2: var(--nl-s-2);
-  --nl-space-3: var(--nl-s-3);
-  --nl-space-4: var(--nl-s-4);
-  --nl-space-5: var(--nl-s-5);
-  --nl-space-6: var(--nl-s-6);
-  --nl-space-7: var(--nl-s-8);
-  --nl-space-8: var(--nl-s-10);
-  --nl-radius-sm: var(--nl-r-xs);
-  --nl-radius-md: var(--nl-r-md);
-  --nl-radius-lg: var(--nl-r-lg);
-  --nl-control-height: var(--nl-h-md);
-  --nl-control-height-compact: var(--nl-h-sm);
-  --nl-touch-target: var(--nl-h-lg);
-  --nl-inspector-width: var(--nl-aside-width);
-  --nl-grid-gap: var(--nl-s-1);
-  --nl-focus-width: 2px;
-  --nl-focus-offset: 2px;
-  --nl-duration-fast: var(--nl-d-fast);
-  --nl-duration-normal: var(--nl-d-base);
-  --nl-duration-slow: var(--nl-d-slow);
-  --nl-ease-standard: var(--nl-ease);
-
-  --nl-surface: var(--nl-side);
-  --nl-surface-raised: var(--nl-raised);
-  --nl-surface-hover: var(--nl-hover);
-  --nl-surface-active: var(--nl-pressed);
-  --nl-text-secondary: var(--nl-text-2);
-  --nl-text-muted: var(--nl-text-2);
-  --nl-text-disabled: var(--nl-text-3);
-  --nl-border: var(--nl-line);
-  --nl-control-border: var(--nl-line-strong);
-  --nl-control-bg: var(--nl-side);
-  --nl-control-hover: var(--nl-hover);
-  --nl-control-active: var(--nl-pressed);
-  --nl-interactive: var(--nl-primary);
-  --nl-interactive-hover: var(--nl-primary-hover);
-  --nl-interactive-active: var(--nl-primary);
-  --nl-on-interactive: var(--nl-inverse);
-  --nl-selected-bg: var(--nl-raised);
-  --nl-selected-text: var(--nl-text);
-  --nl-selected-border: var(--nl-ring);
-  --nl-focus: var(--nl-ring);
-  --nl-focus-gap: var(--nl-canvas);
-  --nl-success: var(--nl-pick);
-  --nl-success-bg: var(--nl-tint-pick);
-  --nl-warning: var(--nl-warn);
-  --nl-warning-bg: var(--nl-tint-warn);
-  --nl-danger: var(--nl-reject);
-  --nl-danger-bg: var(--nl-tint-reject);
-  --nl-info-bg: var(--nl-tint-info);
-  --nl-photo-canvas: var(--nl-v-stage);
-  --nl-photo-text: var(--nl-v-text);
-  --nl-photo-panel: var(--nl-v-panel);
-  --nl-photo-muted: var(--nl-v-text-2);
-  --nl-photo-control-border: var(--nl-v-line);
-  --nl-photo-focus: var(--nl-v-ring);
-  --nl-photo-focus-gap: var(--nl-v-stage);
-  --nl-photo-overlay: var(--nl-v-overlay);
-  --nl-disabled-bg: var(--nl-hover);
-  --nl-disabled-border: var(--nl-line);
-  --nl-scrollbar: var(--nl-line-strong);
-  --nl-skeleton: var(--nl-raised);
-  --nl-shadow-popover: 0 0 0 1px var(--nl-line);
-  --nl-shadow-dialog: 0 0 0 1px var(--nl-line);
 }
