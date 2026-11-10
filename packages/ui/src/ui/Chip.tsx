@@ -5,7 +5,7 @@ import './Chip.css';
 /** A removable filter tag. */
 export function Chip(props: { label: string; onRemove?: () => void; removeLabel?: string }) {
   return (
-    <span class="nl-chip filter-chip">
+    <span class="nl-chip">
       <span>{props.label}</span>
       <Show when={props.onRemove}>
         <button

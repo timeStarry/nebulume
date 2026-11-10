@@ -1156,7 +1156,7 @@ test('active filters show as removable chips and the panel remembers whether it 
   await toggle.click();
   await expect(panel).toHaveCount(0);
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  const chips = page.getByLabel('当前筛选').locator('.filter-chip');
+  const chips = page.getByLabel('当前筛选').locator('.filter-chip, .nl-chip');
   await expect(chips).toHaveText(['留用', 'JPEG']);
   await page.getByRole('button', { name: '移除筛选：留用' }).click();
   await expect(chips).toHaveText(['JPEG']);
@@ -1289,7 +1289,7 @@ test('the overview counts the filtered library and every figure leads back to it
   // A segment of the culling bar becomes a filter on the photo wall.
   await overview.getByRole('button', { name: '未处理 8 张' }).click();
   await expect(page.getByRole('tab', { name: '照片' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator('.filter-chip').filter({ hasText: '未处理' })).toBeVisible();
+  await expect(page.locator('.filter-chip, .nl-chip').filter({ hasText: '未处理' })).toBeVisible();
   await expect
     .poll(() => calls.filter((call) => call.command === 'asset.list').at(-1)?.params)
     .toMatchObject({ flag: 'none', rating_max: 0 });

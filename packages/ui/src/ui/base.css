@@ -15,3 +15,8 @@ h3,
 h4 {
   font-weight: 500;
 }
+b,
+strong,
+th {
+  font-weight: 500;
+}

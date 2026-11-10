@@ -17,9 +17,12 @@ export const toasts = {
     const next = { ...toast, key: Date.now() };
     setCurrent(next);
     if (toast.tone === 'error') return;
-    timer = setTimeout(() => {
-      if (current()?.key === next.key) setCurrent(undefined);
-    }, toast.action ? 10_000 : 6_000);
+    timer = setTimeout(
+      () => {
+        if (current()?.key === next.key) setCurrent(undefined);
+      },
+      toast.action ? 10_000 : 6_000,
+    );
   },
   dismiss() {
     clearTimeout(timer);

@@ -4,6 +4,8 @@
   gap: 6px;
   flex: none;
   height: var(--nl-h-xs);
+  box-sizing: border-box;
+  line-height: 1;
   max-width: 260px;
   padding: 0 var(--nl-s-2) 0 10px;
   border-radius: var(--nl-r-pill);

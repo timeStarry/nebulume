@@ -9,7 +9,14 @@ import './viewer.css';
 
 initializeTheme();
 
-render(
-  () => (new URLSearchParams(location.search).get('viewer') === '1' ? <Viewer /> : <App />),
-  document.getElementById('root')!,
-);
+const params = new URLSearchParams(location.search);
+if (import.meta.env.DEV && params.get('design') === '1') {
+  // The reference page ships only in development builds.
+  void import('./DesignReference').then(({ default: DesignReference }) =>
+    render(() => <DesignReference />, document.getElementById('root')!),
+  );
+} else
+  render(
+    () => (params.get('viewer') === '1' ? <Viewer /> : <App />),
+    document.getElementById('root')!,
+  );

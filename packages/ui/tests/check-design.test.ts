@@ -37,3 +37,21 @@ describe('design check', () => {
     expect(checkCss('src/tokens.css', '.a{color:#fff}')).toEqual([]);
   });
 });
+
+test('allowed weights pass when written on their own line', () => {
+  expect(
+    checkCss('src/x.css', '.a {\n  font-weight: 500;\n}\n.b {\n  font-weight: 400;\n}'),
+  ).toEqual([]);
+});
+
+test('forbidden values on their own line are still caught', () => {
+  const findings: Finding[] = checkCss(
+    'src/x.css',
+    '.a {\n  font-weight: 600;\n  font-size: 10px;\n  box-shadow: 0 1px 2px red;\n}',
+  );
+  expect(findings.map((finding) => finding.rule)).toEqual([
+    'font-weight',
+    'font-size-px',
+    'shadow',
+  ]);
+});
