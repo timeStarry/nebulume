@@ -32,6 +32,7 @@ import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, { type FolderAction } from './LibrarySidebar';
 import AppShell from './AppShell';
+import LibrariesOverview from './LibrariesOverview';
 import {
   Banner,
   Button,
@@ -154,6 +155,8 @@ export default function ManagementApp() {
   const [folders, setFolders] = createSignal<LibraryFolders>();
   // 照片 shows the grid, 概览 the statistics for the same filter; 选片 opens culling.
   const [view, setView] = createSignal<'photos' | 'overview'>('photos');
+  // 全部图片库: a card overview of every library, opened from the foot of the sidebar.
+  const [allLibraries, setAllLibraries] = createSignal(false);
   const [undoable, setUndoable] = createSignal<{ text: string; run: () => Promise<void> }>();
   // Culling started from a folder waits for that folder's first page.
   const [cullWhenLoaded, setCullWhenLoaded] = createSignal(false);
@@ -412,6 +415,7 @@ export default function ManagementApp() {
     closeNavigation();
     setError('');
     setNotice('');
+    setAllLibraries(false);
     if (next === 'libraries') openInitialLibrary();
   }
   function openInitialLibrary() {
@@ -435,6 +439,7 @@ export default function ManagementApp() {
   }
   function enterLibrary(library: Library) {
     closeNavigation();
+    setAllLibraries(false);
     try {
       localStorage.setItem(LAST_LIBRARY_KEY, library.id);
     } catch {
@@ -1467,7 +1472,12 @@ export default function ManagementApp() {
         section() === 'libraries' ? (
           <LibrarySidebar
             libraries={visibleLibraries()}
-            currentId={section() === 'libraries' ? libraryId() : undefined}
+            currentId={section() === 'libraries' && !allLibraries() ? libraryId() : undefined}
+            overviewOpen={allLibraries()}
+            onOverview={() => {
+              closeNavigation();
+              setAllLibraries(true);
+            }}
             folder={folder()}
             folders={folders()}
             usable={(library) => availabilityPresentation(library).usable}
@@ -1510,7 +1520,22 @@ export default function ManagementApp() {
       </Show>
       <main class="manager-workspace" aria-label="影像管理工作区">
         <UpdatePrompt />
-        <Show when={section() === 'libraries'}>
+        <Show when={section() === 'libraries' && allLibraries()}>
+          <LibrariesOverview
+            libraries={visibleLibraries()}
+            desktop={desktop}
+            onOpen={(library) => enterLibrary(library)}
+            onCreate={() => {
+              if (desktop) newLibrary();
+              else {
+                openAfterImport = false;
+                fileInput.click();
+              }
+            }}
+            libraryMenu={libraryMenu}
+          />
+        </Show>
+        <Show when={section() === 'libraries' && !allLibraries()}>
           <Show
             when={currentLibrary()}
             fallback={

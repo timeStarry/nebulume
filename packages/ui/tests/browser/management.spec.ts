@@ -1544,3 +1544,63 @@ test('the header view switch stays centred whatever the title and subtitle are',
   expect(Math.abs(short.offset)).toBeLessThan(1);
   expect(Math.abs(long.x - short.x)).toBeLessThan(1);
 });
+
+test('全部图片库 at the foot of the sidebar opens a card overview of every library', async ({
+  page,
+}) => {
+  await fixture(page, (call) =>
+    call.command === 'library.list'
+      ? [
+          { ...local, asset_count: 1284, latest_capture: '2026-11-09' },
+          { ...remote, asset_count: 9120, availability: 'auth_required' },
+        ]
+      : undefined,
+  );
+  const sidebar = page.getByRole('complementary', { name: '图片库与文件夹' });
+  const all = sidebar.getByRole('button', { name: '全部图片库' });
+  await all.click();
+  await expect(all).toHaveAttribute('aria-current', 'page');
+  const overview = page.getByRole('region', { name: '全部图片库' });
+  await expect(
+    page.locator('.nl-page-header:visible').getByRole('heading', { name: '全部图片库' }),
+  ).toBeVisible();
+  const cards = overview.getByRole('listitem');
+  await expect(cards).toHaveCount(2);
+  await expect(cards.nth(0)).toContainText('本地摄影');
+  await expect(cards.nth(0)).toContainText('1,284 张');
+  await expect(cards.nth(0)).toContainText('最近拍摄 11月9日');
+  await expect(cards.nth(1)).toContainText('需要登录');
+  // Each card opens its library; the header creates one; each card has the library menu.
+  await expect(
+    page.locator('.nl-page-header:visible').getByRole('button', { name: '新建图片库' }),
+  ).toBeVisible();
+  await expect(cards.nth(1).getByRole('button', { name: 'NAS 旅行 更多操作' })).toBeVisible();
+  await cards
+    .nth(0)
+    .getByRole('button', { name: /打开 本地摄影/ })
+    .click();
+  await expect(
+    page.locator('.nl-page-header:visible').getByRole('heading', { name: '本地摄影' }),
+  ).toBeVisible();
+  await expect(all).not.toHaveAttribute('aria-current', 'page');
+});
+
+test('the library rail item opens the last library, not the overview', async ({ page }) => {
+  await fixture(page);
+  await page
+    .getByRole('complementary', { name: '图片库与文件夹' })
+    .getByRole('button', { name: '全部图片库' })
+    .click();
+  await expect(page.getByRole('region', { name: '全部图片库' })).toBeVisible();
+  await page
+    .getByRole('navigation', { name: '主导航' })
+    .getByRole('button', { name: '设置', exact: true })
+    .click();
+  await page
+    .getByRole('navigation', { name: '主导航' })
+    .getByRole('button', { name: '图片库', exact: true })
+    .click();
+  await expect(
+    page.locator('.nl-page-header:visible').getByRole('heading', { name: '本地摄影' }),
+  ).toBeVisible();
+});

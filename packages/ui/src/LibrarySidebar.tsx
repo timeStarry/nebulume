@@ -23,6 +23,9 @@ export default function LibrarySidebar(props: {
   onAddLibrary: () => void;
   /** Actions for one library (settings, scan, previews, capture time, fingerprint, remove). */
   libraryMenu: (library: Library) => MenuEntry[];
+  /** The all-libraries overview is open. */
+  overviewOpen?: boolean;
+  onOverview: () => void;
 }) {
   // Folders the user collapsed; everything starts expanded one level down.
   const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set());
@@ -170,6 +173,18 @@ export default function LibrarySidebar(props: {
           )}
         </For>
       </ul>
+      <div class="nav-library-all">
+        <button
+          type="button"
+          class="nav-library-item"
+          aria-current={props.overviewOpen ? 'page' : undefined}
+          onClick={() => props.onOverview()}
+        >
+          <Icon name="layout-grid" size={16} />
+          <span class="nav-library-name">全部图片库</span>
+          <span class="tree-count">{props.libraries.length}</span>
+        </button>
+      </div>
       <Show when={menu()}>
         {(open) => (
           <>
