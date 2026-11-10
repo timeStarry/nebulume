@@ -3,8 +3,6 @@ export default defineConfig({
   testDir: './tests/browser',
   outputDir: './test-results',
   timeout: 30_000,
-  // The release job runs the suite once on a slow Windows runner; one retry absorbs runner stalls.
-  retries: process.env.CI ? 1 : 0,
   use: { baseURL: 'http://127.0.0.1:5173', channel: process.env.NEBULUME_BROWSER_CHANNEL || undefined, headless: true, viewport: { width: 1440, height: 960 }, screenshot: 'only-on-failure' },
   webServer: { command: 'pnpm dev', url: 'http://127.0.0.1:5173', reuseExistingServer: true },
 });

@@ -1164,10 +1164,13 @@ test('active filters show as removable chips and the panel remembers whether it 
   await expect(chips).toHaveText(['留用', 'JPEG']);
   await page.getByRole('button', { name: '移除筛选：留用' }).click();
   await expect(chips).toHaveText(['JPEG']);
+  // The earlier JPEG + 留用 request also has format jpeg, so wait for one without the flag.
   await expect
-    .poll(() => calls.filter((call) => call.command === 'asset.list').at(-1)?.params)
-    .toMatchObject({ format: 'jpeg' });
-  expect(calls.filter((call) => call.command === 'asset.list').at(-1)?.params.flag).toBeUndefined();
+    .poll(() => {
+      const params = calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
+      return params && { format: params.format, flag: params.flag ?? null };
+    })
+    .toEqual({ format: 'jpeg', flag: null });
   expect(await page.evaluate(() => localStorage.getItem('nebulume.filters-open'))).toBe('false');
 });
 
