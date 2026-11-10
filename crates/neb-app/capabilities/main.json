@@ -1,1 +1,13 @@
-{"identifier":"main","description":"Main window, appearance and explicit file selection","windows":["main"],"permissions":["core:default","core:window:allow-set-theme","dialog:allow-open","dialog:allow-save"]}
+{
+  "identifier": "main",
+  "description": "Main window, appearance and explicit file selection",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

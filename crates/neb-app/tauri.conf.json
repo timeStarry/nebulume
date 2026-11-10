@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Nebulume",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "identifier": "app.nebulume.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -10,30 +10,158 @@
     "frontendDist": "../../packages/ui/dist"
   },
   "app": {
-    "windows": [{"label":"main","title":"Nebulume · 星雾","width":1440,"height":960,"minWidth":720,"minHeight":600,"visible":false,"dragDropEnabled":true}],
-    "security": {"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: neb: http://neb.localhost; connect-src ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'"}
+    "windows": [
+      {
+        "label": "main",
+        "title": "Nebulume · 星雾",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 720,
+        "minHeight": 600,
+        "visible": false,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: neb: http://neb.localhost; connect-src ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'"
+    }
   },
   "bundle": {
-    "active":true,"targets":"all","icon":["icons/icon.png","icons/icon.ico","icons/icon.icns"],
-    "shortDescription":"Local-first photo library and verified media ingest","category":"Photography",
+    "active": true,
+    "targets": ["nsis", "app"],
+    "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
+    "shortDescription": "Local-first photo library and verified media ingest",
+    "category": "Photography",
     "fileAssociations": [
-      {"ext":["jpg","jpeg"],"name":"JPEG image","mimeType":"image/jpeg","role":"Viewer","rank":"Alternate"},
-      {"ext":["png"],"name":"PNG image","mimeType":"image/png","role":"Viewer","rank":"Alternate"},
-      {"ext":["webp"],"name":"WebP image","mimeType":"image/webp","role":"Viewer","rank":"Alternate"},
-      {"ext":["gif"],"name":"GIF image","mimeType":"image/gif","role":"Viewer","rank":"Alternate"},
-      {"ext":["tif","tiff"],"name":"TIFF image","mimeType":"image/tiff","role":"Viewer","rank":"Alternate"},
-      {"ext":["bmp"],"name":"Bitmap image","mimeType":"image/bmp","role":"Viewer","rank":"Alternate"},
-      {"ext":["ico"],"name":"Icon image","mimeType":"image/vnd.microsoft.icon","role":"Viewer","rank":"Alternate"},
-      {"ext":["pgm","ppm","pnm"],"name":"Portable anymap","mimeType":"image/x-portable-anymap","role":"Viewer","rank":"Alternate"},
-      {"ext":["dng"],"name":"Digital Negative","mimeType":"image/x-adobe-dng","role":"Viewer","rank":"Alternate"},
-      {"ext":["cr2"],"name":"Canon RAW","mimeType":"image/x-canon-cr2","role":"Viewer","rank":"Alternate"},
-      {"ext":["nef"],"name":"Nikon RAW","mimeType":"image/x-nikon-nef","role":"Viewer","rank":"Alternate"},
-      {"ext":["arw"],"name":"Sony RAW","mimeType":"image/x-sony-arw","role":"Viewer","rank":"Alternate"},
-      {"ext":["raf"],"name":"Fujifilm RAW","mimeType":"image/x-fuji-raf","role":"Viewer","rank":"Alternate"},
-      {"ext":["orf"],"name":"Olympus RAW","mimeType":"image/x-olympus-orf","role":"Viewer","rank":"Alternate"},
-      {"ext":["rw2"],"name":"Panasonic RAW","mimeType":"image/x-panasonic-rw2","role":"Viewer","rank":"Alternate"},
-      {"ext":["pef"],"name":"Pentax RAW","mimeType":"image/x-pentax-pef","role":"Viewer","rank":"Alternate"},
-      {"ext":["srw"],"name":"Samsung RAW","mimeType":"image/x-samsung-srw","role":"Viewer","rank":"Alternate"}
-    ]
+      {
+        "ext": ["jpg", "jpeg"],
+        "name": "JPEG image",
+        "mimeType": "image/jpeg",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["png"],
+        "name": "PNG image",
+        "mimeType": "image/png",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["webp"],
+        "name": "WebP image",
+        "mimeType": "image/webp",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["gif"],
+        "name": "GIF image",
+        "mimeType": "image/gif",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["tif", "tiff"],
+        "name": "TIFF image",
+        "mimeType": "image/tiff",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["bmp"],
+        "name": "Bitmap image",
+        "mimeType": "image/bmp",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["ico"],
+        "name": "Icon image",
+        "mimeType": "image/vnd.microsoft.icon",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["pgm", "ppm", "pnm"],
+        "name": "Portable anymap",
+        "mimeType": "image/x-portable-anymap",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["dng"],
+        "name": "Digital Negative",
+        "mimeType": "image/x-adobe-dng",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["cr2"],
+        "name": "Canon RAW",
+        "mimeType": "image/x-canon-cr2",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["nef"],
+        "name": "Nikon RAW",
+        "mimeType": "image/x-nikon-nef",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["arw"],
+        "name": "Sony RAW",
+        "mimeType": "image/x-sony-arw",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["raf"],
+        "name": "Fujifilm RAW",
+        "mimeType": "image/x-fuji-raf",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["orf"],
+        "name": "Olympus RAW",
+        "mimeType": "image/x-olympus-orf",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["rw2"],
+        "name": "Panasonic RAW",
+        "mimeType": "image/x-panasonic-rw2",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["pef"],
+        "name": "Pentax RAW",
+        "mimeType": "image/x-pentax-pef",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["srw"],
+        "name": "Samsung RAW",
+        "mimeType": "image/x-samsung-srw",
+        "role": "Viewer",
+        "rank": "Alternate"
+      }
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYwM0E2MkFCOEI2Nzg5MkYKUldRdmlXZUxxMkk2WUhSWmVrSnNNM0JMUWphNENqWEtOSDVyZGVaRkxTZkcwYUQ5VDZCcDYyeXEK",
+      "endpoints": ["https://github.com/timeStarry/nebulume/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

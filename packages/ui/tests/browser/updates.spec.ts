@@ -1,4 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
+
+const { version: appVersion } = JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+) as { version: string };
 
 type Fixture = {
   support: { supported: boolean; kind: string };
@@ -85,7 +90,7 @@ const calls = (page: Page) =>
 test('about panel shows the build version and a manual up-to-date check', async ({ page }) => {
   await mockDesktop(page, { support: { supported: true, kind: 'installer' }, update: null });
   const about = await openSettings(page);
-  await expect(about).toContainText('Nebulume 0.1.1 · 桌面应用');
+  await expect(about).toContainText(`Nebulume ${appVersion} · 桌面应用`);
   await about.getByRole('button', { name: '检查更新' }).click();
   await expect(about.getByRole('status')).toContainText('已是最新版本');
   await expect(about.getByRole('checkbox', { name: '自动检查更新' })).toBeChecked();

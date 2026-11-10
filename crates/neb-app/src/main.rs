@@ -49,6 +49,8 @@ fn main() {
             file_open::request(app, paths);
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(move |app| {
             let data_dir = std::env::var_os("NEBULUME_DATA_DIR")
                 .map(std::path::PathBuf::from)
