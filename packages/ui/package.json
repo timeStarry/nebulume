@@ -7,9 +7,10 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/check-design.mjs && vitest run",
     "test:browser": "playwright test --config playwright.config.ts",
-    "icons": "node scripts/build-icons.mjs"
+    "icons": "node scripts/build-icons.mjs",
+    "check:design": "node scripts/check-design.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.7.0",

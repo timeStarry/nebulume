@@ -1,0 +1,12 @@
+[
+  "src/cache-settings.css",
+  "src/capture-index.css",
+  "src/culling.css",
+  "src/import.css",
+  "src/inspector.css",
+  "src/styles.css",
+  "src/theme.css",
+  "src/update.css",
+  "src/viewer-focus.css",
+  "src/viewer.css"
+]

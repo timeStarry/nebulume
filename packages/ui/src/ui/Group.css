@@ -1,0 +1,108 @@
+.nl-group {
+  display: grid;
+  gap: var(--nl-s-2);
+  min-width: 0;
+}
+.nl-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-3);
+  min-height: var(--nl-h-sm);
+}
+.nl-group-head h3 {
+  margin: 0;
+  font-size: var(--nl-t-14);
+}
+.nl-group-meta {
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.nl-group-action {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+  margin-left: auto;
+}
+.nl-list {
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-lg);
+  background: var(--nl-side);
+}
+.nl-group-body {
+  min-width: 0;
+}
+.nl-row {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-4);
+  width: 100%;
+  min-height: 52px;
+  padding: var(--nl-s-3) var(--nl-s-4);
+  border: 0;
+  background: transparent;
+  color: var(--nl-text);
+  font: inherit;
+  text-align: left;
+}
+.nl-list > .nl-row + .nl-row,
+.nl-list > * + .nl-row {
+  border-top: 1px solid var(--nl-line);
+}
+.nl-row--nav {
+  cursor: pointer;
+}
+.nl-row--nav:hover {
+  background: var(--nl-hover);
+}
+.nl-list > .nl-row--nav:first-child {
+  border-radius: var(--nl-r-lg) var(--nl-r-lg) 0 0;
+}
+.nl-list > .nl-row--nav:last-child {
+  border-radius: 0 0 var(--nl-r-lg) var(--nl-r-lg);
+}
+.nl-list > .nl-row--nav:only-child {
+  border-radius: var(--nl-r-lg);
+}
+.nl-row--nav:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: -2px;
+}
+.nl-row-lead {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--nl-r-md);
+  background: var(--nl-raised);
+  color: var(--nl-text-2);
+}
+.nl-row-label {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.nl-row-label > b,
+.nl-row-label > label {
+  overflow: hidden;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+.nl-row-label > span {
+  overflow: hidden;
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+  overflow-wrap: anywhere;
+}
+.nl-row-control {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: var(--nl-s-2);
+  max-width: 60%;
+}
+.nl-row-chevron {
+  flex: none;
+  color: var(--nl-text-3);
+}

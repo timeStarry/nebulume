@@ -1,0 +1,39 @@
+import { describe, expect, test } from 'vitest';
+// @ts-expect-error plain ESM script without type declarations
+import { checkCss } from '../scripts/check-design.mjs';
+
+type Finding = { line: number; rule: string; snippet: string };
+
+describe('design check', () => {
+  test('flags each forbidden pattern', () => {
+    const findings: Finding[] = checkCss(
+      'src/x.css',
+      '.a{color:#fff}\n.b{box-shadow:0 1px 2px red}\n.c{font-weight:600}\n.d{font-size:10px}\n.e{background:linear-gradient(red,blue)}\n.f{filter:blur(2px)}\n.g{color:rgb(1,2,3)}',
+    );
+    expect(findings.map((finding) => finding.rule)).toEqual([
+      'hex-color',
+      'shadow',
+      'font-weight',
+      'font-size-px',
+      'gradient',
+      'blur',
+      'rgb-color',
+    ]);
+    expect(findings.map((finding) => finding.line)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+  test('allows tokens, inset rings and focus outlines', () => {
+    expect(
+      checkCss(
+        'src/x.css',
+        '.a{color:var(--nl-text);box-shadow:inset 0 0 0 1px var(--nl-line);font-size:var(--nl-t-13);font-weight:500;outline:2px solid var(--nl-ring)}',
+      ),
+    ).toEqual([]);
+  });
+  test('comments are ignored', () => {
+    expect(checkCss('src/x.css', '/* was #fff and 600 */\n.a{color:var(--nl-text)}')).toEqual([]);
+  });
+  test('ui components and tokens are exempt', () => {
+    expect(checkCss('src/ui/Button.css', '.a{color:#fff}')).toEqual([]);
+    expect(checkCss('src/tokens.css', '.a{color:#fff}')).toEqual([]);
+  });
+});
