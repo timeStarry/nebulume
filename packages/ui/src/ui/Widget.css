@@ -1,0 +1,59 @@
+.nl-widget {
+  padding: 6px 10px;
+  border-radius: var(--nl-r-sm);
+  background: var(--nl-v-overlay);
+  color: var(--nl-v-text);
+  font-size: var(--nl-t-12);
+  line-height: 1.5;
+}
+.nl-widget b {
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+}
+.nl-widget-muted {
+  color: var(--nl-v-text-2);
+}
+.nl-widget-exposure {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nl-s-3);
+}
+.nl-widget-stars {
+  color: var(--nl-star);
+  letter-spacing: 1px;
+}
+.nl-widget-stars-off {
+  color: var(--nl-v-text-3);
+}
+.nl-widget-pick {
+  color: var(--nl-pick);
+}
+.nl-widget-reject {
+  color: var(--nl-reject);
+}
+.nl-widget-hist {
+  display: block;
+  width: 140px;
+  height: 44px;
+  isolation: isolate;
+}
+.nl-widget-hist path,
+.nl-hist path {
+  stroke-width: 0.5;
+  mix-blend-mode: screen;
+}
+.nl-widget-hist .hist-red,
+.nl-hist .hist-red {
+  fill: var(--nl-hist-red-fill);
+  stroke: var(--nl-hist-red-stroke);
+}
+.nl-widget-hist .hist-green,
+.nl-hist .hist-green {
+  fill: var(--nl-hist-green-fill);
+  stroke: var(--nl-hist-green-stroke);
+}
+.nl-widget-hist .hist-blue,
+.nl-hist .hist-blue {
+  fill: var(--nl-hist-blue-fill);
+  stroke: var(--nl-hist-blue-stroke);
+}
