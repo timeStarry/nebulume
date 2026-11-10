@@ -1,0 +1,59 @@
+.nl-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  height: var(--nl-h-md);
+  padding: 2px;
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-md);
+  background: var(--nl-side);
+}
+.nl-seg--sm {
+  height: var(--nl-h-sm);
+}
+.nl-seg button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 var(--nl-s-3);
+  border: 0;
+  border-radius: var(--nl-r-sm);
+  background: transparent;
+  color: var(--nl-text-2);
+  font: inherit;
+  font-size: var(--nl-t-13);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--nl-d-fast) var(--nl-ease),
+    color var(--nl-d-fast) var(--nl-ease);
+}
+.nl-seg--sm button {
+  padding: 0 10px;
+  font-size: var(--nl-t-12);
+}
+.nl-seg--compact button {
+  padding: 0 var(--nl-s-2);
+}
+.nl-seg button:hover:not(:disabled) {
+  color: var(--nl-text);
+}
+.nl-seg button[aria-selected='true'],
+.nl-seg button[aria-checked='true'] {
+  background: var(--nl-raised);
+  color: var(--nl-text);
+}
+[data-theme='light'] .nl-seg button[aria-selected='true'],
+[data-theme='light'] .nl-seg button[aria-checked='true'] {
+  box-shadow: inset 0 0 0 1px var(--nl-line);
+}
+.nl-seg button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.nl-seg button:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: -2px;
+}

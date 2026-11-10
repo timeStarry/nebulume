@@ -1,0 +1,11 @@
+.nl-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: var(--nl-r-xs);
+  background: var(--nl-hover);
+  color: var(--nl-text-2);
+  font: 400 var(--nl-t-11) / 1 var(--nl-mono);
+}

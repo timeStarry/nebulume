@@ -1,0 +1,110 @@
+.nl-switch {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 32px;
+  height: 18px;
+}
+.nl-switch input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.nl-switch input:disabled {
+  cursor: not-allowed;
+}
+.nl-switch span {
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background: var(--nl-line-strong);
+  transition: background var(--nl-d-fast) var(--nl-ease);
+}
+.nl-switch span::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--nl-text);
+  transition: transform var(--nl-d-fast) var(--nl-ease);
+}
+[data-theme='light'] .nl-switch span::after {
+  background: var(--nl-raised);
+}
+.nl-switch input:checked + span {
+  background: var(--nl-pick);
+}
+.nl-switch input:checked + span::after {
+  transform: translateX(14px);
+}
+.nl-switch input:disabled + span {
+  opacity: 0.4;
+}
+.nl-switch input:focus-visible + span {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 2px;
+}
+.nl-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+  color: var(--nl-text);
+  font-size: var(--nl-t-13);
+  cursor: pointer;
+}
+.nl-check input {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--nl-line-strong);
+  border-radius: var(--nl-r-xs);
+  background: var(--nl-side);
+  cursor: pointer;
+}
+.nl-check input[type='radio'] {
+  border-radius: 50%;
+}
+.nl-check input:checked {
+  border-color: var(--nl-text);
+  background: var(--nl-text);
+}
+.nl-check input[type='checkbox']:checked::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border: 2px solid var(--nl-inverse);
+  border-top: 0;
+  border-right: 0;
+  transform: translate(0, -1px) rotate(-45deg);
+}
+.nl-check input[type='radio']:checked::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nl-inverse);
+}
+.nl-check input:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 2px;
+}
+.nl-check input:disabled,
+.nl-check:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.nl-check-help {
+  display: block;
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}

@@ -1,0 +1,17 @@
+html,
+body {
+  margin: 0;
+}
+body {
+  background: var(--nl-canvas);
+  color: var(--nl-text);
+  font: 400 var(--nl-t-13) / var(--nl-leading) var(--nl-font);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 500;
+}

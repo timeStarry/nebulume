@@ -1,0 +1,39 @@
+.nl-icon-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--nl-h-md);
+  height: var(--nl-h-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--nl-r-md);
+  background: transparent;
+  color: var(--nl-text-2);
+  cursor: pointer;
+  transition:
+    background var(--nl-d-fast) var(--nl-ease),
+    color var(--nl-d-fast) var(--nl-ease);
+}
+.nl-icon-btn--sm {
+  width: var(--nl-h-sm);
+  height: var(--nl-h-sm);
+}
+.nl-icon-btn--xs {
+  width: var(--nl-h-xs);
+  height: var(--nl-h-xs);
+  border-radius: var(--nl-r-sm);
+}
+.nl-icon-btn:hover:not(:disabled) {
+  background: var(--nl-hover);
+  color: var(--nl-text);
+}
+.nl-icon-btn[aria-pressed='true'] {
+  background: var(--nl-raised);
+  color: var(--nl-text);
+}
+.nl-icon-btn:disabled,
+.nl-icon-btn[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

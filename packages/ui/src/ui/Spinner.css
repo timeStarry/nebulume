@@ -1,0 +1,24 @@
+.nl-spinner {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--nl-line-strong);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: nl-spin 800ms linear infinite;
+}
+.nl-spinner--sm {
+  width: 14px;
+  height: 14px;
+}
+@keyframes nl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nl-spinner {
+    animation-duration: 2400ms;
+  }
+}

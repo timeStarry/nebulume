@@ -1,0 +1,87 @@
+.nl-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.nl-field > label {
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-12);
+}
+.nl-field-help {
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.nl-field-help--error {
+  color: var(--nl-reject);
+}
+.nl-input,
+.nl-select {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+  min-width: 0;
+  height: var(--nl-h-md);
+  padding: 0 10px;
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-md);
+  background: var(--nl-side);
+  color: var(--nl-text);
+  font-size: var(--nl-t-13);
+  transition: border-color var(--nl-d-fast) var(--nl-ease);
+}
+.nl-input--sm,
+.nl-select--sm {
+  height: var(--nl-h-sm);
+  font-size: var(--nl-t-12);
+}
+.nl-input:hover,
+.nl-select:hover {
+  border-color: var(--nl-line-strong);
+}
+.nl-input:focus-within,
+.nl-select:focus-within {
+  border-color: var(--nl-text-2);
+}
+.nl-input--invalid,
+.nl-input--invalid:hover {
+  border-color: var(--nl-reject);
+}
+.nl-input--disabled,
+.nl-select--disabled {
+  opacity: 0.5;
+}
+.nl-input input,
+.nl-select select {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.nl-input input::placeholder {
+  color: var(--nl-text-3);
+}
+.nl-input > svg,
+.nl-select > svg {
+  flex: none;
+  color: var(--nl-text-3);
+}
+.nl-input-suffix {
+  flex: none;
+  color: var(--nl-text-3);
+}
+.nl-select select {
+  appearance: none;
+  cursor: pointer;
+}
+.nl-select select option {
+  background: var(--nl-raised);
+  color: var(--nl-text);
+}
+.nl-select > svg {
+  pointer-events: none;
+}

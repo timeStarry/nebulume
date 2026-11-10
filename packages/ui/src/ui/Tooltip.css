@@ -1,0 +1,48 @@
+.nl-tip-host {
+  position: relative;
+  display: inline-flex;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 50;
+  left: 50%;
+  top: calc(100% + 6px);
+  padding: 5px var(--nl-s-2);
+  border-radius: var(--nl-r-sm);
+  background: var(--nl-primary);
+  color: var(--nl-inverse);
+  font: 400 var(--nl-t-12) / 1.3 var(--nl-font);
+  white-space: pre;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%);
+  transition:
+    opacity var(--nl-d-fast) var(--nl-ease),
+    visibility 0s linear var(--nl-d-fast);
+}
+[data-tip-side='top']::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+[data-tip-side='left']::after {
+  top: 50%;
+  left: auto;
+  right: calc(100% + 6px);
+  transform: translateY(-50%);
+}
+[data-tip-side='right']::after {
+  top: 50%;
+  left: calc(100% + 6px);
+  transform: translateY(-50%);
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after,
+.nl-tip-host:focus-within::after {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity var(--nl-d-fast) var(--nl-ease) 500ms,
+    visibility 0s linear 500ms;
+}

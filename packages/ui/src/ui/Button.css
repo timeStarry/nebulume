@@ -1,0 +1,70 @@
+.nl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--nl-h-md);
+  padding: 0 var(--nl-s-3);
+  border: 0;
+  border-radius: var(--nl-r-md);
+  font: inherit;
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--nl-d-fast) var(--nl-ease),
+    color var(--nl-d-fast) var(--nl-ease);
+}
+.nl-btn--sm {
+  height: var(--nl-h-sm);
+  padding: 0 10px;
+  font-size: var(--nl-t-12);
+}
+.nl-btn--lg {
+  height: var(--nl-h-lg);
+  padding: 0 var(--nl-s-4);
+  font-size: var(--nl-t-14);
+}
+.nl-btn--primary {
+  background: var(--nl-primary);
+  color: var(--nl-inverse);
+}
+.nl-btn--primary:hover:not(:disabled) {
+  background: var(--nl-primary-hover);
+}
+.nl-btn--secondary {
+  background: var(--nl-raised);
+  color: var(--nl-text);
+}
+[data-theme='light'] .nl-btn--secondary {
+  box-shadow: inset 0 0 0 1px var(--nl-line);
+}
+.nl-btn--secondary:hover:not(:disabled) {
+  background: var(--nl-pressed);
+}
+.nl-btn--ghost {
+  background: transparent;
+  color: var(--nl-text-2);
+  font-weight: 400;
+}
+.nl-btn--ghost:hover:not(:disabled) {
+  background: var(--nl-hover);
+  color: var(--nl-text);
+}
+.nl-btn--danger {
+  background: var(--nl-tint-reject);
+  color: var(--nl-reject);
+}
+.nl-btn--danger:hover:not(:disabled) {
+  background: var(--nl-tint-reject-strong);
+}
+.nl-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.nl-btn:focus-visible,
+.nl-icon-btn:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 2px;
+}
