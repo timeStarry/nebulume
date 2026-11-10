@@ -58,3 +58,14 @@ describe('workspace boundaries', () => {
     expect(parentPrefix('trips/')).toBe('');
   });
 });
+
+describe('pickInitialLibrary', () => {
+  it('prefers the last visible library, then the first', async () => {
+    const { pickInitialLibrary } = await import('../src/workspace');
+    const libs = [{ id: 'a' }, { id: 'b' }];
+    expect(pickInitialLibrary(libs, 'b')?.id).toBe('b');
+    expect(pickInitialLibrary(libs, 'gone')?.id).toBe('a');
+    expect(pickInitialLibrary(libs, null)?.id).toBe('a');
+    expect(pickInitialLibrary([], 'b')).toBeUndefined();
+  });
+});

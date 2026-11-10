@@ -32,6 +32,23 @@ import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, { type FolderAction } from './LibrarySidebar';
 import AppShell from './AppShell';
+import {
+  Banner,
+  Button,
+  Chip,
+  EmptyState,
+  IconButton,
+  PageHeader,
+  Segmented,
+  Select,
+  Slider,
+  Spacer,
+  TextInput,
+  Toggle,
+  Toolbar,
+} from './ui';
+import type { MenuEntry } from './ui';
+import './library/library.css';
 import LibraryOverview from './LibraryOverview';
 import {
   exportPhotos,
@@ -78,6 +95,8 @@ import {
   sourceKind,
   variantViewerIds,
   type WorkspaceSection,
+  LAST_LIBRARY_KEY,
+  pickInitialLibrary,
 } from './workspace';
 import {
   changedAssetFields,
@@ -258,6 +277,11 @@ export default function ManagementApp() {
   function updateSource(source: StorageConfig) {
     setSources((previous) => [...previous.filter((item) => item.id !== source.id), source]);
   }
+  createEffect(
+    on(visibleLibraries, () => {
+      if (section() === 'libraries' && ready()) untrack(openInitialLibrary);
+    }),
+  );
   async function boot() {
     await refreshLibraries();
     const results = await Promise.allSettled([
@@ -268,6 +292,7 @@ export default function ManagementApp() {
     else setError(errorMessage(results[0].reason));
     if (results[1].status === 'fulfilled') setSystem(results[1].value);
     setReady(true);
+    if (section() === 'libraries') openInitialLibrary();
   }
   function listOptions(): AssetListOptions {
     return {
@@ -380,7 +405,20 @@ export default function ManagementApp() {
     closeNavigation();
     setError('');
     setNotice('');
-    if (next === 'libraries') {
+    if (next === 'libraries') openInitialLibrary();
+  }
+  function openInitialLibrary() {
+    const list = visibleLibraries();
+    if (libraryId() && list.some((library) => library.id === libraryId())) return;
+    let last: string | null = null;
+    try {
+      last = localStorage.getItem(LAST_LIBRARY_KEY);
+    } catch {
+      /* No saved choice. */
+    }
+    const pick = pickInitialLibrary(list, last);
+    if (pick) enterLibrary(pick);
+    else {
       request++;
       setLibraryId(undefined);
       setAssets([]);
@@ -390,6 +428,11 @@ export default function ManagementApp() {
   }
   function enterLibrary(library: Library) {
     closeNavigation();
+    try {
+      localStorage.setItem(LAST_LIBRARY_KEY, library.id);
+    } catch {
+      /* Only affects which library opens next time. */
+    }
     request++;
     setAssets([]);
     setTotal(0);
@@ -1200,6 +1243,75 @@ export default function ManagementApp() {
     setCullWhenLoaded(false);
     void untrack(startCulling);
   });
+  /** Scanning needs the location reachable; an access error may clear on retry. */
+  function scanBlocked(library: Library) {
+    return desktop && !availabilityPresentation(library).usable && library.availability !== 'error';
+  }
+  function scanReason(library: Library) {
+    return `无法扫描：${availabilityPresentation(library).detail}`;
+  }
+  function libraryMenu(library: Library): MenuEntry[] {
+    const blocked = scanBlocked(library);
+    const reason = blocked ? scanReason(library) : undefined;
+    const open = (then: () => void) => () => {
+      if (libraryId() !== library.id) enterLibrary(library);
+      then();
+    };
+    return [
+      {
+        label: '图片库设置…',
+        ariaLabel: `${library.name} 图片库设置`,
+        icon: 'settings',
+        disabled: !!busy(),
+        onSelect: () => editLibrary(library),
+      },
+      ...(desktop
+        ? ([
+            {
+              label: '扫描更新',
+              icon: 'refresh',
+              disabled: !!busy() || blocked,
+              title: reason,
+              onSelect: () => void scan(library),
+            },
+            {
+              label: '预生成缩略图',
+              icon: 'photo',
+              disabled: !!busy() || blocked,
+              title: reason,
+              onSelect: () => {
+                void pregeneratePreviews(
+                  library.id,
+                  gridTier(thumbSize(), devicePixelRatio()),
+                ).catch((e) => setError(errorMessage(e)));
+                setNotice(`正在后台为 ${library.name} 生成缩略图。`);
+              },
+            },
+            {
+              label: '补全拍摄时间…',
+              icon: 'clock',
+              disabled: !!busy(),
+              onSelect: open(() => setSort('captured_at')),
+            },
+            {
+              label: '内容指纹…',
+              icon: 'shield-check',
+              disabled: !!busy(),
+              onSelect: () => editLibrary(library),
+            },
+          ] as MenuEntry[])
+        : []),
+      'separator',
+      {
+        label: '移除图片库…',
+        ariaLabel: `移除图片库 ${library.name}`,
+        icon: 'trash',
+        danger: true,
+        disabled: !!busy(),
+        onSelect: () => setRemoving({ kind: 'library', item: library }),
+      },
+    ];
+  }
   async function folderAction(kind: FolderAction, path: string) {
     const library = currentLibrary();
     if (!library) return;
@@ -1362,6 +1474,7 @@ export default function ManagementApp() {
             }}
             onFolderAction={(kind, path) => void folderAction(kind, path)}
             onAddLibrary={() => newLibrary()}
+            libraryMenu={libraryMenu}
           />
         ) : undefined
       }
@@ -1394,336 +1507,200 @@ export default function ManagementApp() {
           <Show
             when={currentLibrary()}
             fallback={
-              <section class="workspace-page" aria-label="图片库管理">
-                <header class="workspace-heading">
-                  <div>
-                    <h1>图片库</h1>
-                  </div>
-                  <div class="workspace-heading-actions">
-                    <button
-                      class="button primary"
-                      onClick={() => {
-                        if (desktop) newLibrary();
-                        else {
-                          openAfterImport = false;
-                          fileInput.click();
-                        }
-                      }}
-                    >
-                      <Icon name="plus" size={15} />
-                      {desktop ? '建立图片库' : '选择本地图片'}
-                    </button>
-                  </div>
-                </header>
-                <div class="library-manager-toolbar">
-                  <span>{visibleLibraries().length} 个图片库</span>
-                  <button class="icon-button" aria-label="刷新图片库" onClick={refreshLibraries}>
-                    <Icon name="refresh" size={16} />
-                  </button>
-                </div>
-                <div class="library-card-grid">
-                  <For
-                    each={visibleLibraries()}
-                    fallback={
-                      <div class="workspace-empty">
-                        <Icon name="folder" size={34} />
-                        <h2>建立你的第一个图片库</h2>
-                        <p>从本地文件夹或已连接的网络位置选择目录。</p>
-                      </div>
+              <Show when={ready() && !visibleLibraries().length}>
+                <section class="library-empty" aria-label="图片库管理">
+                  <EmptyState
+                    icon="photo-plus"
+                    title="还没有图片库"
+                    description={
+                      desktop
+                        ? '选一个照片文件夹建立图片库，或从存储卡导入。照片留在原处。'
+                        : '选择几张本地照片，体验浏览、选片与导出。'
                     }
-                  >
-                    {(library) => (
-                      <article
-                        class={`library-card-container ${availabilityPresentation(library).usable ? '' : 'unavailable'}`}
-                      >
-                        <button
-                          class="library-card"
-                          onClick={() => enterLibrary(library)}
-                          aria-label={`打开图片库 ${library.name}，${availabilityPresentation(library).label}`}
-                        >
-                          <LibraryCovers library={library} />
-                          <div class="library-card-top">
-                            <Icon name="folder" size={26} />
-                            <span>{sourceKind(library.source_kind)}</span>
-                            <span
-                              class={`availability-badge ${library.availability || 'unchecked'}`}
-                              title={availabilityPresentation(library).detail}
-                            >
-                              {availabilityPresentation(library).label}
-                            </span>
-                            <Icon name="right" size={17} />
-                          </div>
-                          <h2>{library.name}</h2>
-                          <p class="library-card-stats">
-                            {library.asset_count
-                              ? `${library.asset_count.toLocaleString()} 张照片`
-                              : '尚无照片'}
-                            <Show when={library.latest_capture}>
-                              {(day) => <span> · 最近拍摄 {day()}</span>}
-                            </Show>
-                          </p>
-                          <p class="library-card-location" title={libraryLocation(library)}>
-                            {libraryLocation(library)}
-                          </p>
-                          <Show
-                            when={
-                              (library.source_name && library.source_name !== library.name) ||
-                              library.pair_raw_jpeg
+                    actions={
+                      <>
+                        <Button
+                          variant="primary"
+                          icon={desktop ? 'folder-plus' : 'photo-plus'}
+                          onClick={() => {
+                            if (desktop) newLibrary();
+                            else {
+                              openAfterImport = false;
+                              fileInput.click();
                             }
-                          >
-                            <div class="library-card-footer">
-                              <Show
-                                when={library.source_name && library.source_name !== library.name}
-                              >
-                                <span>{library.source_name}</span>
-                              </Show>
-                              <Show when={library.pair_raw_jpeg}>
-                                <small>RAW + JPEG 合并</small>
-                              </Show>
-                            </div>
-                          </Show>
-                        </button>
-                        <div class="library-card-actions">
-                          <OverflowMenu
-                            label={`${library.name} 更多操作`}
-                            items={[
-                              {
-                                label: '图片库设置…',
-                                ariaLabel: `${library.name} 图片库设置`,
-                                disabled: !!busy(),
-                                onSelect: () => editLibrary(library),
-                              },
-                              {
-                                label: '移除图片库…',
-                                ariaLabel: `移除图片库 ${library.name}`,
-                                disabled: !!busy(),
-                                danger: true,
-                                onSelect: () => setRemoving({ kind: 'library', item: library }),
-                              },
-                            ]}
-                          />
-                        </div>
-                      </article>
-                    )}
-                  </For>
-                </div>
-              </section>
+                          }}
+                        >
+                          {desktop ? '新建图片库' : '选择照片'}
+                        </Button>
+                        <Show when={desktop}>
+                          <Button icon="card" onClick={() => navigate('cards')}>
+                            从存储卡导入
+                          </Button>
+                        </Show>
+                      </>
+                    }
+                  />
+                </section>
+              </Show>
             }
           >
             {(library) => (
               <section class="library-collection" aria-label={`${library().name} 照片`}>
-                <header class="collection-heading">
-                  <div>
-                    <button class="breadcrumb-button" onClick={() => navigate('libraries')}>
-                      <Icon name="left" size={15} />
-                      图片库
-                    </button>
-                    <span>/</span>
-                    <h1>{library().name}</h1>
-                    <Show when={folder()}>
-                      <span class="heading-folder">{folder().replaceAll('/', ' / ')}</span>
-                    </Show>
-                  </div>
-                  <div class="view-switch" role="tablist" aria-label="视图">
-                    <button
-                      role="tab"
-                      aria-selected={view() === 'photos'}
-                      aria-keyshortcuts="Meta+1"
-                      onClick={() => setView('photos')}
-                    >
-                      <Icon name="grid" size={15} />
-                      照片
-                    </button>
-                    <button
-                      role="tab"
-                      aria-selected={false}
-                      aria-keyshortcuts="Meta+2"
-                      disabled={!assets().length || !!busy()}
-                      onClick={() => void startCulling()}
-                    >
-                      <Icon name="star" size={15} />
-                      选片
-                    </button>
-                    <button
-                      role="tab"
-                      aria-selected={view() === 'overview'}
-                      aria-keyshortcuts="Meta+3"
-                      onClick={() => setView('overview')}
-                    >
-                      <Icon name="info" size={15} />
-                      概览
-                    </button>
-                  </div>
-                  <div class="collection-actions">
-                    <button
-                      class="button primary"
-                      disabled={
-                        !!busy() ||
-                        (desktop &&
-                          !availabilityPresentation(library()).usable &&
-                          library().availability !== 'error')
-                      }
-                      title={
-                        desktop && !availabilityPresentation(library()).usable
-                          ? `无法扫描：${availabilityPresentation(library()).detail}`
-                          : undefined
-                      }
-                      onClick={() => (desktop ? scan(library()) : fileInput.click())}
-                    >
-                      <Icon name={desktop ? 'refresh' : 'plus'} size={15} />
-                      {desktop ? '扫描更新' : '载入图片'}
-                    </button>
-                    <button
-                      class="button"
-                      disabled={!assets().length || !!busy()}
-                      onClick={() => void startCulling()}
-                      aria-keyshortcuts="Shift+C"
-                      title="以当前筛选结果逐张选图（Shift+C）"
-                    >
-                      <Icon name="star" size={15} />
-                      选图
-                    </button>
-                    <button
-                      class={`button ${info() ? 'active' : ''}`}
-                      disabled={!selected()}
-                      onClick={() => setInfo((value) => !value)}
-                      aria-label="影像详情（I）"
-                      aria-pressed={info()}
-                    >
-                      <Icon name="info" size={15} />
-                      详情
-                    </button>
-                    <OverflowMenu
-                      label={`${library().name} 更多操作`}
-                      items={[
+                <PageHeader
+                  title={library().name}
+                  subtitle={
+                    folder()
+                      ? folder().replaceAll('/', ' / ')
+                      : library().asset_count !== undefined
+                        ? `${library().asset_count!.toLocaleString()} 张`
+                        : undefined
+                  }
+                  center={(narrow) => (
+                    <Segmented
+                      label="视图"
+                      compact={narrow}
+                      value={view()}
+                      onChange={(next) => (next === 'cull' ? void startCulling() : setView(next))}
+                      options={[
+                        { value: 'photos', label: '照片', icon: 'grid', shortcut: 'Meta+1' },
                         {
-                          label: '图片库设置…',
-                          ariaLabel: `${library().name} 图片库设置`,
-                          disabled: !!busy(),
-                          onSelect: () => editLibrary(library()),
+                          value: 'cull',
+                          label: '选片',
+                          icon: 'flag',
+                          shortcut: 'Meta+2',
+                          disabled: !assets().length || !!busy(),
                         },
-                        {
-                          label: '移除图片库…',
-                          ariaLabel: `移除图片库 ${library().name}`,
-                          disabled: !!busy(),
-                          danger: true,
-                          onSelect: () => setRemoving({ kind: 'library', item: library() }),
-                        },
+                        { value: 'overview', label: '概览', icon: 'chart-bar', shortcut: 'Meta+3' },
                       ]}
                     />
-                  </div>
-                </header>
-                <Show when={!availabilityPresentation(library()).usable}>
-                  <div
-                    class={`availability-banner ${library().availability || 'unchecked'}`}
-                    role="status"
-                  >
-                    <strong>{availabilityPresentation(library()).label}</strong>
-                    <span>{availabilityPresentation(library()).detail}</span>
-                    <Show when={availabilityPresentation(library()).action}>
-                      {(fix) => (
-                        <button class="button small" onClick={() => navigate(fix().section)}>
-                          {fix().label}
-                        </button>
-                      )}
-                    </Show>
-                    <Show when={desktop}>
-                      <button
-                        class="button small"
-                        disabled={!!busy()}
-                        onClick={() => void refreshLibraries()}
+                  )}
+                  actions={
+                    <>
+                      <Button
+                        icon={desktop ? 'refresh' : 'plus'}
+                        disabled={!!busy() || scanBlocked(library())}
+                        title={scanBlocked(library()) ? scanReason(library()) : undefined}
+                        onClick={() => (desktop ? scan(library()) : fileInput.click())}
                       >
-                        重试
-                      </button>
-                    </Show>
+                        {desktop ? '扫描更新' : '载入图片'}
+                      </Button>
+                      <OverflowMenu label="更多" items={libraryMenu(library())} />
+                    </>
+                  }
+                />
+                <Show when={!availabilityPresentation(library()).usable}>
+                  <div class="library-banner">
+                    <Banner
+                      class="availability-banner"
+                      tone="warn"
+                      message={availabilityPresentation(library()).label}
+                      detail={availabilityPresentation(library()).detail}
+                      action={
+                        <>
+                          <Show when={availabilityPresentation(library()).action}>
+                            {(fix) => (
+                              <Button size="sm" onClick={() => navigate(fix().section)}>
+                                {fix().label}
+                              </Button>
+                            )}
+                          </Show>
+                          <Show when={desktop}>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={!!busy()}
+                              onClick={() => void refreshLibraries()}
+                            >
+                              重试
+                            </Button>
+                          </Show>
+                        </>
+                      }
+                    />
                   </div>
                 </Show>
-                <div class="collection-controls">
-                  <div class="search-field">
-                    <Icon name="search" size={16} />
-                    <input
-                      ref={searchInput}
-                      value={query()}
-                      onInput={(event) => setQuery(event.currentTarget.value)}
-                      placeholder="搜索文件名或元数据…"
-                      aria-label="搜索照片"
-                      maxLength={256}
+                <Toolbar label="照片工具栏" class="library-toolbar">
+                  <TextInput
+                    ref={(el) => (searchInput = el)}
+                    size="sm"
+                    icon="search"
+                    wrapClass="library-search"
+                    value={query()}
+                    onInput={(event) => setQuery(event.currentTarget.value)}
+                    placeholder="搜索文件名或元数据…"
+                    aria-label="搜索照片"
+                    maxLength={256}
+                  />
+                  <Show when={query()}>
+                    <IconButton
+                      size="xs"
+                      icon="close"
+                      label="清除搜索"
+                      onClick={() => setQuery('')}
                     />
-                    <Show when={query()}>
-                      <button
-                        class="icon-button"
-                        aria-label="清除搜索"
-                        onClick={() => setQuery('')}
-                      >
-                        <Icon name="close" size={13} />
-                      </button>
-                    </Show>
-                  </div>
-                  <button
-                    class={`button small filter-toggle ${filtersOpen() ? 'active' : ''}`}
+                  </Show>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="filter"
+                    class="filter-toggle"
                     aria-expanded={filtersOpen()}
                     aria-controls="collection-filters"
                     onClick={() => toggleFilters()}
                   >
-                    <Icon name="filter" size={14} />
                     筛选
                     <Show when={activeFilters().length}>
-                      <span class="filter-count">{activeFilters().length}</span>
+                      <span class="library-filter-count">{activeFilters().length}</span>
                     </Show>
-                  </button>
-                  <div class="filter-chips" aria-label="当前筛选">
+                  </Button>
+                  <span class="library-chips" role="group" aria-label="当前筛选">
                     <For each={activeFilters()}>
-                      {(chip) => (
-                        <span class="filter-chip">
-                          {chip.label}
-                          <button
-                            class="filter-chip-remove"
-                            aria-label={`移除筛选：${chip.label}`}
-                            onClick={chip.clear}
-                          >
-                            <Icon name="close" size={11} />
-                          </button>
-                        </span>
-                      )}
+                      {(chip) => <Chip label={chip.label} onRemove={chip.clear} />}
                     </For>
-                  </div>
-                  <div class="collection-controls-spacer" />
-                  <div class="sort-control">
-                    <select
-                      value={sort()}
-                      title={
-                        sort() === 'captured_at'
-                          ? '按相机当地记录的拍摄时间排序；待索引或无有效时间的照片置后。'
-                          : sort() === 'created_at'
-                            ? '源文件创建时间；未提供时间的照片置后。旧远端库可扫描更新以补充。'
-                            : undefined
-                      }
-                      onChange={(event) =>
-                        setSort(
-                          event.currentTarget.value as NonNullable<AssetListOptions['sort_by']>,
-                        )
-                      }
-                      aria-label="排序字段"
-                    >
-                      <option value="captured_at">拍摄时间</option>
-                      <option value="created_at">文件创建时间</option>
-                      <option value="modified_at">文件修改时间</option>
-                      <option value="filename">文件名</option>
-                      <option value="rating">评级</option>
-                    </select>
-                    <button
-                      class="icon-button sort-direction"
-                      aria-label={
-                        direction() === 'desc'
-                          ? '排序方向：降序，切换为升序'
-                          : '排序方向：升序，切换为降序'
-                      }
-                      title={direction() === 'desc' ? '降序' : '升序'}
-                      onClick={() => setDirection(direction() === 'desc' ? 'asc' : 'desc')}
-                    >
-                      <Icon name={direction() === 'desc' ? 'sort-desc' : 'sort-asc'} size={16} />
-                    </button>
-                  </div>
+                  </span>
+                  <Spacer />
+                  <span class="collection-status library-count" aria-live="polite">
+                    {loading()
+                      ? '正在读取索引…'
+                      : `已载入 ${assets().length} / ${total()} 项${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()} 个匹配文件` : ''}`}
+                  </span>
+                  <Toggle
+                    pressed={flag() === 'not_reject'}
+                    onChange={(on) => setFlag(on ? 'not_reject' : 'any')}
+                    icon="eye-off"
+                  >
+                    隐藏淘汰
+                  </Toggle>
+                  <Select
+                    size="sm"
+                    aria-label="排序字段"
+                    value={sort()}
+                    title={
+                      sort() === 'captured_at'
+                        ? '按相机当地记录的拍摄时间排序；待索引或无有效时间的照片置后。'
+                        : sort() === 'created_at'
+                          ? '源文件创建时间；未提供时间的照片置后。旧远端库可扫描更新以补充。'
+                          : undefined
+                    }
+                    onChange={(value) => setSort(value as NonNullable<AssetListOptions['sort_by']>)}
+                    options={[
+                      { value: 'captured_at', label: '拍摄时间' },
+                      { value: 'created_at', label: '文件创建时间' },
+                      { value: 'modified_at', label: '文件修改时间' },
+                      { value: 'filename', label: '文件名' },
+                      { value: 'rating', label: '评级' },
+                    ]}
+                  />
+                  <IconButton
+                    size="sm"
+                    icon={direction() === 'desc' ? 'sort-desc' : 'sort-asc'}
+                    label={
+                      direction() === 'desc'
+                        ? '排序方向：降序，切换为升序'
+                        : '排序方向：升序，切换为降序'
+                    }
+                    onClick={() => setDirection(direction() === 'desc' ? 'asc' : 'desc')}
+                  />
                   <Show when={desktop && sort() === 'captured_at'}>
                     <CaptureIndexControl
                       libraryId={library().id}
@@ -1738,230 +1715,226 @@ export default function ManagementApp() {
                       }}
                     />
                   </Show>
-                  <label class="collection-thumbnail-size">
-                    <span>缩略图</span>
-                    <input
-                      type="range"
-                      min="150"
-                      max="320"
-                      step="10"
-                      value={thumbSize()}
-                      onInput={(event) => {
-                        const value = Number(event.currentTarget.value);
-                        setThumbSize(value);
-                        saveThumbSize(value);
-                      }}
-                      aria-label="缩略图大小"
-                    />
-                  </label>
-                </div>
+                  <Slider
+                    label="缩略图大小"
+                    min={150}
+                    max={320}
+                    step={10}
+                    value={thumbSize()}
+                    onInput={(value) => {
+                      setThumbSize(value);
+                      saveThumbSize(value);
+                    }}
+                  />
+                  <IconButton
+                    size="sm"
+                    icon="info"
+                    label="影像详情（I）"
+                    shortcut="I"
+                    pressed={info()}
+                    disabled={!selected()}
+                    onClick={() => setInfo((value) => !value)}
+                  />
+                </Toolbar>
                 <Show when={filtersOpen()}>
                   <div
-                    class="filter-panel"
+                    class="filter-panel library-filters"
                     id="collection-filters"
                     role="group"
                     aria-label="筛选条件"
                   >
-                    <label class="filter-field">
-                      <span>评级</span>
-                      <select
-                        value={rating()}
-                        onChange={(event) => setRating(Number(event.currentTarget.value))}
-                        aria-label="最低评级筛选"
-                      >
-                        <option value="0">所有评级</option>
-                        <For each={[1, 2, 3, 4, 5]}>
-                          {(value) => (
-                            <option value={value}>
-                              {'★'.repeat(value)}
-                              {value < 5 ? ' 及以上' : ''}
-                            </option>
-                          )}
-                        </For>
-                      </select>
-                    </label>
-                    <label class="filter-field">
-                      <span>旗标</span>
-                      <select
-                        value={flag()}
-                        onChange={(event) => setFlag(event.currentTarget.value as FlagFilter)}
-                        aria-label="旗标筛选"
-                      >
-                        <option value="any">所有旗标</option>
-                        <option value="pick">留用</option>
-                        <option value="none">未标记</option>
-                        <option value="reject">淘汰</option>
-                        <option value="not_reject">隐藏淘汰</option>
-                      </select>
-                    </label>
-                    <label class="filter-field">
-                      <span>格式</span>
-                      <select
-                        value={format()}
-                        onChange={(event) =>
-                          setFormat(
-                            event.currentTarget.value as NonNullable<AssetListOptions['format']>,
-                          )
-                        }
-                        aria-label="文件格式筛选"
-                      >
-                        <option value="all">所有格式</option>
-                        <option value="raw">RAW</option>
-                        <option value="jpeg">JPEG</option>
-                      </select>
-                    </label>
-                    <label class="filter-field">
-                      <span>机身</span>
-                      <Show when={facets()?.cameras.length}>
-                        <select
-                          value={camera()}
-                          onChange={(event) => setCamera(event.currentTarget.value)}
-                          aria-label="机身筛选"
-                        >
-                          <option value="">所有机身</option>
-                          <For each={facets()!.cameras}>
-                            {(item) => (
-                              <option value={item.value}>
-                                {item.value}（{item.count}）
-                              </option>
-                            )}
-                          </For>
-                        </select>
-                      </Show>
-                    </label>
-                    <label class="filter-field">
-                      <span>镜头</span>
-                      <Show when={facets()?.lenses.length}>
-                        <select
-                          value={lens()}
-                          onChange={(event) => setLens(event.currentTarget.value)}
-                          aria-label="镜头筛选"
-                        >
-                          <option value="">所有镜头</option>
-                          <For each={facets()!.lenses}>
-                            {(item) => (
-                              <option value={item.value}>
-                                {item.value}（{item.count}）
-                              </option>
-                            )}
-                          </For>
-                        </select>
-                      </Show>
-                    </label>
-                    <div class="filter-field">
-                      <span>拍摄日期</span>
-                      <div class="date-range" role="group" aria-label="拍摄日期范围">
-                        <input
-                          type="date"
-                          value={capturedFrom()}
-                          min={facets()?.captured.first ?? undefined}
-                          max={capturedTo() || facets()?.captured.last || undefined}
-                          onChange={(event) => setCapturedFrom(event.currentTarget.value)}
-                          aria-label="拍摄日期起"
-                        />
-                        <span aria-hidden="true">–</span>
-                        <input
-                          type="date"
-                          value={capturedTo()}
-                          min={capturedFrom() || facets()?.captured.first || undefined}
-                          max={facets()?.captured.last ?? undefined}
-                          onChange={(event) => setCapturedTo(event.currentTarget.value)}
-                          aria-label="拍摄日期止"
-                        />
-                      </div>
-                    </div>
-                    <label class="filter-field">
-                      <span>导入批次</span>
-                      <Show when={batches().length}>
-                        <select
-                          value={batchId()}
-                          onChange={(event) => setBatchId(event.currentTarget.value)}
-                          aria-label="导入批次"
-                        >
-                          <option value="" selected={!batchId()}>
-                            所有导入
-                          </option>
-                          <For each={batches()}>
-                            {(batch) => (
-                              // Options are rebuilt when the batch list reloads; mark selection
-                              // per option so the chosen batch survives that refresh.
-                              <option value={batch.id} selected={batch.id === batchId()}>
-                                {batch.started_at.slice(0, 16).replace('T', ' ')} ·{' '}
-                                {batch.asset_count} 张
-                              </option>
-                            )}
-                          </For>
-                        </select>
-                      </Show>
-                    </label>
+                    <Select
+                      size="sm"
+                      aria-label="最低评级筛选"
+                      value={String(rating())}
+                      onChange={(value) => setRating(Number(value))}
+                      options={[
+                        { value: '0', label: '所有评级' },
+                        ...[1, 2, 3, 4, 5].map((value) => ({
+                          value: String(value),
+                          label: `${'★'.repeat(value)}${value < 5 ? ' 及以上' : ''}`,
+                        })),
+                      ]}
+                    />
+                    <Select
+                      size="sm"
+                      aria-label="旗标筛选"
+                      value={flag()}
+                      onChange={(value) => setFlag(value as FlagFilter)}
+                      options={[
+                        { value: 'any', label: '所有旗标' },
+                        { value: 'pick', label: '留用' },
+                        { value: 'none', label: '未标记' },
+                        { value: 'reject', label: '淘汰' },
+                        { value: 'not_reject', label: '隐藏淘汰' },
+                      ]}
+                    />
+                    <Select
+                      size="sm"
+                      aria-label="文件格式筛选"
+                      value={format()}
+                      onChange={(value) =>
+                        setFormat(value as NonNullable<AssetListOptions['format']>)
+                      }
+                      options={[
+                        { value: 'all', label: '所有格式' },
+                        { value: 'raw', label: 'RAW' },
+                        { value: 'jpeg', label: 'JPEG' },
+                      ]}
+                    />
+                    <Show when={facets()?.cameras.length}>
+                      <Select
+                        size="sm"
+                        aria-label="机身筛选"
+                        value={camera()}
+                        onChange={setCamera}
+                        options={[
+                          { value: '', label: '所有机身' },
+                          ...facets()!.cameras.map((item) => ({
+                            value: item.value,
+                            label: `${item.value}（${item.count}）`,
+                          })),
+                        ]}
+                      />
+                    </Show>
+                    <Show when={facets()?.lenses.length}>
+                      <Select
+                        size="sm"
+                        aria-label="镜头筛选"
+                        value={lens()}
+                        onChange={setLens}
+                        options={[
+                          { value: '', label: '所有镜头' },
+                          ...facets()!.lenses.map((item) => ({
+                            value: item.value,
+                            label: `${item.value}（${item.count}）`,
+                          })),
+                        ]}
+                      />
+                    </Show>
+                    <span class="library-dates" role="group" aria-label="拍摄日期范围">
+                      <TextInput
+                        size="sm"
+                        type="date"
+                        value={capturedFrom()}
+                        min={facets()?.captured.first ?? undefined}
+                        max={capturedTo() || facets()?.captured.last || undefined}
+                        onChange={(event) => setCapturedFrom(event.currentTarget.value)}
+                        aria-label="拍摄日期起"
+                      />
+                      <span aria-hidden="true">–</span>
+                      <TextInput
+                        size="sm"
+                        type="date"
+                        value={capturedTo()}
+                        min={capturedFrom() || facets()?.captured.first || undefined}
+                        max={facets()?.captured.last ?? undefined}
+                        onChange={(event) => setCapturedTo(event.currentTarget.value)}
+                        aria-label="拍摄日期止"
+                      />
+                    </span>
+                    <Show when={batches().length}>
+                      <Select
+                        size="sm"
+                        aria-label="导入批次"
+                        value={batchId()}
+                        onChange={setBatchId}
+                        options={[
+                          { value: '', label: '所有导入' },
+                          ...batches().map((batch) => ({
+                            value: batch.id,
+                            label: `${batch.started_at.slice(0, 16).replace('T', ' ')} · ${batch.asset_count} 张`,
+                          })),
+                        ]}
+                      />
+                    </Show>
                     <Show when={activeFilters().length}>
-                      <button class="button small filter-clear" onClick={clearAllFilters}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        class="filter-clear"
+                        onClick={clearAllFilters}
+                      >
                         清除全部
-                      </button>
+                      </Button>
                     </Show>
                   </div>
                 </Show>
                 <Show when={selectedIds().length > 1}>
-                  <div class="selection-bar" role="toolbar" aria-label="批量操作">
-                    <strong>已选 {selectedIds().length} 张</strong>
-                    <div class="selection-bar-group" aria-label="批量评级">
+                  <Toolbar label="批量操作" class="library-batch">
+                    <b>已选 {selectedIds().length} 张</b>
+                    <span class="library-batch-group" role="group" aria-label="批量评级">
                       <For each={[1, 2, 3, 4, 5]}>
                         {(value) => (
-                          <button
-                            class="button small"
+                          <Button
+                            size="sm"
+                            variant="ghost"
                             disabled={!!busy()}
                             aria-label={`将所选照片评为 ${value} 星`}
                             onClick={() => void markSelection({ rating: value })}
                           >
-                            {value}
-                          </button>
+                            {value}★
+                          </Button>
                         )}
                       </For>
-                      <button
-                        class="button small"
+                      <Button
+                        size="sm"
+                        variant="ghost"
                         disabled={!!busy()}
                         aria-label="清除所选照片评级"
                         onClick={() => void markSelection({ rating: 0 })}
                       >
                         0
-                      </button>
-                    </div>
-                    <div class="selection-bar-group" aria-label="批量旗标">
-                      <button
-                        class="button small"
+                      </Button>
+                    </span>
+                    <span class="library-batch-group" role="group" aria-label="批量旗标">
+                      <Button
+                        size="sm"
                         disabled={!!busy()}
                         onClick={() => void markSelection({ flag: 'pick' })}
                       >
                         留用
-                      </button>
-                      <button
-                        class="button small"
+                      </Button>
+                      <Button
+                        size="sm"
                         disabled={!!busy()}
                         onClick={() => void markSelection({ flag: 'reject' })}
                       >
                         淘汰
-                      </button>
-                      <button
-                        class="button small"
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
                         disabled={!!busy()}
                         onClick={() => void markSelection({ flag: 'none' })}
                       >
                         清除旗标
-                      </button>
-                    </div>
-                    <span class="collection-controls-spacer" />
-                    <button
-                      class="button small"
+                      </Button>
+                    </span>
+                    <Spacer />
+                    <Button
+                      size="sm"
+                      icon="export"
                       disabled={!!busy()}
                       onClick={() => void exportSelection()}
                     >
-                      <Icon name="export" size={14} />
                       导出 JPEG…
-                    </button>
-                    <button class="button small" onClick={clearPicked}>
+                    </Button>
+                    <Show when={library().source_kind === 'local' || !library().source_kind}>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        icon="trash"
+                        disabled={!!busy()}
+                        onClick={() => void trashSelection()}
+                      >
+                        移到废纸篓
+                      </Button>
+                    </Show>
+                    <Button size="sm" variant="ghost" onClick={clearPicked}>
                       取消选择
-                    </button>
-                  </div>
+                    </Button>
+                  </Toolbar>
                 </Show>
                 <div class="collection-body">
                   <Show when={view() === 'overview'}>
@@ -1998,42 +1971,47 @@ export default function ManagementApp() {
                             </div>
                           }
                         >
-                          <div class="workspace-empty">
-                            <Icon name="photo" size={32} />
-                            <h2>
-                              {loading()
+                          <EmptyState
+                            icon="photo"
+                            title={
+                              loading()
                                 ? '正在读取图片…'
                                 : filtered()
                                   ? '没有匹配的照片'
-                                  : '图片库尚无照片'}
-                            </h2>
-                            <p>
-                              {filtered()
+                                  : '图片库尚无照片'
+                            }
+                            description={
+                              filtered()
                                 ? '调整搜索词、评级、旗标或文件格式筛选。'
                                 : desktop
                                   ? '扫描此目录建立索引，照片在原位置保留。'
-                                  : '选择本地图片开始体验。'}
-                            </p>
-                            <Show when={!loading()}>
-                              <button
-                                class="button"
-                                onClick={() =>
-                                  filtered()
-                                    ? (setQuery(''),
-                                      setRating(0),
-                                      setFormat('all'),
-                                      setFlag('any'),
-                                      setBatchId(''),
-                                      clearMetadataFilters())
+                                  : '选择本地图片开始体验。'
+                            }
+                            actions={
+                              <Show when={!loading()}>
+                                <Button
+                                  onClick={() =>
+                                    filtered()
+                                      ? (setQuery(''),
+                                        setRating(0),
+                                        setFormat('all'),
+                                        setFlag('any'),
+                                        setBatchId(''),
+                                        clearMetadataFilters())
+                                      : desktop
+                                        ? scan(library())
+                                        : fileInput.click()
+                                  }
+                                >
+                                  {filtered()
+                                    ? '清除筛选'
                                     : desktop
-                                      ? scan(library())
-                                      : fileInput.click()
-                                }
-                              >
-                                {filtered() ? '清除筛选' : desktop ? '扫描图片库' : '选择本地图片'}
-                              </button>
-                            </Show>
-                          </div>
+                                      ? '扫描图片库'
+                                      : '选择本地图片'}
+                                </Button>
+                              </Show>
+                            }
+                          />
                         </Show>
                       }
                     >
@@ -2153,13 +2131,6 @@ export default function ManagementApp() {
                     </>
                   </Show>
                 </div>
-                <footer class="collection-status">
-                  <span>
-                    {loading()
-                      ? '正在读取索引…'
-                      : `已载入 ${assets().length} / ${total()} 项${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()} 个匹配文件` : ''}`}
-                  </span>
-                </footer>
               </section>
             )}
           </Show>

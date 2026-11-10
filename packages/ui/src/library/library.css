@@ -1,0 +1,106 @@
+.library-collection {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.library-banner {
+  padding: var(--nl-s-3) var(--nl-s-5) 0;
+}
+.library-toolbar {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.library-search {
+  flex: 0 1 240px;
+  min-width: 140px;
+}
+.library-filter-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--nl-r-pill);
+  background: var(--nl-raised);
+  color: var(--nl-text);
+  font-size: var(--nl-t-11);
+}
+.library-chips {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-1);
+  min-width: 0;
+  overflow: hidden;
+}
+.library-count {
+  flex: none;
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+  white-space: nowrap;
+}
+.library-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nl-s-2);
+  padding: 0 var(--nl-s-5) var(--nl-s-3);
+}
+.library-dates {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-s-1);
+  color: var(--nl-text-3);
+}
+.library-dates .nl-input {
+  width: 140px;
+}
+.library-batch {
+  border-top: 1px solid var(--nl-line);
+  border-bottom: 1px solid var(--nl-line);
+  background: var(--nl-side);
+  color: var(--nl-text);
+}
+.library-batch-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.library-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+}
+.nav-library-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--nl-r-sm);
+}
+.nav-library-row:hover,
+.nav-library-row.active {
+  background: var(--nl-hover);
+}
+.nav-library-row.active {
+  background: var(--nl-raised);
+}
+.nav-library-row .nav-library-item {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+}
+.nav-library-more {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--nl-d-fast) var(--nl-ease);
+}
+.nav-library-row:hover .nav-library-more,
+.nav-library-row:focus-within .nav-library-more,
+.nav-library-more:has([aria-expanded='true']) {
+  opacity: 1;
+}
+.nav-library-more .nl-menu--anchored {
+  left: 0;
+  right: auto;
+}

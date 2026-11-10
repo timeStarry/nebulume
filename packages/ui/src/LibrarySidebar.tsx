@@ -1,5 +1,8 @@
 import { For, Show, createSignal } from 'solid-js';
 import Icon from './Icon';
+import OverflowMenu from './OverflowMenu';
+import { IconButton, StatusDot } from './ui';
+import type { MenuEntry } from './ui';
 import type { FolderNode, Library, LibraryFolders } from './model';
 
 export type FolderAction = 'cull' | 'overview' | 'export-picks' | 'scan';
@@ -18,6 +21,8 @@ export default function LibrarySidebar(props: {
   onFolder: (path: string) => void;
   onFolderAction: (action: FolderAction, path: string) => void;
   onAddLibrary: () => void;
+  /** Actions for one library (settings, scan, previews, capture time, fingerprint, remove). */
+  libraryMenu: (library: Library) => MenuEntry[];
 }) {
   // Folders the user collapsed; everything starts expanded one level down.
   const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set());
@@ -103,38 +108,50 @@ export default function LibrarySidebar(props: {
         <Show when={props.demoLabel}>
           <span class="demo-label">浏览器演示</span>
         </Show>
-        <button class="icon-button" aria-label="添加图片库" onClick={() => props.onAddLibrary()}>
-          <Icon name="plus" size={15} />
-        </button>
+        <IconButton size="xs" icon="plus" label="添加图片库" onClick={() => props.onAddLibrary()} />
       </div>
       <ul class="nav-library-list" aria-label="图片库列表">
         <For each={props.libraries}>
           {(library) => (
             <li>
-              <button
-                class={`nav-library-item ${props.currentId === library.id ? 'active' : ''}`}
-                aria-current={props.currentId === library.id ? 'page' : undefined}
-                title={props.location(library)}
-                onClick={() =>
-                  props.currentId === library.id ? props.onFolder('') : props.onLibrary(library)
-                }
-              >
-                <Icon
-                  name={library.source_kind && library.source_kind !== 'local' ? 'cloud' : 'folder'}
-                  size={15}
-                />
-                <span class="nav-library-name">{library.name}</span>
-                <span
-                  class={`nav-library-dot ${props.usable(library) ? '' : 'unavailable'}`}
-                  aria-hidden="true"
-                />
-                <Show when={!props.usable(library)}>
-                  <span class="visually-hidden">，{props.unavailableLabel(library)}</span>
-                </Show>
-                <Show when={library.asset_count !== undefined}>
-                  <span class="tree-count">{library.asset_count}</span>
-                </Show>
-              </button>
+              <div class={`nav-library-row ${props.currentId === library.id ? 'active' : ''}`}>
+                <button
+                  class={`nav-library-item ${props.currentId === library.id ? 'active' : ''}`}
+                  aria-current={props.currentId === library.id ? 'page' : undefined}
+                  aria-label={`打开图片库 ${library.name}，${props.unavailableLabel(library)}`}
+                  title={props.location(library)}
+                  onClick={() =>
+                    props.currentId === library.id ? props.onFolder('') : props.onLibrary(library)
+                  }
+                >
+                  <Icon
+                    name={
+                      library.source_kind && library.source_kind !== 'local'
+                        ? 'server'
+                        : 'device-laptop'
+                    }
+                    size={16}
+                  />
+                  <span class="nav-library-name">{library.name}</span>
+                  <StatusDot
+                    state={
+                      props.usable(library)
+                        ? library.availability === 'online'
+                          ? 'ok'
+                          : 'off'
+                        : 'bad'
+                    }
+                    label={props.unavailableLabel(library)}
+                  />
+                </button>
+                <span class="nav-library-more">
+                  <OverflowMenu
+                    size="xs"
+                    label={`${library.name} 更多操作`}
+                    items={props.libraryMenu(library)}
+                  />
+                </span>
+              </div>
               <Show
                 when={
                   props.currentId === library.id &&

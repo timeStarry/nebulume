@@ -560,8 +560,10 @@ test('library management is the default, metadata is on demand, photos open in p
     .poll(() => calls.find((call) => call.command === '$native/open_viewer')?.params)
     .toEqual({ assetId: 'photo-a', assetIds: ['photo-a'] });
   await expect(page.locator('.manager-navigation')).toBeVisible();
-  await page.locator('.breadcrumb-button').click();
-  await expect(page.getByRole('region', { name: '图片库管理' })).toBeVisible();
+  await nav(page, '图片库').click();
+  await expect(
+    page.locator('.nl-page-header').getByRole('heading', { name: '本地摄影' }),
+  ).toBeVisible();
   await servePreviewImages(page);
   await page.goto('/?viewer=1');
   await expect(page.locator('.main-photo')).toBeVisible();
@@ -743,7 +745,7 @@ test('local libraries are created directly from a directory and become import ta
         warnings: [],
       };
   });
-  await page.getByRole('button', { name: '建立图片库', exact: true }).click();
+  await page.getByRole('button', { name: '添加图片库', exact: true }).click();
   await expect(page.getByLabel('来源类型')).toHaveValue('local');
   await expect(page.getByLabel('存储源', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '建立并扫描', exact: true })).toBeDisabled();
@@ -989,7 +991,7 @@ test('an offline NAS library is greyed, explains why, keeps marks usable and blo
   });
   const card = page.getByRole('button', { name: /打开图片库 NAS 旅行/ });
   await expect(card).toHaveAccessibleName('打开图片库 NAS 旅行，不可达');
-  await expect(page.locator('.library-card-container.unavailable')).toHaveCount(1);
+  await expect(page.locator('.nav-library-item .nl-dot--bad')).toHaveCount(1);
   await expect(page.getByRole('button', { name: /打开图片库 本地摄影/ })).toHaveAccessibleName(
     /未连接|在线/,
   );
@@ -1251,4 +1253,73 @@ test('library settings build content fingerprints, confirming before a NAS downl
   await expect
     .poll(() => calls.find((call) => call.command === 'library.fingerprint.start')?.params)
     .toEqual({ library_id: remote.id });
+});
+
+test('the library header has one entry per action', async ({ page }) => {
+  await fixture(page);
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  const header = page.locator('.nl-page-header');
+  await expect(header.getByRole('heading', { name: '本地摄影' })).toBeVisible();
+  await expect(header.getByRole('tab', { name: '选片' })).toBeVisible();
+  await expect(header.getByRole('button', { name: '选图' })).toHaveCount(0);
+  await expect(header.getByRole('button', { name: /详情/ })).toHaveCount(0);
+  await expect(header.getByRole('button', { name: '扫描更新' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '影像详情（I）' })).toHaveCount(1);
+});
+
+test('with no libraries the page offers to create one', async ({ page }) => {
+  await fixture(page, (call) => (call.command === 'library.list' ? [] : undefined));
+  await expect(page.getByRole('heading', { name: '还没有图片库' })).toBeVisible();
+  await page.getByRole('button', { name: '新建图片库' }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+});
+
+test('the app opens the last library and the sidebar menu holds the library actions', async ({
+  page,
+}) => {
+  await page.addInitScript(() => localStorage.setItem('nebulume.last-library', 'library-nas'));
+  await fixture(page);
+  await expect(
+    page.locator('.nl-page-header').getByRole('heading', { name: 'NAS 旅行' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: '本地摄影 更多操作' }).click();
+  const menu = page.getByRole('menu', { name: '本地摄影 更多操作' });
+  for (const name of [
+    '本地摄影 图片库设置',
+    '扫描更新',
+    '预生成缩略图',
+    '补全拍摄时间…',
+    '内容指纹…',
+    '移除图片库 本地摄影',
+  ])
+    await expect(menu.getByRole('menuitem', { name })).toBeVisible();
+});
+
+test('an offline library keeps its sidebar row and disables scanning with the reason', async ({
+  page,
+}) => {
+  await fixture(page, (call) =>
+    call.command === 'library.list'
+      ? [local, { ...remote, connected: false, availability: 'offline' }]
+      : undefined,
+  );
+  const row = page.getByRole('button', { name: /打开图片库 NAS 旅行/ });
+  await expect(row).toHaveAccessibleName('打开图片库 NAS 旅行，不可达');
+  await page.getByRole('button', { name: 'NAS 旅行 更多操作' }).click();
+  const scan = page.getByRole('menuitem', { name: '扫描更新' });
+  await expect(scan).toBeDisabled();
+  await expect(scan).toHaveAttribute('title', /当前无法连接/);
+});
+
+test('at 1024×700 the header view switch goes icon-only and nothing overlaps', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 });
+  await fixture(page);
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  const header = page.locator('.nl-page-header');
+  await expect(header.locator('.nl-seg')).toHaveClass(/nl-seg--compact/);
+  const boxes = await header.evaluate((el) =>
+    [...el.children].map((child) => child.getBoundingClientRect()).map((r) => [r.left, r.right]),
+  );
+  for (let i = 1; i < boxes.length; i++)
+    expect(boxes[i][0]).toBeGreaterThanOrEqual(boxes[i - 1][1] - 0.5);
 });

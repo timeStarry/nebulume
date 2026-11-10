@@ -312,3 +312,13 @@ export function dateSourceName(source?: string): string {
     )[source || ''] || ''
   );
 }
+
+export const LAST_LIBRARY_KEY = 'nebulume.last-library';
+
+/** The library to open when the library section is shown: the last one, if still listed. */
+export function pickInitialLibrary<T extends { id: string }>(
+  libraries: T[],
+  last: string | null,
+): T | undefined {
+  return libraries.find((library) => library.id === last) ?? libraries[0];
+}

@@ -7,7 +7,7 @@ test('real browser files support review, crop invalidation, reset and JPEG expor
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');
-  await expect(page.getByRole('region', { name: '图片库管理' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '图片库尚无照片' })).toBeVisible();
   await expect(page.getByText('浏览器演示', { exact: true })).toBeVisible();
   await page.screenshot({ path: 'test-results/workspace-empty.png' });
   const encoded = await page.evaluate(() => {
