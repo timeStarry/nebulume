@@ -1432,3 +1432,87 @@ test('arrow keys move across the view switch without starting culling', async ({
   await expect(page.getByRole('dialog', { name: '沉浸影像查看器' })).toHaveCount(0);
   expect(calls.some((call) => call.command === '$native/open_viewer')).toBe(false);
 });
+
+test('the rail marks 图片库 while a library is open, without scrollbars, and its tips are not clipped', async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  const rail = page.getByRole('navigation', { name: '主导航' });
+  await expect(rail.getByRole('button', { name: '图片库', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  const box = await rail.evaluate((el) => ({
+    overflowX: el.scrollWidth > el.clientWidth,
+    overflow: getComputedStyle(el).overflow,
+  }));
+  expect(box.overflowX).toBe(false);
+  expect(box.overflow).toBe('visible');
+  // A tip to the right of a rail item draws over the sidebar: the rail stacks above it
+  // and does not clip its children.
+  const stacking = await page.evaluate(() => {
+    const rail = document.querySelector('.nl-rail')!;
+    const side = document.querySelector('.library-sidebar')!;
+    const z = (el: Element) => Number(getComputedStyle(el).zIndex) || 0;
+    return { above: z(rail) > z(side), clip: getComputedStyle(rail).overflowX };
+  });
+  expect(stacking).toEqual({ above: true, clip: 'visible' });
+  const settings = rail.getByRole('button', { name: '设置', exact: true });
+  await settings.hover();
+  await expect(settings)
+    .toHaveCSS('--x', /.*/)
+    .catch(() => undefined);
+  const tip = await settings.evaluate((el) => getComputedStyle(el, '::after').content);
+  expect(tip).toContain('设置');
+});
+
+test('the library sidebar can be widened by dragging its edge, and the width is remembered', async ({
+  page,
+}) => {
+  await fixture(page, (call) =>
+    call.command === 'library.folders'
+      ? {
+          library_id: 'library-local',
+          total: 3,
+          folders: [
+            {
+              path: 'Photos Library.photoslibrary',
+              name: 'Photos Library.photoslibrary',
+              count: 3,
+              children: [],
+            },
+          ],
+        }
+      : undefined,
+  );
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  const sidebar = page.getByRole('complementary', { name: '图片库与文件夹' });
+  const handle = page.getByRole('separator', { name: '拖动调整侧栏' });
+  await expect(handle).toBeVisible();
+  const before = (await sidebar.boundingBox())!.width;
+  const grip = (await handle.boundingBox())!;
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 120, grip.y + 200, { steps: 6 });
+  await page.mouse.up();
+  const after = (await sidebar.boundingBox())!.width;
+  expect(after).toBeGreaterThan(before + 100);
+  await expect(
+    page.locator('.tree-name', { hasText: 'Photos Library.photoslibrary' }),
+  ).toHaveJSProperty(
+    'scrollWidth',
+    await page
+      .locator('.tree-name', { hasText: 'Photos Library.photoslibrary' })
+      .evaluate((el) => el.clientWidth),
+  );
+  // Keyboard: arrows resize too.
+  await handle.focus();
+  await page.keyboard.press('ArrowLeft');
+  expect((await sidebar.boundingBox())!.width).toBeLessThan(after);
+  await page.reload();
+  await expect(page.getByRole('complementary', { name: '图片库与文件夹' })).toBeVisible();
+  expect(
+    (await page.getByRole('complementary', { name: '图片库与文件夹' }).boundingBox())!.width,
+  ).toBeGreaterThan(before + 80);
+});

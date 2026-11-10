@@ -336,16 +336,6 @@ kbd {
 .navigation-scrim {
   display: none;
 }
-.manager-navigation {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 0;
-  overflow: auto;
-  padding: 20px 12px 12px;
-  background: var(--nl-side);
-  border-right: 1px solid var(--nl-line);
-}
 .workspace-nav-item {
   display: flex;
   align-items: center;
@@ -1835,13 +1825,6 @@ kbd {
 }
 .manager-titlebar {
   display: none;
-}
-.manager-navigation {
-  align-items: center;
-  gap: 4px;
-  padding: 14px 8px 12px;
-  background: var(--nl-rail);
-  border-right: 0;
 }
 .workspace-nav-item {
   justify-content: center;

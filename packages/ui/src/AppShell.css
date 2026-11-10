@@ -1,6 +1,8 @@
 .nl-shell {
   display: grid;
-  grid-template-columns: var(--nl-rail-width) var(--nl-sidebar-width) minmax(0, 1fr);
+  grid-template-columns:
+    var(--nl-rail-width) var(--nl-sidebar-live, var(--nl-sidebar-width))
+    minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
@@ -13,6 +15,8 @@
   display: none;
 }
 .nl-rail {
+  position: relative;
+  z-index: 20;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -20,6 +24,8 @@
   grid-row: 1 / -1;
   min-height: 0;
   padding: var(--nl-s-3) 0;
+  overflow: visible;
+  border-right: 0;
   background: var(--nl-rail);
 }
 .nl-rail-mark {

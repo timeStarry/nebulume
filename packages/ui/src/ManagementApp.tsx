@@ -1443,7 +1443,7 @@ export default function ManagementApp() {
   return (
     <AppShell
       section={section()}
-      current={section() === 'libraries' && libraryId() ? undefined : section()}
+      current={section()}
       onSection={(next) => navigate(next)}
       onOpenFile={() => void openFile()}
       openFileDisabled={!!busy()}

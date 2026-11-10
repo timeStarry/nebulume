@@ -3,7 +3,14 @@
   display: inline-flex;
 }
 [data-tooltip]::after {
+  content: none;
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::after,
+.nl-tip-host:focus-within::after {
   content: attr(data-tooltip);
+}
+[data-tooltip]::after {
   position: absolute;
   z-index: 50;
   left: 50%;

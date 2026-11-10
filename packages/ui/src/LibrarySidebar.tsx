@@ -103,6 +103,7 @@ export default function LibrarySidebar(props: {
   };
   return (
     <aside class="library-sidebar" aria-label="图片库与文件夹">
+      <SidebarResizer />
       <div class="library-sidebar-head">
         <span>图片库</span>
         <Show when={props.demoLabel}>
@@ -205,5 +206,85 @@ export default function LibrarySidebar(props: {
         )}
       </Show>
     </aside>
+  );
+}
+
+const SIDEBAR_KEY = 'nebulume.sidebar-width';
+const MIN_WIDTH = 180;
+const MAX_WIDTH = 480;
+const clampWidth = (value: number) => Math.round(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value)));
+
+function applyWidth(value: number) {
+  document.documentElement.style.setProperty('--nl-sidebar-live', `${value}px`);
+}
+function savedWidth() {
+  try {
+    const value = Number(localStorage.getItem(SIDEBAR_KEY));
+    return Number.isFinite(value) && value > 0 ? clampWidth(value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+const initial = savedWidth();
+if (initial) applyWidth(initial);
+
+/** The sidebar's right edge: drag (or use ← →) to resize; double-click resets. */
+function SidebarResizer() {
+  let handle!: HTMLDivElement;
+  const current = () => (handle.parentElement as HTMLElement).getBoundingClientRect().width;
+  const set = (value: number) => {
+    const next = clampWidth(value);
+    applyWidth(next);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, String(next));
+    } catch {
+      /* Width applies to this window only. */
+    }
+    handle.setAttribute('aria-valuenow', String(next));
+  };
+  function pointerDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = current();
+    handle.setPointerCapture(event.pointerId);
+    document.documentElement.classList.add('nl-resizing');
+    const move = (next: PointerEvent) => set(startWidth + next.clientX - startX);
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+      document.documentElement.classList.remove('nl-resizing');
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+  }
+  return (
+    <div
+      ref={handle}
+      class="library-sidebar-resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="拖动调整侧栏"
+      aria-valuemin={MIN_WIDTH}
+      aria-valuemax={MAX_WIDTH}
+      aria-valuenow={initial ?? 220}
+      tabIndex={0}
+      onPointerDown={pointerDown}
+      onDblClick={() => {
+        document.documentElement.style.removeProperty('--nl-sidebar-live');
+        try {
+          localStorage.removeItem(SIDEBAR_KEY);
+        } catch {
+          /* Nothing saved. */
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        set(current() + (event.key === 'ArrowRight' ? 16 : -16));
+      }}
+    />
   );
 }

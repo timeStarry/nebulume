@@ -152,3 +152,45 @@
     display: none;
   }
 }
+.library-sidebar {
+  overflow-x: hidden;
+}
+.library-sidebar-resizer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.library-sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--nl-line);
+  transition: background var(--nl-d-fast) var(--nl-ease);
+}
+.library-sidebar-resizer:hover::after,
+.library-sidebar-resizer:focus-visible::after,
+.nl-resizing .library-sidebar-resizer::after {
+  width: 2px;
+  background: var(--nl-text-3);
+}
+.library-sidebar-resizer:focus-visible {
+  outline: none;
+}
+.nl-resizing,
+.nl-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+@media (max-width: 959px) {
+  .library-sidebar-resizer {
+    display: none;
+  }
+}
