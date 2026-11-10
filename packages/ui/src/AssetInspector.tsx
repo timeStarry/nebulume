@@ -28,6 +28,7 @@ import {
   inspectorMetadataGroups,
 } from './inspector-metadata';
 import './inspector.css';
+import PinnedFields from './PinnedFields';
 
 export default function AssetInspector(props: {
   asset: Asset;
@@ -329,32 +330,11 @@ export default function AssetInspector(props: {
           </p>
         </Show>
       </section>
-      <section class="inspector-section">
-        <div class="section-title">
-          <h3>拍摄信息</h3>
-        </div>
+      <PinnedFields asset={inspectedAsset()} />
+      <section class="inspector-section inspector-raw">
         <Show when={!hasExif()}>
           <p class="metadata-empty">此文件未提供可读取的 EXIF 信息。</p>
         </Show>
-        <div class="shooting-parameters">
-          <For each={metadataGroups()}>
-            {(group) => (
-              <section class="inspector-metadata-group" aria-label={group.title}>
-                <h4>{group.title}</h4>
-                <dl class="metadata">
-                  <For each={group.parameters}>
-                    {(field) => (
-                      <>
-                        <dt>{field.label}</dt>
-                        <dd>{field.value}</dd>
-                      </>
-                    )}
-                  </For>
-                </dl>
-              </section>
-            )}
-          </For>
-        </div>
         <Show when={Object.keys(inspectedAsset().metadata).some((key) => key.startsWith('EXIF '))}>
           <details class="exif-details exif-fields">
             <summary>全部有效 EXIF 字段</summary>

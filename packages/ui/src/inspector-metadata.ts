@@ -93,3 +93,11 @@ export function inspectorMetadataGroups(metadata: Metadata) {
   }
   return groups.filter((group) => group.parameters.length > 0);
 }
+
+/** Friendly label for a decoder metadata key ("Exposure Bias" → 曝光补偿), or the key itself. */
+export function metadataFieldLabel(key: string): string {
+  for (const group of groupFields)
+    for (const field of group.fields) if (field.aliases.includes(key)) return field.label;
+  for (const field of exposureFields) if (field.aliases.includes(key)) return field.label;
+  return key;
+}

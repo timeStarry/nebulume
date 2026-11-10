@@ -90,3 +90,13 @@ describe('inspector metadata hierarchy', () => {
     expect(inspectorMetadataGroups({ Format: 'PNG', 'EXIF FNumber': 'f/8' })).toEqual([]);
   });
 });
+
+describe('metadata field labels', () => {
+  it('give decoder keys their display names and leave unknown keys as they are', async () => {
+    const { metadataFieldLabel } = await import('../src/inspector-metadata');
+    expect(metadataFieldLabel('Exposure Bias')).toBe('曝光补偿');
+    expect(metadataFieldLabel('Camera')).toBe('相机');
+    expect(metadataFieldLabel('Aperture')).toBe('光圈');
+    expect(metadataFieldLabel('Custom')).toBe('Custom');
+  });
+});

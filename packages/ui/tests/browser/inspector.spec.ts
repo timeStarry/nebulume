@@ -201,8 +201,8 @@ test('exposure appears in three compact columns below the histogram without repe
   await expect(summary).toBeVisible();
   await expect(page.locator('.exposure-summary dd')).toHaveText(['f/5.6', '1/8000 s', '400']);
   const capture = page.locator('.shooting-parameters');
-  await expect(capture).toContainText('设备');
-  await expect(capture).toContainText('拍摄');
+  await expect(capture).toContainText('Fixture camera');
+  await expect(capture).toContainText('50 mm');
   await expect(capture).not.toContainText('1/8000 s');
   await expect(capture).not.toContainText('400');
   const graph = await page.locator('.histogram').boundingBox();

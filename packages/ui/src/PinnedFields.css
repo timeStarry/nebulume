@@ -1,0 +1,61 @@
+.nl-pinned-list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.nl-pinned-row {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--nl-s-2);
+  min-height: 30px;
+  padding: 0 var(--nl-s-1) 0 6px;
+  border-radius: var(--nl-r-sm);
+  font-size: var(--nl-t-13);
+}
+.nl-pinned-row:hover {
+  background: var(--nl-hover);
+}
+.nl-pinned-row:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: -2px;
+}
+.nl-pinned-label {
+  color: var(--nl-text-2);
+  white-space: nowrap;
+}
+.nl-pinned-value {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nl-pinned-pin {
+  display: grid;
+  place-items: center;
+  width: var(--nl-h-xs);
+  height: var(--nl-h-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--nl-r-sm);
+  background: transparent;
+  color: var(--nl-text-3);
+  cursor: pointer;
+}
+.nl-pinned-pin:hover,
+.nl-pinned-pin.on {
+  color: var(--nl-text);
+}
+.nl-pinned-pin:focus-visible {
+  outline: 2px solid var(--nl-ring);
+}
+.nl-pinned-empty {
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.nl-all-fields {
+  margin-top: var(--nl-s-3);
+}

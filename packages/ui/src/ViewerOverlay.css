@@ -1,0 +1,157 @@
+.nl-overlay {
+  position: absolute;
+  inset: 48px 0 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.nl-overlay[hidden] {
+  display: none;
+}
+.nl-overlay-corner {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 44%;
+  min-width: 0;
+  pointer-events: auto;
+}
+.nl-overlay-corner--tl {
+  top: var(--nl-s-3);
+  left: var(--nl-s-3);
+  align-items: flex-start;
+}
+.nl-overlay-corner--tr {
+  top: var(--nl-s-3);
+  right: var(--nl-s-3);
+  align-items: flex-end;
+}
+.nl-overlay-corner--bl {
+  bottom: var(--nl-s-3);
+  left: var(--nl-s-3);
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+.nl-overlay-corner--br {
+  right: var(--nl-s-3);
+  bottom: var(--nl-s-3);
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+.immersive-viewer:has(.viewer-controls) .nl-overlay-corner--br {
+  bottom: 64px;
+}
+.immersive-viewer.culling .nl-overlay {
+  bottom: var(--cull-strip-height, 0px);
+}
+.nl-overlay:not(.nl-overlay--editing) .nl-overlay-corner {
+  pointer-events: none;
+}
+.nl-overlay:not(.nl-overlay--editing) .nl-widget {
+  pointer-events: auto;
+}
+.nl-overlay--editing {
+  inset: 48px 0 0;
+  z-index: 8;
+  background: var(--nl-v-dim);
+  pointer-events: auto;
+}
+.nl-overlay--editing .nl-overlay-corner--bl,
+.nl-overlay--editing .nl-overlay-corner--br {
+  bottom: 64px;
+}
+.nl-overlay--editing .nl-overlay-corner {
+  min-width: 120px;
+  min-height: 40px;
+  padding: var(--nl-s-1);
+  border-radius: var(--nl-r-md);
+  outline: 1px dashed var(--nl-v-line);
+}
+.nl-overlay-corner.drop {
+  outline-color: var(--nl-v-text);
+  background: var(--nl-v-hover);
+}
+.nl-overlay--editing .nl-widget {
+  outline: 1px dashed var(--nl-v-text-3);
+  outline-offset: 2px;
+  cursor: grab;
+}
+.nl-overlay--editing .nl-widget:focus-visible {
+  outline: 2px solid var(--nl-v-ring);
+}
+.nl-widget-empty {
+  color: var(--nl-v-text-3);
+}
+.nl-overlay-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--nl-h-xs);
+  padding: 0 10px;
+  border: 1px dashed var(--nl-v-text-3);
+  border-radius: var(--nl-r-sm);
+  background: transparent;
+  color: var(--nl-v-text-2);
+  font: inherit;
+  font-size: var(--nl-t-12);
+  cursor: pointer;
+}
+.nl-overlay-add:hover {
+  color: var(--nl-v-text);
+}
+.nl-overlay-add:focus-visible,
+.nl-overlay-reset:focus-visible {
+  outline: 2px solid var(--nl-v-ring);
+  outline-offset: 2px;
+}
+.nl-overlay-tray {
+  position: absolute;
+  left: 50%;
+  bottom: var(--nl-s-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nl-s-2);
+  max-width: calc(100% - 32px);
+  padding: var(--nl-s-2);
+  border-radius: var(--nl-r-md);
+  background: var(--nl-v-overlay);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+.nl-overlay-hint {
+  padding: 0 var(--nl-s-1);
+  color: var(--nl-v-text-2);
+  font-size: var(--nl-t-12);
+}
+.nl-overlay-chip {
+  display: inline-flex;
+  align-items: center;
+  height: var(--nl-h-xs);
+  padding: 0 10px;
+  border-radius: var(--nl-r-pill);
+  background: var(--nl-v-hover);
+  color: var(--nl-v-text);
+  font-size: var(--nl-t-12);
+  cursor: grab;
+}
+.nl-overlay-reset {
+  height: var(--nl-h-sm);
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--nl-r-md);
+  background: transparent;
+  color: var(--nl-v-text-2);
+  font: inherit;
+  font-size: var(--nl-t-12);
+  cursor: pointer;
+}
+.nl-overlay-reset:hover {
+  background: var(--nl-v-hover);
+  color: var(--nl-v-text);
+}
+.immersive-viewer.controls-hidden.overlay-fades .nl-overlay:not(.nl-overlay--editing) {
+  opacity: 0;
+  transition: opacity var(--nl-d-base) var(--nl-ease);
+}

@@ -8,8 +8,8 @@ import type { Asset } from './model';
 export type FieldId = string;
 
 export const PINNED_KEY = 'nebulume.inspector.pinned';
+// Aperture, shutter and ISO always show under the histogram, so they are not pinned by default.
 export const DEFAULT_PINNED: readonly FieldId[] = Object.freeze([
-  'exposure',
   'focal',
   'lens',
   'body',

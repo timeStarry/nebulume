@@ -571,7 +571,9 @@ test('library management is the default, metadata is on demand, photos open in p
   await expect(page.getByRole('complementary', { name: '影像详情' })).not.toBeVisible();
   expect(calls.filter((call) => call.command === '$native/viewer_context')).toHaveLength(1);
   await page.keyboard.press('i');
-  await expect(page.getByText('Fixture camera')).toBeVisible();
+  await expect(
+    page.getByRole('complementary', { name: '影像详情' }).getByText('Fixture camera'),
+  ).toBeVisible();
   await expect(page.getByRole('img', { name: '当前图片 RGB 直方图' })).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -942,7 +944,9 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
   const histogramsBefore = calls.filter((call) => call.command === 'asset.histogram').length;
   await page.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
   await page.getByRole('menuitem', { name: '重新读取原图' }).click();
-  await expect(page.getByText('Refreshed camera metadata')).toBeVisible();
+  await expect(
+    page.getByRole('complementary', { name: '影像详情' }).getByText('Refreshed camera metadata'),
+  ).toBeVisible();
   await expect
     .poll(() => calls.filter((call) => call.command === 'asset.preview').length)
     .toBeGreaterThan(previewsBefore);

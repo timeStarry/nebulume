@@ -47,6 +47,8 @@ import {
 } from './culling';
 import CullPanel, { CullStatus } from './CullPanel';
 import { IconButton, Segmented, Toggle } from './ui';
+import ViewerOverlay from './ViewerOverlay';
+import { readOverlayFades } from './overlay-layout';
 import CullStrip from './CullStrip';
 import CullReview from './CullReview';
 import {
@@ -1002,7 +1004,7 @@ export default function Viewer(props: {
     <div
       ref={container}
       tabIndex={-1}
-      class={`immersive-viewer ${mode() === 'cull' ? 'culling' : ''} ${mode() === 'cull' && asset()?.flag === 'reject' ? 'rejected' : ''} ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${info() ? 'with-info' : ''}`}
+      class={`immersive-viewer ${mode() === 'cull' ? 'culling' : ''} ${mode() === 'cull' && asset()?.flag === 'reject' ? 'rejected' : ''} ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${info() ? 'with-info' : ''} ${readOverlayFades(localStorage) ? 'overlay-fades' : ''}`}
       onPointerMove={activity}
       onPointerDown={(event) => {
         activity();
@@ -1149,6 +1151,24 @@ export default function Viewer(props: {
               <Icon name="close" size={15} />
             </button>
           </div>
+        </Show>
+        <Show when={!compareIds().length && asset()}>
+          {(current) => (
+            <ViewerOverlay
+              asset={current()}
+              context={{
+                index: Math.max(0, index() + 1),
+                total: ids().length,
+                folder: folder()?.folderName,
+              }}
+              visible={overlayVisible()}
+              editing={editingOverlay()}
+              onEditing={(value) => {
+                setEditingOverlay(value);
+                if (!value) container.focus({ preventScroll: true });
+              }}
+            />
+          )}
         </Show>
         <Show when={undoable()}>
           {(pending) => (
