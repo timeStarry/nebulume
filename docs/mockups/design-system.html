@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nebulume 设计系统</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.31.0/dist/tabler-icons.min.css">
+<style>
+:root {
+  --canvas: #262626;
+  --rail: #1d1d1d;
+  --side: #212121;
+  --stage: #1b1b1b;
+  --raised: #303030;
+  --hover: #2c2c2c;
+  --pressed: #383838;
+  --line: #3a3a3a;
+  --line-strong: #4a4a4a;
+  --text: #ececec;
+  --text-2: #a6a6a6;
+  --text-3: #7a7a7a;
+  --inverse: #262626;
+  --primary: #ececec;
+  --primary-hover: #ffffff;
+  --star: #f0c050;
+  --pick: #86cf9c;
+  --reject: #e8786f;
+  --warn: #e3b25c;
+  --info: #5b8fd9;
+  --series: #5b8fd9;
+  --tint-pick: rgba(134, 207, 156, .14);
+  --tint-reject: rgba(232, 120, 111, .14);
+  --tint-warn: rgba(227, 178, 92, .14);
+  --tint-info: rgba(91, 143, 217, .16);
+  --overlay: rgba(27, 27, 27, .82);
+  --scrim: rgba(0, 0, 0, .5);
+  --ring: #f5f5f5;
+  --font: "Anthropic Sans", -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --t-11: 11px; --t-12: 12px; --t-13: 13px; --t-14: 14px; --t-16: 16px; --t-18: 18px; --t-22: 22px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+  --h-xs: 24px; --h-sm: 28px; --h-md: 32px; --h-lg: 40px;
+  --ease: cubic-bezier(.2, 0, 0, 1);
+  --d-fast: 120ms; --d-base: 180ms; --d-slow: 280ms;
+}
+[data-theme="light"] {
+  --canvas: #f4f4f3;
+  --rail: #e9e9e7;
+  --side: #eeeeec;
+  --stage: #1b1b1b;
+  --raised: #ffffff;
+  --hover: #e8e8e6;
+  --pressed: #dededb;
+  --line: #dcdcd9;
+  --line-strong: #c4c4c0;
+  --text: #1f1f1f;
+  --text-2: #5c5c5c;
+  --text-3: #85857f;
+  --inverse: #f4f4f3;
+  --primary: #1f1f1f;
+  --primary-hover: #000000;
+  --star: #b7861b;
+  --pick: #2f7a4a;
+  --reject: #b8453b;
+  --warn: #8a6216;
+  --info: #2f63b0;
+  --series: #3a6fbf;
+  --tint-pick: rgba(47, 122, 74, .1);
+  --tint-reject: rgba(184, 69, 59, .1);
+  --tint-warn: rgba(138, 98, 22, .1);
+  --tint-info: rgba(47, 99, 176, .1);
+  --ring: #1f1f1f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--canvas); color: var(--text); font: 400 var(--t-13)/1.5 var(--font); -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+h1, h2, h3, h4 { margin: 0; font-weight: 500; }
+p { margin: 0; }
+i.ti { font-size: 16px; line-height: 1; }
+
+.doc { display: grid; grid-template-columns: 216px 1fr; min-height: 100vh; }
+.doc-nav { position: sticky; top: 0; height: 100vh; padding: var(--s-5) var(--s-3); background: var(--side); border-right: 1px solid var(--line); overflow: auto; }
+.doc-nav .brand { display: flex; align-items: center; gap: var(--s-2); padding: 0 var(--s-2) var(--s-5); font-size: var(--t-14); font-weight: 500; }
+.doc-nav .brand .mark { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--text); display: grid; place-items: center; }
+.doc-nav .brand .mark::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--text); }
+.doc-nav .group { padding: var(--s-4) var(--s-2) var(--s-1); color: var(--text-3); font-size: var(--t-12); }
+.doc-nav a { display: block; padding: 5px var(--s-2); border-radius: var(--r-sm); color: var(--text-2); text-decoration: none; }
+.doc-nav a:hover { background: var(--hover); color: var(--text); }
+.doc-nav .theme { margin: var(--s-6) var(--s-2) 0; }
+.doc-main { min-width: 0; padding: var(--s-8) var(--s-10) 120px; }
+.doc-section { max-width: 1120px; padding-bottom: var(--s-10); margin-bottom: var(--s-10); border-bottom: 1px solid var(--line); }
+.doc-section:last-child { border-bottom: 0; }
+.doc-section > h2 { font-size: var(--t-22); margin-bottom: var(--s-2); }
+.doc-section > .lead { color: var(--text-2); max-width: 68ch; margin-bottom: var(--s-6); font-size: var(--t-14); line-height: 1.65; }
+.doc-section h3.sub { font-size: var(--t-16); margin: var(--s-8) 0 var(--s-3); }
+.rule { color: var(--text-2); font-size: var(--t-12); margin-top: var(--s-2); max-width: 72ch; }
+.rule code, .spec code { font-family: var(--mono); font-size: var(--t-12); color: var(--text); }
+.specimen { padding: var(--s-6); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--canvas); }
+.specimen.stage { background: var(--stage); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); }
+.col { display: grid; gap: var(--s-3); }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-4); }
+.spec { color: var(--text-3); font-size: var(--t-12); }
+
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--s-3); }
+.swatch { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.swatch .chip-color { height: 48px; border-bottom: 1px solid var(--line); }
+.swatch .meta { padding: var(--s-2) var(--s-3); }
+.swatch .meta b { display: block; font-weight: 500; }
+.swatch .meta span { color: var(--text-3); font-size: var(--t-12); font-family: var(--mono); }
+.type-row { display: grid; grid-template-columns: 120px 1fr; align-items: baseline; gap: var(--s-4); padding: var(--s-3) 0; border-bottom: 1px solid var(--line); }
+.type-row:last-child { border-bottom: 0; }
+.scale { display: flex; align-items: flex-end; gap: var(--s-4); }
+.scale div { display: grid; justify-items: center; gap: var(--s-2); color: var(--text-3); font-size: var(--t-12); }
+.scale span.bar { display: block; background: var(--series); opacity: .7; }
+.radius-demo { width: 72px; height: 48px; border: 1px solid var(--line-strong); background: var(--raised); }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--h-md); padding: 0 var(--s-3); border-radius: var(--r-md); font-size: var(--t-13); font-weight: 500; white-space: nowrap; transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease); }
+.btn.sm { height: var(--h-sm); padding: 0 10px; font-size: var(--t-12); }
+.btn.lg { height: var(--h-lg); padding: 0 var(--s-4); font-size: var(--t-14); }
+.btn.primary { background: var(--primary); color: var(--inverse); }
+.btn.primary:hover { background: var(--primary-hover); }
+.btn.secondary { background: var(--raised); color: var(--text); }
+[data-theme="light"] .btn.secondary { box-shadow: inset 0 0 0 1px var(--line); }
+.btn.secondary:hover { background: var(--pressed); }
+.btn.ghost { color: var(--text-2); font-weight: 400; }
+.btn.ghost:hover { background: var(--hover); color: var(--text); }
+.btn.danger { background: var(--tint-reject); color: var(--reject); }
+.btn.danger:hover { background: rgba(232, 120, 111, .24); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.icon-btn { display: inline-grid; place-items: center; width: var(--h-md); height: var(--h-md); border-radius: var(--r-md); color: var(--text-2); transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease); }
+.icon-btn i.ti { font-size: 18px; }
+.icon-btn.sm { width: var(--h-sm); height: var(--h-sm); }
+.icon-btn.sm i.ti { font-size: 16px; }
+.icon-btn.xs { width: var(--h-xs); height: var(--h-xs); border-radius: var(--r-sm); }
+.icon-btn.xs i.ti { font-size: 14px; }
+.icon-btn:hover { background: var(--hover); color: var(--text); }
+.icon-btn[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+.kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: var(--r-xs); background: var(--hover); color: var(--text-2); font: 400 var(--t-11)/1 var(--mono); }
+
+.seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--r-md); background: var(--side); border: 1px solid var(--line); }
+.seg button { display: inline-flex; align-items: center; gap: 6px; height: calc(var(--h-md) - 6px); padding: 0 var(--s-3); border-radius: var(--r-sm); color: var(--text-2); font-size: var(--t-13); }
+.seg button:hover { color: var(--text); }
+.seg button[aria-selected="true"] { background: var(--raised); color: var(--text); }
+[data-theme="light"] .seg button[aria-selected="true"] { box-shadow: inset 0 0 0 1px var(--line); }
+.seg.sm button { height: calc(var(--h-sm) - 6px); padding: 0 10px; font-size: var(--t-12); }
+
+.field { display: grid; gap: 6px; }
+.field > label { font-size: var(--t-12); color: var(--text-2); }
+.field .help { font-size: var(--t-12); color: var(--text-3); }
+.field .help.error { color: var(--reject); }
+.input, .select { display: flex; align-items: center; gap: var(--s-2); height: var(--h-md); padding: 0 10px; border-radius: var(--r-md); background: var(--side); border: 1px solid var(--line); color: var(--text); min-width: 0; }
+.input:hover, .select:hover { border-color: var(--line-strong); }
+.input:focus-within, .select:focus-within { border-color: var(--text-2); }
+.input.invalid { border-color: var(--reject); }
+.input input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: none; }
+.input input::placeholder { color: var(--text-3); }
+.input i.ti { color: var(--text-3); }
+.select select { appearance: none; flex: 1; height: 100%; border: 0; outline: 0; background: none; cursor: pointer; }
+.select select option { background: var(--raised); }
+.select i.ti { color: var(--text-3); pointer-events: none; }
+.input.sm, .select.sm { height: var(--h-sm); font-size: var(--t-12); }
+
+.switch { position: relative; display: inline-block; width: 32px; height: 18px; flex: none; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.switch span { position: absolute; inset: 0; border-radius: 9px; background: var(--line-strong); transition: background var(--d-fast) var(--ease); pointer-events: none; }
+.switch span::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: transform var(--d-fast) var(--ease); }
+[data-theme="light"] .switch span::after { background: #fff; }
+.switch input:checked + span { background: var(--pick); }
+.switch input:checked + span::after { transform: translateX(14px); }
+.switch input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: 2px; }
+.check { display: inline-flex; align-items: center; gap: var(--s-2); cursor: pointer; }
+.check input { appearance: none; width: 16px; height: 16px; margin: 0; border-radius: var(--r-xs); border: 1px solid var(--line-strong); background: var(--side); display: grid; place-items: center; cursor: pointer; }
+.check input[type="radio"] { border-radius: 50%; }
+.check input:checked { background: var(--text); border-color: var(--text); }
+.check input[type="checkbox"]:checked::after { content: ""; width: 8px; height: 4px; border: 2px solid var(--inverse); border-top: 0; border-right: 0; transform: translate(0, -1px) rotate(-45deg); }
+.check input[type="radio"]:checked::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--inverse); }
+input[type="range"] { appearance: none; width: 160px; height: 18px; background: none; cursor: pointer; }
+input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--line-strong); }
+input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--text); }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; height: var(--h-xs); padding: 0 var(--s-2) 0 10px; border-radius: var(--r-pill); background: var(--raised); font-size: var(--t-12); }
+.chip button { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; color: var(--text-2); }
+.chip button:hover { background: var(--line); color: var(--text); }
+.chip button i.ti { font-size: 12px; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; height: var(--h-xs); padding: 0 10px; border-radius: var(--r-pill); color: var(--text-2); font-size: var(--t-12); }
+.toggle:hover { background: var(--hover); color: var(--text); }
+.toggle[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+.badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 var(--s-2); border-radius: var(--r-xs); background: var(--hover); color: var(--text-2); font-size: var(--t-11); }
+.badge.pick { background: var(--tint-pick); color: var(--pick); }
+.badge.reject { background: var(--tint-reject); color: var(--reject); }
+.badge.warn { background: var(--tint-warn); color: var(--warn); }
+.badge.info { background: var(--tint-info); color: var(--info); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
+.dot.ok { background: var(--pick); }
+.dot.off { background: var(--text-3); }
+.dot.bad { background: var(--reject); }
+.dot.warn { background: var(--warn); }
+
+.surface { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--side); }
+.group-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); margin-bottom: var(--s-2); }
+.group-head h3 { font-size: var(--t-14); }
+.group-head span { color: var(--text-3); font-size: var(--t-12); }
+.list { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--side); }
+.list-row { display: flex; align-items: center; gap: var(--s-4); min-height: 52px; padding: var(--s-3) var(--s-4); }
+.list-row + .list-row { border-top: 1px solid var(--line); }
+.list-row .label { flex: 1; min-width: 0; }
+.list-row .label b { display: block; font-weight: 400; }
+.list-row .label span { display: block; color: var(--text-3); font-size: var(--t-12); }
+.list-row .ctrl { display: flex; align-items: center; gap: var(--s-2); flex: none; }
+.list-row.nav { cursor: pointer; }
+.list-row.nav:hover { background: var(--hover); }
+.list-row.nav:first-child { border-radius: var(--r-lg) var(--r-lg) 0 0; }
+.list-row.nav:last-child { border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.list-row .lead-ico { width: 32px; height: 32px; border-radius: var(--r-md); background: var(--raised); display: grid; place-items: center; color: var(--text-2); flex: none; }
+.list-row .lead-ico i.ti { font-size: 18px; }
+
+.menu { width: 232px; padding: var(--s-1); border-radius: 10px; background: var(--raised); border: 1px solid var(--line); }
+.menu button { display: flex; align-items: center; gap: var(--s-2); width: 100%; height: 30px; padding: 0 var(--s-2); border-radius: var(--r-sm); text-align: left; }
+.menu button:hover, .menu button.active { background: var(--pressed); }
+.menu button i.ti { color: var(--text-2); }
+.menu button .k { margin-left: auto; color: var(--text-3); font-size: var(--t-12); }
+.menu button.destructive, .menu button.destructive i.ti { color: var(--reject); }
+.menu hr { margin: var(--s-1) var(--s-1); border: 0; border-top: 1px solid var(--line); }
+.menu .menu-label { padding: 6px var(--s-2) 2px; color: var(--text-3); font-size: var(--t-11); }
+
+.toast { display: inline-flex; align-items: center; gap: var(--s-3); height: 36px; padding: 0 6px 0 var(--s-3); border-radius: var(--r-md); background: var(--primary); color: var(--inverse); }
+.toast button { height: 26px; padding: 0 10px; border-radius: var(--r-sm); font-weight: 500; }
+.toast button:hover { background: rgba(127, 127, 127, .18); }
+.toast i.ti { font-size: 16px; }
+.toast.error { background: var(--reject); color: #1b1b1b; }
+.banner { display: flex; align-items: center; gap: var(--s-3); padding: 10px var(--s-3) 10px var(--s-4); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--side); }
+.banner > i.ti { font-size: 18px; color: var(--text-2); }
+.banner p { flex: 1; color: var(--text); }
+.banner p span { color: var(--text-2); }
+.banner.warn { background: var(--tint-warn); border-color: transparent; }
+.banner.warn > i.ti { color: var(--warn); }
+.banner.error { background: var(--tint-reject); border-color: transparent; }
+.banner.error > i.ti { color: var(--reject); }
+.banner.info { background: var(--tint-info); border-color: transparent; }
+.banner.info > i.ti { color: var(--info); }
+.empty { display: grid; justify-items: center; gap: var(--s-3); padding: var(--s-10) var(--s-6); text-align: center; }
+.empty .ico { width: 48px; height: 48px; border-radius: var(--r-lg); background: var(--raised); display: grid; place-items: center; color: var(--text-2); }
+.empty .ico i.ti { font-size: 24px; }
+.empty h3 { font-size: var(--t-16); }
+.empty p { color: var(--text-2); max-width: 40ch; }
+.progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--text); }
+.spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--text); animation: spin 800ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tooltip { display: inline-flex; align-items: center; gap: var(--s-2); padding: 5px var(--s-2); border-radius: var(--r-sm); background: var(--primary); color: var(--inverse); font-size: var(--t-12); }
+.tooltip .kbd { background: rgba(127, 127, 127, .25); color: inherit; }
+.dialog-scrim { display: grid; place-items: center; min-height: 340px; padding: var(--s-6); border-radius: var(--r-lg); background: var(--scrim); }
+.dialog { width: 420px; border-radius: var(--r-lg); background: var(--canvas); border: 1px solid var(--line); }
+.dialog header { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-4) var(--s-4) 0 var(--s-5); }
+.dialog header h3 { flex: 1; font-size: var(--t-16); }
+.dialog .body { padding: var(--s-3) var(--s-5) var(--s-5); color: var(--text-2); display: grid; gap: var(--s-4); }
+.dialog footer { display: flex; justify-content: flex-end; gap: var(--s-2); padding: var(--s-3) var(--s-4); border-top: 1px solid var(--line); }
+.steps { display: flex; align-items: center; gap: var(--s-2); color: var(--text-3); font-size: var(--t-12); }
+.steps li { display: flex; align-items: center; gap: 6px; list-style: none; }
+.steps li + li::before { content: ""; width: 20px; height: 1px; background: var(--line-strong); margin-right: var(--s-1); }
+.steps li i { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line-strong); font-style: normal; font-size: var(--t-11); }
+.steps li.done i { background: var(--text-2); border-color: var(--text-2); color: var(--inverse); }
+.steps li.current { color: var(--text); }
+.steps li.current i { border-color: var(--text); }
+.steps { margin: 0; padding: 0; }
+table.data { width: 100%; border-collapse: collapse; }
+table.data th { text-align: left; font-weight: 400; color: var(--text-3); font-size: var(--t-12); padding: 0 var(--s-3) var(--s-2); border-bottom: 1px solid var(--line); }
+table.data td { padding: 10px var(--s-3); border-bottom: 1px solid var(--line); }
+table.data td.num, table.data th.num { text-align: right; }
+table.data tr:last-child td { border-bottom: 0; }
+
+.app { display: grid; grid-template-columns: 56px 220px 1fr; height: 560px; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: var(--canvas); }
+.app.no-side { grid-template-columns: 56px 1fr; }
+.rail { display: flex; flex-direction: column; align-items: center; gap: var(--s-1); padding: var(--s-3) 0; background: var(--rail); }
+.rail .mark { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--text); display: grid; place-items: center; margin-bottom: var(--s-3); }
+.rail .mark::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--text); }
+.rail button { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; color: var(--text-3); }
+.rail button i.ti { font-size: 20px; }
+.rail button:hover { color: var(--text); }
+.rail button[aria-current="true"] { background: var(--raised); color: var(--text); }
+.rail .spacer { flex: 1; }
+.side { background: var(--side); padding: var(--s-3) var(--s-2); overflow: hidden; }
+.side-head { display: flex; align-items: center; justify-content: space-between; height: 28px; padding: 0 var(--s-1) 0 var(--s-2); color: var(--text-3); font-size: var(--t-12); margin-bottom: var(--s-1); }
+.node { display: flex; align-items: center; gap: 6px; width: 100%; height: 30px; padding: 0 var(--s-2) 0 calc(var(--s-2) + var(--depth, 0) * 16px); border-radius: var(--r-sm); color: var(--text-2); text-align: left; }
+.node:hover { background: var(--hover); color: var(--text); }
+.node[aria-current="true"] { background: var(--raised); color: var(--text); }
+.node .chev { width: 14px; color: var(--text-3); font-size: 12px; }
+.node .ico { color: var(--text-3); }
+.node .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node .n { color: var(--text-3); font-size: var(--t-12); }
+.main { display: grid; grid-template-rows: auto auto 1fr; min-width: 0; }
+.page-head { display: flex; align-items: center; gap: var(--s-4); height: 56px; padding: 0 var(--s-5); border-bottom: 1px solid var(--line); }
+.page-head .title { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; flex: 1; }
+.page-head .title h1 { font-size: var(--t-18); white-space: nowrap; }
+.page-head .title .crumb { color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.page-head .actions { display: flex; align-items: center; gap: var(--s-2); }
+.toolbar { display: flex; align-items: center; gap: var(--s-2); height: 44px; padding: 0 var(--s-5); color: var(--text-2); }
+.toolbar .grow { flex: 1; }
+.toolbar .count { color: var(--text-3); font-size: var(--t-12); }
+.wall { padding: 0 var(--s-5) var(--s-5); overflow: hidden; }
+.day { display: flex; align-items: baseline; gap: var(--s-2); height: 40px; padding-top: var(--s-2); }
+.day h3 { font-size: var(--t-14); }
+.day span { color: var(--text-3); font-size: var(--t-12); }
+.tiles { display: flex; gap: 4px; height: 140px; margin-bottom: 4px; }
+.tiles img { height: 100%; flex: auto; object-fit: cover; min-width: 0; border-radius: 2px; background: var(--raised); }
+.tiles img.sel { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+.page { overflow: auto; padding: var(--s-6) var(--s-6) var(--s-8); }
+.page-narrow { max-width: 760px; }
+.split-page { display: grid; grid-template-columns: 1fr 300px; min-height: 0; }
+.split-page > .page { border-right: 1px solid var(--line); }
+.aside { padding: var(--s-6) var(--s-5); overflow: auto; display: grid; align-content: start; gap: var(--s-5); }
+.aside h3 { font-size: var(--t-14); }
+.stack { display: grid; gap: var(--s-6); }
+.source-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--s-2); }
+.source { display: grid; gap: var(--s-2); padding: var(--s-3) var(--s-4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--side); text-align: left; }
+.source:hover { border-color: var(--line-strong); }
+.source[aria-pressed="true"] { border-color: var(--text); }
+.source .top { display: flex; align-items: center; gap: var(--s-2); }
+.source .top i.ti { font-size: 20px; color: var(--text-2); }
+.source .top b { flex: 1; font-weight: 500; }
+.source .meta { color: var(--text-3); font-size: var(--t-12); }
+.tree-preview { font-family: var(--mono); font-size: var(--t-12); color: var(--text-2); line-height: 1.8; }
+.tree-preview b { color: var(--text); font-weight: 400; }
+.sum { display: grid; gap: 6px; }
+.sum div { display: flex; justify-content: space-between; }
+.sum div span:first-child { color: var(--text-2); }
+.footer-bar { display: flex; align-items: center; gap: var(--s-3); height: 56px; padding: 0 var(--s-5); border-top: 1px solid var(--line); }
+.footer-bar .grow { flex: 1; color: var(--text-2); }
+
+.viewer { position: relative; height: 520px; border-radius: var(--r-lg); overflow: hidden; background: var(--stage); color: #ececec; }
+.viewer > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.viewer.editing > img { opacity: .4; }
+.v-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: var(--s-2); height: 48px; padding: 0 var(--s-3); background: var(--overlay); transition: opacity var(--d-base) var(--ease); }
+.v-top .name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: var(--s-2); }
+.v-top .name b { font-weight: 500; }
+.v-top .name span { color: #a6a6a6; font-size: var(--t-12); }
+.viewer .icon-btn { color: #a6a6a6; }
+.viewer .icon-btn:hover { background: rgba(255, 255, 255, .08); color: #ececec; }
+.viewer .icon-btn[aria-pressed="true"] { background: rgba(255, 255, 255, .12); color: #ececec; }
+.corner { position: absolute; display: flex; flex-direction: column; gap: 6px; max-width: 44%; }
+.corner.tl { top: 60px; left: var(--s-3); }
+.corner.tr { top: 60px; right: var(--s-3); align-items: flex-end; }
+.corner.bl { bottom: var(--s-3); left: var(--s-3); }
+.corner.br { bottom: var(--s-3); right: var(--s-3); align-items: flex-end; }
+.w { padding: 6px 10px; border-radius: var(--r-sm); background: var(--overlay); font-size: var(--t-12); line-height: 1.5; }
+.w b { font-weight: 500; font-size: var(--t-13); }
+.w .k { color: #a6a6a6; }
+.w .exp { display: flex; gap: var(--s-3); align-items: baseline; }
+.w svg { display: block; width: 140px; height: 44px; }
+.w .stars { color: var(--star); letter-spacing: 1px; }
+.w .flag-pick { color: #86cf9c; }
+.viewer.editing .w { outline: 1px dashed #7a7a7a; outline-offset: 2px; cursor: grab; }
+.add-slot { display: none; align-items: center; gap: 4px; padding: 4px 10px; border: 1px dashed #7a7a7a; border-radius: var(--r-sm); color: #a6a6a6; font-size: var(--t-12); }
+.viewer.editing .add-slot { display: inline-flex; }
+.edit-tray { position: absolute; left: 50%; bottom: var(--s-3); transform: translateX(-50%); display: none; align-items: center; gap: var(--s-2); padding: var(--s-2); border-radius: var(--r-md); background: var(--overlay); }
+.viewer.editing .edit-tray { display: flex; }
+.edit-tray .chip { background: rgba(255, 255, 255, .1); color: #ececec; cursor: grab; }
+.viewer.editing .corner.bl, .viewer.editing .corner.br { bottom: 64px; }
+.v-info { position: absolute; top: 48px; right: 0; bottom: 0; width: 280px; padding: var(--s-4); background: #212121; border-left: 1px solid #3a3a3a; display: none; overflow: auto; color: #ececec; }
+.viewer.info .v-info { display: block; }
+.viewer.info .corner.tr, .viewer.info .corner.br { right: 292px; }
+.v-info h4 { font-size: var(--t-12); color: #7a7a7a; font-weight: 400; margin: var(--s-4) 0 var(--s-2); display: flex; justify-content: space-between; }
+.v-info h4:first-child { margin-top: 0; }
+.field-row { display: flex; align-items: center; gap: var(--s-2); height: 30px; padding: 0 6px; border-radius: var(--r-sm); }
+.field-row:hover { background: #2c2c2c; }
+.field-row .grip { color: #7a7a7a; cursor: grab; }
+.field-row .grip i.ti { font-size: 14px; }
+.field-row span.l { color: #a6a6a6; flex: 1; }
+.field-row span.v { color: #ececec; }
+.field-row .pin { color: #7a7a7a; }
+.field-row .pin i.ti { font-size: 14px; }
+.field-row.pinned .pin { color: #ececec; }
+
+.anatomy { display: grid; grid-template-columns: 1fr 260px; gap: var(--s-4); align-items: start; }
+.do-dont { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); }
+.do-dont .tag { display: inline-flex; align-items: center; gap: 6px; margin-bottom: var(--s-2); font-size: var(--t-12); }
+.do-dont .tag.do { color: var(--pick); }
+.do-dont .tag.dont { color: var(--reject); }
+</style>
+</head>
+<body>
+<div class="doc">
+  <nav class="doc-nav" aria-label="目录">
+    <div class="brand"><span class="mark"></span>Nebulume 设计系统</div>
+    <div class="group">基础</div>
+    <a href="#principles">原则</a>
+    <a href="#color">颜色</a>
+    <a href="#type">文字</a>
+    <a href="#space">间距、圆角与尺寸</a>
+    <a href="#motion">动效</a>
+    <div class="group">组件</div>
+    <a href="#buttons">按钮</a>
+    <a href="#inputs">输入与选择</a>
+    <a href="#tags">标签与状态</a>
+    <a href="#lists">分组列表</a>
+    <a href="#overlays">菜单、提示与对话框</a>
+    <a href="#feedback">进度、空状态与表格</a>
+    <div class="group">版式</div>
+    <a href="#layout">页面结构</a>
+    <a href="#library">图片库</a>
+    <a href="#import">导入</a>
+    <a href="#settings">设置</a>
+    <a href="#viewer-section">查看器与叠加信息</a>
+    <div class="theme"><div class="seg sm" role="tablist" aria-label="主题"><button role="tab" aria-selected="true" data-theme-set="dark">深色</button><button role="tab" aria-selected="false" data-theme-set="light">浅色</button></div></div>
+  </nav>
+
+  <main class="doc-main">
+    <section class="doc-section" id="principles">
+      <h2>原则</h2>
+      <p class="lead">暗房：中性灰让照片成为界面里唯一有颜色的东西。整个应用只用这一套颜色、字号、尺寸和组件；页面之间的差别只来自内容，不来自各自的样式。</p>
+      <div class="grid-3">
+        <div class="surface" style="padding:var(--s-4)"><h3 style="font-size:var(--t-14);margin-bottom:6px">照片优先</h3><p style="color:var(--text-2)">界面不加颜色；状态色只用于留用、淘汰、警告与错误，并总与图标或文字同时出现。</p></div>
+        <div class="surface" style="padding:var(--s-4)"><h3 style="font-size:var(--t-14);margin-bottom:6px">扁平</h3><p style="color:var(--text-2)">不用阴影、渐变、模糊。层次靠表面明度：舞台 &lt; 侧栏 &lt; 窗口 &lt; 浮起。</p></div>
+        <div class="surface" style="padding:var(--s-4)"><h3 style="font-size:var(--t-14);margin-bottom:6px">一处一个主操作</h3><p style="color:var(--text-2)">每个页面或面板最多一个主按钮；同一件事只有一个入口，其余放进“更多”。</p></div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="color">
+      <h2>颜色</h2>
+      <p class="lead">表面从暗到亮四级，文字三级。状态色在深色表面上校验过对比度，浅色主题各有一套。查看器舞台在两种主题下都是深色。</p>
+      <h3 class="sub">表面</h3>
+      <div class="swatches">
+        <div class="swatch"><div class="chip-color" style="background:var(--stage)"></div><div class="meta"><b>舞台</b><span>--stage</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--rail)"></div><div class="meta"><b>图标栏</b><span>--rail</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--side)"></div><div class="meta"><b>侧栏、分组、输入框</b><span>--side</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--canvas)"></div><div class="meta"><b>窗口</b><span>--canvas</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--raised)"></div><div class="meta"><b>浮起：按钮、菜单、选中</b><span>--raised</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--line)"></div><div class="meta"><b>分隔线</b><span>--line</span></div></div>
+      </div>
+      <h3 class="sub">文字</h3>
+      <div class="swatches">
+        <div class="swatch"><div class="chip-color" style="background:var(--text)"></div><div class="meta"><b>主要</b><span>--text</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--text-2)"></div><div class="meta"><b>次要</b><span>--text-2</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--text-3)"></div><div class="meta"><b>提示、计数</b><span>--text-3</span></div></div>
+      </div>
+      <h3 class="sub">状态</h3>
+      <div class="swatches">
+        <div class="swatch"><div class="chip-color" style="background:var(--pick)"></div><div class="meta"><b>留用、成功、在线</b><span>--pick</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--reject)"></div><div class="meta"><b>淘汰、错误、删除</b><span>--reject</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--warn)"></div><div class="meta"><b>警告、需处理</b><span>--warn</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--star)"></div><div class="meta"><b>星级</b><span>--star</span></div></div>
+        <div class="swatch"><div class="chip-color" style="background:var(--info)"></div><div class="meta"><b>信息、图表单系列</b><span>--info</span></div></div>
+      </div>
+      <p class="rule">主按钮用文字色反白（深色主题为浅底深字），不另设品牌色。状态底色用同色 14% 透明度：<code>--tint-pick</code> <code>--tint-reject</code> <code>--tint-warn</code> <code>--tint-info</code>。</p>
+    </section>
+
+    <section class="doc-section" id="type">
+      <h2>文字</h2>
+      <p class="lead">七级字号，只有 400 和 500 两种字重。界面正文 13px；14px 用于说明性段落；数字统一等宽。</p>
+      <div class="specimen">
+        <div class="type-row"><span class="spec">22 / 500 页面大标题</span><span style="font-size:22px;font-weight:500">图片库概览</span></div>
+        <div class="type-row"><span class="spec">18 / 500 页面标题</span><span style="font-size:18px;font-weight:500">2026 旅行</span></div>
+        <div class="type-row"><span class="spec">16 / 500 区块标题</span><span style="font-size:16px;font-weight:500">怎么整理</span></div>
+        <div class="type-row"><span class="spec">14 / 500 分组标题</span><span style="font-size:14px;font-weight:500">缓存位置</span></div>
+        <div class="type-row"><span class="spec">14 / 400 说明段落</span><span style="font-size:14px;color:var(--text-2)">导入前会逐项核对，已存在于图片库的照片不会重复复制。</span></div>
+        <div class="type-row"><span class="spec">13 / 400 界面正文</span><span>DSC_0412.NEF · 24.6 MB · 10月18日 16:42</span></div>
+        <div class="type-row"><span class="spec">12 / 400 辅助、标签</span><span style="font-size:12px;color:var(--text-3)">已载入 64 / 1284 张</span></div>
+        <div class="type-row"><span class="spec">11 / 400 最小：徽标、快捷键</span><span style="font-size:11px;color:var(--text-2)">RAW · ⌘K</span></div>
+      </div>
+      <p class="rule">句首大写，不加粗句中词语；数值用 <code>font-variant-numeric: tabular-nums</code>；文件名、路径可用等宽字体。</p>
+    </section>
+
+    <section class="doc-section" id="space">
+      <h2>间距、圆角与尺寸</h2>
+      <p class="lead">4 的倍数。所有可点击控件只有四种高度，同一行里的控件高度一致。</p>
+      <div class="grid-2">
+        <div class="specimen">
+          <div class="spec" style="margin-bottom:var(--s-3)">间距 4 / 8 / 12 / 16 / 20 / 24 / 32 / 40</div>
+          <div class="scale">
+            <div><span class="bar" style="width:4px;height:4px"></span>4</div>
+            <div><span class="bar" style="width:8px;height:8px"></span>8</div>
+            <div><span class="bar" style="width:12px;height:12px"></span>12</div>
+            <div><span class="bar" style="width:16px;height:16px"></span>16</div>
+            <div><span class="bar" style="width:20px;height:20px"></span>20</div>
+            <div><span class="bar" style="width:24px;height:24px"></span>24</div>
+            <div><span class="bar" style="width:32px;height:32px"></span>32</div>
+            <div><span class="bar" style="width:40px;height:40px"></span>40</div>
+          </div>
+        </div>
+        <div class="specimen">
+          <div class="spec" style="margin-bottom:var(--s-3)">圆角</div>
+          <div class="row" style="gap:var(--s-4)">
+            <div class="col" style="justify-items:center"><div class="radius-demo" style="border-radius:2px"></div><span class="spec">2 缩略图</span></div>
+            <div class="col" style="justify-items:center"><div class="radius-demo" style="border-radius:4px"></div><span class="spec">4 徽标</span></div>
+            <div class="col" style="justify-items:center"><div class="radius-demo" style="border-radius:6px"></div><span class="spec">6 行、菜单项</span></div>
+            <div class="col" style="justify-items:center"><div class="radius-demo" style="border-radius:8px"></div><span class="spec">8 控件</span></div>
+            <div class="col" style="justify-items:center"><div class="radius-demo" style="border-radius:12px"></div><span class="spec">12 分组、面板</span></div>
+          </div>
+        </div>
+      </div>
+      <h3 class="sub">控件高度</h3>
+      <div class="specimen">
+        <table class="data">
+          <tr><th>高度</th><th>名称</th><th>用于</th><th>示例</th></tr>
+          <tr><td>24</td><td>xs</td><td>标签、筛选开关、行内图标按钮</td><td><span class="chip">相机：X-T5<button aria-label="移除"><i class="ti ti-x" aria-hidden="true"></i></button></span></td></tr>
+          <tr><td>28</td><td>sm</td><td>工具栏、次级视图、紧凑表单</td><td><button class="btn secondary sm">排序</button></td></tr>
+          <tr><td>32</td><td>md 默认</td><td>按钮、输入框、下拉、分段控件</td><td><button class="btn primary">开始导入</button></td></tr>
+          <tr><td>40</td><td>lg</td><td>图标栏、对话框底部主操作、空状态</td><td><button class="btn primary lg">选择文件夹</button></td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc-section" id="motion">
+      <h2>动效</h2>
+      <p class="lead">只回应操作，不做装饰。缓动统一 <code style="font-family:var(--mono)">cubic-bezier(.2, 0, 0, 1)</code>；减少动态效果时全部即时。</p>
+      <div class="specimen">
+        <table class="data">
+          <tr><th>时长</th><th>用于</th></tr>
+          <tr><td>120ms</td><td>悬停、按下、开关、颜色变化</td></tr>
+          <tr><td>180ms</td><td>面板滑入、菜单与提示出现、视图切换、叠加信息淡出</td></tr>
+          <tr><td>280ms</td><td>照片从缩略图放大进入查看器、缩回</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc-section" id="buttons">
+      <h2>按钮</h2>
+      <p class="lead">四种外观、三种尺寸。图标在左，16px；纯图标按钮必须有可访问名称与悬停提示。</p>
+      <div class="specimen col">
+        <div class="row"><button class="btn primary"><i class="ti ti-download" aria-hidden="true"></i>开始导入</button><button class="btn secondary"><i class="ti ti-refresh" aria-hidden="true"></i>扫描更新</button><button class="btn ghost">取消</button><button class="btn danger"><i class="ti ti-trash" aria-hidden="true"></i>移到废纸篓</button><button class="btn primary" disabled>不可用</button></div>
+        <div class="row"><button class="btn primary sm">小号主按钮</button><button class="btn secondary sm"><i class="ti ti-filter" aria-hidden="true"></i>筛选</button><button class="btn ghost sm">清除</button><button class="btn primary lg">选择文件夹</button></div>
+        <div class="row"><button class="icon-btn" aria-label="搜索"><i class="ti ti-search" aria-hidden="true"></i></button><button class="icon-btn" aria-label="信息" aria-pressed="true"><i class="ti ti-info-circle" aria-hidden="true"></i></button><button class="icon-btn" aria-label="更多"><i class="ti ti-dots" aria-hidden="true"></i></button><button class="icon-btn sm" aria-label="添加"><i class="ti ti-plus" aria-hidden="true"></i></button><button class="icon-btn xs" aria-label="关闭"><i class="ti ti-x" aria-hidden="true"></i></button><span class="tooltip">信息面板 <span class="kbd">I</span></span></div>
+      </div>
+      <div class="do-dont" style="margin-top:var(--s-4)">
+        <div class="specimen"><div class="tag do"><i class="ti ti-check" aria-hidden="true"></i>一个主操作，其余次级或收进更多</div><div class="row"><button class="btn primary">扫描更新</button><button class="icon-btn" aria-label="更多"><i class="ti ti-dots" aria-hidden="true"></i></button></div></div>
+        <div class="specimen"><div class="tag dont"><i class="ti ti-x" aria-hidden="true"></i>多个同权重按钮，与视图切换重复</div><div class="row"><button class="btn secondary">扫描更新</button><button class="btn secondary">选图</button><button class="btn secondary">详情</button></div></div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="inputs">
+      <h2>输入与选择</h2>
+      <p class="lead">标签在上，说明与错误在下。设置类的单个开关用分组列表的行（见下文），不用孤立的表单项。</p>
+      <div class="grid-3 specimen">
+        <div class="field"><label for="f1">图片库名称</label><div class="input"><input id="f1" value="2026 旅行"></div><span class="help">只用于显示，不改动文件夹。</span></div>
+        <div class="field"><label for="f2">搜索</label><div class="input"><i class="ti ti-search" aria-hidden="true"></i><input id="f2" placeholder="文件名、相机、镜头"><span class="kbd">⌘K</span></div></div>
+        <div class="field"><label for="f3">缓存上限</label><div class="input invalid"><input id="f3" value="0"><span style="color:var(--text-3)">GB</span></div><span class="help error">至少 1 GB。</span></div>
+        <div class="field"><label for="f4">文件夹命名</label><div class="select"><select id="f4"><option>年 / 年-月-日</option><option>年 / 月</option><option>保持原样</option></select><i class="ti ti-chevron-down" aria-hidden="true"></i></div></div>
+        <div class="field"><label>视图</label><div class="seg" role="tablist"><button role="tab" aria-selected="true">照片</button><button role="tab" aria-selected="false">选片</button><button role="tab" aria-selected="false">概览</button></div></div>
+        <div class="field"><label>缩略图大小</label><div class="row" style="gap:var(--s-2)"><i class="ti ti-photo" aria-hidden="true" style="color:var(--text-3);font-size:14px"></i><input type="range" value="60" aria-label="缩略图大小"><i class="ti ti-photo" aria-hidden="true" style="color:var(--text-3);font-size:20px"></i></div></div>
+        <div class="col"><label class="check"><input type="checkbox" checked>合并同名 RAW 与 JPEG</label><label class="check"><input type="checkbox">只导入留用</label></div>
+        <div class="col"><label class="check"><input type="radio" name="r" checked>复制到图片库</label><label class="check"><input type="radio" name="r">原地建库，不复制</label></div>
+        <div class="row"><label class="switch"><input type="checkbox" checked aria-label="自动监视"><span></span></label><span>自动监视文件夹</span></div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="tags">
+      <h2>标签与状态</h2>
+      <div class="specimen col">
+        <div class="row"><span class="chip">相机：X-T5<button aria-label="移除"><i class="ti ti-x" aria-hidden="true"></i></button></span><span class="chip">10月18日<button aria-label="移除"><i class="ti ti-x" aria-hidden="true"></i></button></span><button class="toggle" aria-pressed="true"><i class="ti ti-eye-off" aria-hidden="true"></i>隐藏淘汰</button><button class="toggle" aria-pressed="false">只看 RAW</button></div>
+        <div class="row"><span class="badge">RAW</span><span class="badge pick"><i class="ti ti-check" aria-hidden="true" style="font-size:12px"></i>留用</span><span class="badge reject"><i class="ti ti-x" aria-hidden="true" style="font-size:12px"></i>淘汰</span><span class="badge warn">疑似重复</span><span class="badge info">网络存储</span></div>
+        <div class="row" style="gap:var(--s-5)"><span class="row" style="gap:6px"><span class="dot ok"></span>在线</span><span class="row" style="gap:6px"><span class="dot off"></span>未连接</span><span class="row" style="gap:6px"><span class="dot warn"></span>需要登录</span><span class="row" style="gap:6px"><span class="dot bad"></span>错误</span></div>
+      </div>
+      <p class="rule">颜色不单独表达含义：留用、淘汰、在线状态都同时有图标或文字。</p>
+    </section>
+
+    <section class="doc-section" id="lists">
+      <h2>分组列表</h2>
+      <p class="lead">设置、导入选项、位置、详情都用同一种分组：14px 标题加一组行。每行左边是名称与一句说明，右边是一个控件。页面不再各自做卡片。</p>
+      <div class="grid-2">
+        <div>
+          <div class="group-head"><h3>浏览与选片</h3></div>
+          <div class="list">
+            <div class="list-row"><div class="label"><b>打标后自动下一张</b><span>留用、淘汰或打星后前进</span></div><div class="ctrl"><label class="switch"><input type="checkbox" checked aria-label="打标后自动下一张"><span></span></label></div></div>
+            <div class="list-row"><div class="label"><b>缩略图预生成</b><span>扫描后在后台渲染</span></div><div class="ctrl"><div class="select sm"><select aria-label="缩略图预生成"><option>网格档位</option><option>关闭</option></select><i class="ti ti-chevron-down" aria-hidden="true"></i></div></div></div>
+            <div class="list-row"><div class="label"><b>主题</b></div><div class="ctrl"><div class="seg sm"><button aria-selected="false">浅色</button><button aria-selected="true">深色</button><button aria-selected="false">跟随系统</button></div></div></div>
+          </div>
+        </div>
+        <div>
+          <div class="group-head"><h3>位置</h3><span>3 个</span></div>
+          <div class="list">
+            <div class="list-row nav"><span class="lead-ico"><i class="ti ti-device-laptop" aria-hidden="true"></i></span><div class="label"><b>本机</b><span>/Users/me/Pictures</span></div><div class="ctrl"><span class="dot ok"></span><i class="ti ti-chevron-right" aria-hidden="true" style="color:var(--text-3)"></i></div></div>
+            <div class="list-row nav"><span class="lead-ico"><i class="ti ti-server" aria-hidden="true"></i></span><div class="label"><b>家里的 NAS</b><span>WebDAV · 192.168.1.20</span></div><div class="ctrl"><span class="badge warn">需要登录</span><i class="ti ti-chevron-right" aria-hidden="true" style="color:var(--text-3)"></i></div></div>
+            <div class="list-row nav"><span class="lead-ico"><i class="ti ti-sd" aria-hidden="true"></i></span><div class="label"><b>EOS_DIGITAL</b><span>存储卡 · 412 张新照片</span></div><div class="ctrl"><button class="btn secondary sm">导入</button></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="overlays">
+      <h2>菜单、提示与对话框</h2>
+      <div class="grid-3">
+        <div class="specimen">
+          <div class="menu" role="menu">
+            <button role="menuitem"><i class="ti ti-arrows-maximize" aria-hidden="true"></i>打开<span class="k">↵</span></button>
+            <button role="menuitem" class="active"><i class="ti ti-app-window" aria-hidden="true"></i>在新窗口中打开</button>
+            <hr>
+            <div class="menu-label">旗标</div>
+            <button role="menuitem"><i class="ti ti-check" aria-hidden="true"></i>留用<span class="k">P</span></button>
+            <button role="menuitem"><i class="ti ti-x" aria-hidden="true"></i>淘汰<span class="k">X</span></button>
+            <hr>
+            <button role="menuitem"><i class="ti ti-download" aria-hidden="true"></i>导出 JPEG…</button>
+            <button role="menuitem" class="destructive"><i class="ti ti-trash" aria-hidden="true"></i>移到废纸篓<span class="k">⌘⌫</span></button>
+          </div>
+        </div>
+        <div class="specimen col" style="align-content:start">
+          <span class="toast"><i class="ti ti-check" aria-hidden="true"></i>已把 3 张照片移到废纸篓<button>撤销</button></span>
+          <span class="toast error"><i class="ti ti-alert-circle" aria-hidden="true"></i>无法连接 NAS<button>重试</button></span>
+          <div class="banner warn"><i class="ti ti-alert-triangle" aria-hidden="true"></i><p>“Trip”不在图片库中。<span>评级和旗标只保存在本机。</span></p><button class="btn secondary sm">加入图片库</button></div>
+          <div class="banner info"><i class="ti ti-info-circle" aria-hidden="true"></i><p>有 412 张新照片。</p><button class="btn secondary sm">导入</button></div>
+          <p class="rule">提示条居底部中央，6 秒消失；可撤销的操作 10 秒。横幅在内容上方，持续到处理或关闭。</p>
+        </div>
+        <div class="dialog-scrim">
+          <div class="dialog" role="dialog" aria-label="移除图片库">
+            <header><h3>移除“城市漫步”？</h3><button class="icon-btn sm" aria-label="关闭"><i class="ti ti-x" aria-hidden="true"></i></button></header>
+            <div class="body"><p>只移除登记，文件夹和照片保持不动。评级、旗标与裁剪会一起删除。</p></div>
+            <footer><button class="btn ghost">取消</button><button class="btn danger">移除</button></footer>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="feedback">
+      <h2>进度、空状态与表格</h2>
+      <div class="grid-3">
+        <div class="specimen col">
+          <ol class="steps"><li class="done"><i>1</i>设置</li><li class="current"><i>2</i>核对</li><li><i>3</i>完成</li></ol>
+          <div class="col" style="gap:6px"><div class="row" style="justify-content:space-between"><span>正在复制 214 / 412</span><span style="color:var(--text-3)">约 2 分钟</span></div><div class="progress"><span style="width:52%"></span></div></div>
+          <div class="row"><span class="spinner" aria-hidden="true"></span><span style="color:var(--text-2)">正在读取存储卡…</span></div>
+          <p class="rule">多步流程只用一个步骤条，放在页面标题旁。</p>
+        </div>
+        <div class="specimen"><div class="empty"><span class="ico"><i class="ti ti-photo-plus" aria-hidden="true"></i></span><h3>还没有图片库</h3><p>选一个照片文件夹，或从存储卡导入。</p><div class="row"><button class="btn primary">选择文件夹</button><button class="btn secondary">从存储卡导入</button></div></div></div>
+        <div class="specimen">
+          <table class="data">
+            <tr><th>文件</th><th>去向</th><th class="num">大小</th></tr>
+            <tr><td>DSC_0412.NEF</td><td style="color:var(--text-2)">2026/10-18</td><td class="num">24.6 MB</td></tr>
+            <tr><td>DSC_0412.JPG</td><td style="color:var(--text-2)">2026/10-18</td><td class="num">8.1 MB</td></tr>
+            <tr><td>DSC_0413.NEF</td><td><span class="badge warn">已存在</span></td><td class="num">24.4 MB</td></tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="layout">
+      <h2>页面结构</h2>
+      <p class="lead">所有页面同一个骨架：56px 页头（标题、视图切换或步骤、至多一个主操作和“更多”），下面是 44px 工具栏（可选），再下面是内容。内容只有两种版式：单栏（最宽 760px，设置、对话类）和主栏 + 300px 侧栏（导入、详情类）。</p>
+      <div class="specimen">
+        <div class="anatomy">
+          <div class="app no-side" style="height:300px">
+            <nav class="rail"><span class="mark"></span><button aria-current="true" aria-label="图片库"><i class="ti ti-photo" aria-hidden="true"></i></button><button aria-label="导入"><i class="ti ti-download" aria-hidden="true"></i></button><button aria-label="位置"><i class="ti ti-server" aria-hidden="true"></i></button><span class="spacer"></span><button aria-label="设置"><i class="ti ti-settings" aria-hidden="true"></i></button></nav>
+            <div class="main" style="grid-template-rows:auto auto 1fr">
+              <div class="page-head" style="border-style:dashed"><div class="title"><h1>页头</h1><span class="crumb">标题 · 位置</span></div><span class="spec">视图切换或步骤</span><div class="actions"><span class="spec">主操作 · 更多</span></div></div>
+              <div class="toolbar" style="border-bottom:1px dashed var(--line)"><span class="spec">工具栏：搜索、筛选、排序、标签</span></div>
+              <div class="split-page"><div class="page"><span class="spec">主栏</span></div><div class="aside"><span class="spec">侧栏 300</span></div></div>
+            </div>
+          </div>
+          <div class="col">
+            <div class="surface" style="padding:var(--s-3) var(--s-4)"><b style="font-weight:500">图标栏 56</b><p class="spec">图片库、导入、位置；设置在底部。</p></div>
+            <div class="surface" style="padding:var(--s-3) var(--s-4)"><b style="font-weight:500">侧栏 220</b><p class="spec">仅图片库有：库与文件夹树。</p></div>
+            <div class="surface" style="padding:var(--s-3) var(--s-4)"><b style="font-weight:500">内边距 20 / 24</b><p class="spec">页头、工具栏左右 20；内容区 24。</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="library">
+      <h2>图片库</h2>
+      <p class="lead">页头只留一个视图切换和一个主操作。“选片”是视图，不再另有“选图”按钮；“详情”由 I 键与工具栏图标打开。</p>
+      <div class="app">
+        <nav class="rail"><span class="mark"></span><button aria-current="true" aria-label="图片库"><i class="ti ti-photo" aria-hidden="true"></i></button><button aria-label="导入"><i class="ti ti-download" aria-hidden="true"></i></button><button aria-label="位置"><i class="ti ti-server" aria-hidden="true"></i></button><span class="spacer"></span><button aria-label="设置"><i class="ti ti-settings" aria-hidden="true"></i></button></nav>
+        <aside class="side">
+          <div class="side-head">图片库<button class="icon-btn xs" aria-label="新建图片库"><i class="ti ti-plus" aria-hidden="true"></i></button></div>
+          <button class="node" aria-current="true"><i class="ti ti-chevron-down chev" aria-hidden="true"></i><i class="ti ti-device-laptop ico" aria-hidden="true"></i><span class="lbl">2026 旅行</span><span class="dot ok"></span></button>
+          <button class="node" style="--depth:1"><i class="ti ti-chevron-right chev" aria-hidden="true"></i><i class="ti ti-folder ico" aria-hidden="true"></i><span class="lbl">Kyoto</span><span class="n">612</span></button>
+          <button class="node" style="--depth:1"><span class="chev"></span><i class="ti ti-folder ico" aria-hidden="true"></i><span class="lbl">Nara</span><span class="n">208</span></button>
+          <button class="node" style="--depth:1"><i class="ti ti-chevron-right chev" aria-hidden="true"></i><i class="ti ti-folder ico" aria-hidden="true"></i><span class="lbl">青海</span><span class="n">464</span></button>
+          <button class="node"><i class="ti ti-chevron-right chev" aria-hidden="true"></i><i class="ti ti-device-laptop ico" aria-hidden="true"></i><span class="lbl">城市漫步</span><span class="dot ok"></span></button>
+          <button class="node"><i class="ti ti-chevron-right chev" aria-hidden="true"></i><i class="ti ti-server ico" aria-hidden="true"></i><span class="lbl">家庭</span><span class="dot off"></span></button>
+        </aside>
+        <div class="main">
+          <div class="page-head">
+            <div class="title"><h1>2026 旅行</h1><span class="crumb">1284 张</span></div>
+            <div class="seg" role="tablist" aria-label="视图"><button role="tab" aria-selected="true"><i class="ti ti-layout-grid" aria-hidden="true"></i>照片</button><button role="tab" aria-selected="false"><i class="ti ti-flag" aria-hidden="true"></i>选片</button><button role="tab" aria-selected="false"><i class="ti ti-chart-bar" aria-hidden="true"></i>概览</button></div>
+            <div class="actions"><button class="btn secondary"><i class="ti ti-refresh" aria-hidden="true"></i>扫描更新</button><button class="icon-btn" aria-label="更多"><i class="ti ti-dots" aria-hidden="true"></i></button></div>
+          </div>
+          <div class="toolbar">
+            <div class="input sm" style="width:240px"><i class="ti ti-search" aria-hidden="true"></i><input placeholder="搜索" aria-label="搜索"><span class="kbd">⌘K</span></div>
+            <button class="btn ghost sm"><i class="ti ti-filter" aria-hidden="true"></i>筛选</button>
+            <span class="chip">相机：X-T5<button aria-label="移除"><i class="ti ti-x" aria-hidden="true"></i></button></span>
+            <span class="grow"></span>
+            <button class="toggle" aria-pressed="false"><i class="ti ti-eye-off" aria-hidden="true"></i>隐藏淘汰</button>
+            <div class="select sm" style="width:120px"><select aria-label="排序"><option>拍摄时间</option></select><i class="ti ti-chevron-down" aria-hidden="true"></i></div>
+            <button class="icon-btn sm" aria-label="详情（I）"><i class="ti ti-info-circle" aria-hidden="true"></i></button>
+          </div>
+          <div class="wall">
+            <div class="day"><h3>10月18日 周日</h3><span>岚山 · 64 张</span></div>
+            <div class="tiles"><img src="https://picsum.photos/id/1018/600/400" alt="" style="flex-basis:210px"><img class="sel" src="https://picsum.photos/id/1015/400/600" alt="" style="flex-basis:94px"><img src="https://picsum.photos/id/1016/600/400" alt="" style="flex-basis:210px"><img src="https://picsum.photos/id/1019/600/400" alt="" style="flex-basis:210px"></div>
+            <div class="tiles"><img src="https://picsum.photos/id/1035/600/400" alt="" style="flex-basis:210px"><img src="https://picsum.photos/id/1036/600/400" alt="" style="flex-basis:210px"><img src="https://picsum.photos/id/1039/400/600" alt="" style="flex-basis:94px"><img src="https://picsum.photos/id/1043/600/400" alt="" style="flex-basis:210px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="import">
+      <h2>导入</h2>
+      <p class="lead">一个步骤条、一个主操作。左栏自上而下回答三个问题（从哪里、到哪里、怎么整理），右栏实时显示结果会是什么样，主按钮固定在右栏底部。导入历史移到页头的“历史”。</p>
+      <div class="app no-side" style="height:640px">
+        <nav class="rail"><span class="mark"></span><button aria-label="图片库"><i class="ti ti-photo" aria-hidden="true"></i></button><button aria-current="true" aria-label="导入"><i class="ti ti-download" aria-hidden="true"></i></button><button aria-label="位置"><i class="ti ti-server" aria-hidden="true"></i></button><span class="spacer"></span><button aria-label="设置"><i class="ti ti-settings" aria-hidden="true"></i></button></nav>
+        <div class="main" style="grid-template-rows:auto 1fr">
+          <div class="page-head">
+            <div class="title"><h1>导入</h1></div>
+            <ol class="steps" aria-label="导入步骤"><li class="current"><i>1</i>设置</li><li><i>2</i>核对</li><li><i>3</i>完成</li></ol>
+            <div class="actions" style="flex:1;justify-content:flex-end"><button class="btn ghost"><i class="ti ti-history" aria-hidden="true"></i>历史</button></div>
+          </div>
+          <div class="split-page" style="min-height:0">
+            <div class="page stack">
+              <div>
+                <div class="group-head"><h3>从哪里导入</h3><button class="btn ghost sm"><i class="ti ti-folder-open" aria-hidden="true"></i>选择其他文件夹…</button></div>
+                <div class="source-cards">
+                  <button class="source" aria-pressed="true"><div class="top"><i class="ti ti-sd" aria-hidden="true"></i><b>EOS_DIGITAL</b><span class="badge info">412 新</span></div><div class="meta">存储卡 · 63.9 GB · 已用 41%</div></button>
+                  <button class="source" aria-pressed="false"><div class="top"><i class="ti ti-usb" aria-hidden="true"></i><b>SanDisk SSD</b></div><div class="meta">外接盘 · 1 TB</div></button>
+                </div>
+              </div>
+              <div>
+                <div class="group-head"><h3>导入到</h3></div>
+                <div class="list">
+                  <div class="list-row"><div class="label"><b>图片库</b><span>本机 · /Users/me/Pictures/2026 旅行</span></div><div class="ctrl"><div class="select" style="width:200px"><select aria-label="目标图片库"><option>2026 旅行</option><option>城市漫步</option><option>家里的 NAS</option></select><i class="ti ti-chevron-down" aria-hidden="true"></i></div></div></div>
+                  <div class="list-row"><div class="label"><b>导入后打开图片库</b></div><div class="ctrl"><label class="switch"><input type="checkbox" checked aria-label="导入后打开图片库"><span></span></label></div></div>
+                </div>
+              </div>
+              <div>
+                <div class="group-head"><h3>怎么整理</h3><div class="select sm" style="width:160px"><select aria-label="导入方案"><option>方案：旅行</option><option>不保存方案</option></select><i class="ti ti-chevron-down" aria-hidden="true"></i></div></div>
+                <div class="list">
+                  <div class="list-row"><div class="label"><b>文件夹</b><span>按拍摄日期建立</span></div><div class="ctrl"><div class="select" style="width:200px"><select aria-label="文件夹"><option>年 / 年-月-日</option><option>年 / 月</option><option>保持卡上结构</option></select><i class="ti ti-chevron-down" aria-hidden="true"></i></div></div></div>
+                  <div class="list-row"><div class="label"><b>文件名</b></div><div class="ctrl"><div class="select" style="width:200px"><select aria-label="文件名"><option>保持原名</option><option>日期_序号</option></select><i class="ti ti-chevron-down" aria-hidden="true"></i></div></div></div>
+                  <div class="list-row"><div class="label"><b>跳过已导入的照片</b><span>按内容判断，改名后也能识别</span></div><div class="ctrl"><label class="switch"><input type="checkbox" checked aria-label="跳过已导入的照片"><span></span></label></div></div>
+                  <div class="list-row"><div class="label"><b>RAW 与同名 JPEG</b></div><div class="ctrl"><div class="seg sm"><button aria-selected="true">都导入</button><button aria-selected="false">只要 RAW</button></div></div></div>
+                </div>
+              </div>
+            </div>
+            <div class="aside" style="grid-template-rows:auto auto 1fr auto;height:100%">
+              <h3>将会导入</h3>
+              <div class="sum"><div><span>新照片</span><span>412 张</span></div><div><span>已在图片库，跳过</span><span>36 张</span></div><div><span>占用</span><span>9.8 GB</span></div><div><span>目标可用空间</span><span>214 GB</span></div></div>
+              <div class="tree-preview"><b>2026 旅行/</b><br>&nbsp;&nbsp;2026/<br>&nbsp;&nbsp;&nbsp;&nbsp;<b>2026-10-18/</b> 164<br>&nbsp;&nbsp;&nbsp;&nbsp;<b>2026-10-19/</b> 201<br>&nbsp;&nbsp;&nbsp;&nbsp;<b>2026-10-21/</b> 47</div>
+              <div class="col"><button class="btn primary lg" style="width:100%">核对导入计划</button><span class="spec" style="text-align:center">下一步逐项列出，确认后才开始复制</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="settings">
+      <h2>设置</h2>
+      <p class="lead">单栏，最宽 760px，左侧不再有二级导航卡片；每个分组用同一种列表。破坏性操作统一放在最后一组。</p>
+      <div class="app no-side" style="height:520px">
+        <nav class="rail"><span class="mark"></span><button aria-label="图片库"><i class="ti ti-photo" aria-hidden="true"></i></button><button aria-label="导入"><i class="ti ti-download" aria-hidden="true"></i></button><button aria-label="位置"><i class="ti ti-server" aria-hidden="true"></i></button><span class="spacer"></span><button aria-current="true" aria-label="设置"><i class="ti ti-settings" aria-hidden="true"></i></button></nav>
+        <div class="main" style="grid-template-rows:auto 1fr">
+          <div class="page-head"><div class="title"><h1>设置</h1></div><div class="seg sm" role="tablist"><button role="tab" aria-selected="true">通用</button><button role="tab" aria-selected="false">缓存</button><button role="tab" aria-selected="false">快捷键</button><button role="tab" aria-selected="false">关于</button></div><div style="flex:1"></div></div>
+          <div class="page"><div class="page-narrow stack" style="margin:0 auto">
+            <div><div class="group-head"><h3>外观</h3></div><div class="list">
+              <div class="list-row"><div class="label"><b>主题</b></div><div class="ctrl"><div class="seg sm"><button aria-selected="false">浅色</button><button aria-selected="true">深色</button><button aria-selected="false">跟随系统</button></div></div></div>
+              <div class="list-row"><div class="label"><b>减少动态效果</b><span>跟随系统设置</span></div><div class="ctrl"><label class="switch"><input type="checkbox" aria-label="减少动态效果"><span></span></label></div></div>
+            </div></div>
+            <div><div class="group-head"><h3>缓存</h3><span>已用 18.2 / 50 GB</span></div><div class="list">
+              <div class="list-row"><div class="label"><b>位置</b><span style="font-family:var(--mono)">~/Library/Caches/Nebulume</span></div><div class="ctrl"><button class="btn secondary sm">更改…</button></div></div>
+              <div class="list-row"><div class="label"><b>上限</b></div><div class="ctrl"><div class="input sm" style="width:96px"><input value="50" aria-label="缓存上限"><span style="color:var(--text-3)">GB</span></div></div></div>
+              <div class="list-row"><div class="label"><b>清理缓存</b><span>只删除预览，不影响原片</span></div><div class="ctrl"><button class="btn danger sm">清理…</button></div></div>
+            </div></div>
+          </div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc-section" id="viewer-section">
+      <h2>查看器与叠加信息</h2>
+      <p class="lead">照片铺满，顶栏与四角信息约 2 秒无操作淡出。四个角各是一摞小部件，在“编辑叠加信息”里拖入、排序、移除；信息面板的字段可固定到前面。</p>
+      <div class="row" style="margin-bottom:var(--s-3)"><div class="seg sm" role="tablist" aria-label="查看器状态"><button role="tab" aria-selected="true" data-viewer="">连看</button><button role="tab" aria-selected="false" data-viewer="editing">编辑叠加信息</button><button role="tab" aria-selected="false" data-viewer="info">信息面板</button></div></div>
+      <div class="viewer" id="viewer">
+        <img src="https://picsum.photos/id/1015/1600/1000" alt="河谷">
+        <div class="v-top">
+          <button class="icon-btn sm" aria-label="返回"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>
+          <div class="name"><b>DSC_0412.NEF</b><span>Kyoto · 12 / 64</span></div>
+          <button class="icon-btn sm" aria-label="叠加信息" aria-pressed="true"><i class="ti ti-layout-dashboard" aria-hidden="true"></i></button>
+          <button class="icon-btn sm" aria-label="信息（I）"><i class="ti ti-info-circle" aria-hidden="true"></i></button>
+          <button class="icon-btn sm" aria-label="裁剪（C）"><i class="ti ti-crop" aria-hidden="true"></i></button>
+          <button class="icon-btn sm" aria-label="更多"><i class="ti ti-dots" aria-hidden="true"></i></button>
+        </div>
+        <div class="corner tl"><div class="w"><b>10月18日 16:42</b></div><span class="add-slot"><i class="ti ti-plus" aria-hidden="true"></i>添加</span></div>
+        <div class="corner tr"><div class="w"><span class="stars">★★★★</span> <span class="flag-pick">留用</span></div><span class="add-slot"><i class="ti ti-plus" aria-hidden="true"></i>添加</span></div>
+        <div class="corner bl"><div class="w k">X-T5 · XF 23mm F1.4</div><div class="w"><div class="exp"><b>f/2.8</b><b>1/500</b><b>ISO 200</b><b>35 mm</b></div></div><span class="add-slot"><i class="ti ti-plus" aria-hidden="true"></i>添加</span></div>
+        <div class="corner br"><div class="w"><svg viewBox="0 0 140 44" preserveAspectRatio="none" aria-label="直方图" role="img"><path d="M0,44 L12,40 L24,30 L38,16 L52,22 L66,10 L80,18 L96,28 L110,34 L126,40 L140,44 Z" fill="rgba(236,236,236,.35)" stroke="#ececec" stroke-width="1"/></svg></div><span class="add-slot"><i class="ti ti-plus" aria-hidden="true"></i>添加</span></div>
+        <div class="edit-tray"><span class="spec" style="color:#a6a6a6;padding:0 4px">拖到任意角</span><span class="chip">曝光补偿</span><span class="chip">测光</span><span class="chip">白平衡</span><span class="chip">对焦点</span><span class="chip">GPS</span><span class="chip">文件大小</span><button class="btn primary sm" data-viewer-done>完成</button></div>
+        <div class="v-info">
+          <h4>固定显示<span>拖动排序</span></h4>
+          <div class="field-row pinned"><span class="grip"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span><span class="l">曝光</span><span class="v">f/2.8 · 1/500 · ISO 200</span><button class="pin" aria-label="取消固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+          <div class="field-row pinned"><span class="grip"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span><span class="l">焦段</span><span class="v">35 mm</span><button class="pin" aria-label="取消固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+          <div class="field-row pinned"><span class="grip"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span><span class="l">镜头</span><span class="v">XF 23mm F1.4</span><button class="pin" aria-label="取消固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+          <div class="field-row pinned"><span class="grip"><i class="ti ti-grip-vertical" aria-hidden="true"></i></span><span class="l">拍摄时间</span><span class="v">10月18日 16:42</span><button class="pin" aria-label="取消固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+          <h4>全部 EXIF<span>点图钉固定</span></h4>
+          <div class="field-row"><span class="grip"></span><span class="l">曝光补偿</span><span class="v">+0.3 EV</span><button class="pin" aria-label="固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+          <div class="field-row"><span class="grip"></span><span class="l">测光模式</span><span class="v">多区</span><button class="pin" aria-label="固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+          <div class="field-row"><span class="grip"></span><span class="l">白平衡</span><span class="v">自动</span><button class="pin" aria-label="固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+          <div class="field-row"><span class="grip"></span><span class="l">GPS</span><span class="v">35.01, 135.67</span><button class="pin" aria-label="固定"><i class="ti ti-pin" aria-hidden="true"></i></button></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+document.querySelectorAll('[data-theme-set]').forEach((b) => b.addEventListener('click', () => {
+  document.documentElement.dataset.theme = b.dataset.themeSet;
+  document.querySelectorAll('[data-theme-set]').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+}));
+document.querySelectorAll('.seg').forEach((seg) => seg.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b || b.dataset.themeSet) return;
+  seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+}));
+const viewer = document.getElementById('viewer');
+function setViewer(state) {
+  viewer.classList.remove('editing', 'info');
+  if (state) viewer.classList.add(state);
+  document.querySelectorAll('[data-viewer]').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.viewer === state)));
+}
+document.querySelectorAll('[data-viewer]').forEach((b) => b.addEventListener('click', () => setViewer(b.dataset.viewer)));
+document.querySelector('[data-viewer-done]').addEventListener('click', () => setViewer(''));
+document.querySelectorAll('.source').forEach((s) => s.addEventListener('click', () => document.querySelectorAll('.source').forEach((x) => x.setAttribute('aria-pressed', String(x === s)))));
+document.querySelectorAll('.switch input, .check input').forEach(() => {});
+</script>
+</body>
+</html>
