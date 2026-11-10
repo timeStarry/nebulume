@@ -36,6 +36,12 @@ import {
   Banner,
   Button,
   Chip,
+  DataTable,
+  Group,
+  Kbd,
+  ListRow,
+  SinglePage,
+  Switch,
   EmptyState,
   IconButton,
   PageHeader,
@@ -65,7 +71,8 @@ import ImportWorkspace from './ImportWorkspace';
 import Viewer, { type CullQueue, type ViewerMode } from './Viewer';
 import { readAutoAdvance, writeAutoAdvance } from './culling';
 import Icon from './Icon';
-import ThemeControl from './ThemeControl';
+import { setThemePreference, themeNotice, themePreference, type ThemePreference } from './theme';
+import { readOverlayFades, writeOverlayFades } from './overlay-layout';
 import CacheSettings from './CacheSettings';
 import CaptureIndexControl from './CaptureIndexControl';
 import OverflowMenu from './OverflowMenu';
@@ -2323,63 +2330,69 @@ function CullingSettings() {
   const [auto, setAuto] = createSignal(readAutoAdvance());
   const [pregenerate, setPregenerate] = createSignal(readPregenerate());
   const [watching, setWatching] = createSignal(readWatchLibraries());
+  const [fades, setFades] = createSignal(readOverlayFades(localStorage));
   return (
-    <section class="settings-panel">
-      <h2>浏览与选图</h2>
-      <div class="settings-row">
-        <div>
-          <strong>打标后自动下一张</strong>
-          <p>选图模式中打星或打旗后，确认动效结束即前进。选图工具栏可随时切换。</p>
-        </div>
-        <input
-          type="checkbox"
-          checked={auto()}
-          onChange={(event) => {
-            setAuto(event.currentTarget.checked);
-            writeAutoAdvance(event.currentTarget.checked);
-          }}
-          aria-label="打标后自动下一张"
-        />
-      </div>
+    <Group title="浏览与选片">
+      <ListRow
+        title="打标后自动下一张"
+        description="选片时打星或打旗后，确认动效结束即前进。查看器顶栏可随时切换。"
+        control={
+          <Switch
+            label="打标后自动下一张"
+            checked={auto()}
+            onChange={(value) => {
+              setAuto(value);
+              writeAutoAdvance(value);
+            }}
+          />
+        }
+      />
+      <ListRow
+        title="叠加信息随工具栏淡出"
+        description="关闭时四角信息一直显示，按 D 隐藏或显示。"
+        control={
+          <Switch
+            label="叠加信息随工具栏淡出"
+            checked={fades()}
+            onChange={(value) => {
+              setFades(value);
+              writeOverlayFades(localStorage, value);
+            }}
+          />
+        }
+      />
       <Show when={desktop}>
-        <div class="settings-row">
-          <div>
-            <strong>扫描后预生成缩略图</strong>
-            <p>
-              扫描本地图片库后，在后台按当前网格尺寸渲染缩略图，首次浏览更快。不会下载远端照片，占用的空间计入缓存上限。
-            </p>
-          </div>
-          <input
-            type="checkbox"
-            checked={pregenerate()}
-            onChange={(event) => {
-              setPregenerate(event.currentTarget.checked);
-              writePregenerate(event.currentTarget.checked);
-            }}
-            aria-label="扫描后预生成缩略图"
-          />
-        </div>
-        <div class="settings-row">
-          <div>
-            <strong>自动更新本地图片库</strong>
-            <p>
-              监视本地图片库文件夹，文件新增、删除、移动或改名后约 3
-              秒自动重新索引，评级与裁剪随照片保留。网络存储不受影响。
-            </p>
-          </div>
-          <input
-            type="checkbox"
-            checked={watching()}
-            onChange={(event) => {
-              setWatching(event.currentTarget.checked);
-              writeWatchLibraries(event.currentTarget.checked);
-              void watchLibraries(event.currentTarget.checked).catch(() => undefined);
-            }}
-            aria-label="自动更新本地图片库"
-          />
-        </div>
+        <ListRow
+          title="扫描后预生成缩略图"
+          description="扫描本地图片库后在后台按当前网格尺寸渲染缩略图，首次浏览更快。不下载远端照片，空间计入缓存上限。"
+          control={
+            <Switch
+              label="扫描后预生成缩略图"
+              checked={pregenerate()}
+              onChange={(value) => {
+                setPregenerate(value);
+                writePregenerate(value);
+              }}
+            />
+          }
+        />
+        <ListRow
+          title="自动更新本地图片库"
+          description="文件新增、删除、移动或改名后约 3 秒重新索引，评级与裁剪随照片保留。网络存储不受影响。"
+          control={
+            <Switch
+              label="自动更新本地图片库"
+              checked={watching()}
+              onChange={(value) => {
+                setWatching(value);
+                writeWatchLibraries(value);
+                void watchLibraries(value).catch(() => undefined);
+              }}
+            />
+          }
+        />
       </Show>
-    </section>
+    </Group>
   );
 }
 /** Up to four recent photos as a mosaic; an empty library shows its kind instead. */
@@ -2405,7 +2418,7 @@ const SETTINGS_SECTIONS = [
   { id: 'settings-cache', label: '缓存与离线' },
   { id: 'settings-shortcuts', label: '快捷键' },
   { id: 'settings-owners', label: '其他配置' },
-  { id: 'settings-about', label: '关于与诊断' },
+  { id: 'settings-about', label: '关于' },
 ] as const;
 /** Settings holds only app-wide preferences and this machine's resources.
  *  Everything owned by a location, library, card or preset is edited where it lives. */
@@ -2413,158 +2426,170 @@ function Settings(props: {
   system?: Record<string, unknown>;
   onNavigate: (section: WorkspaceSection) => void;
 }) {
-  const [current, setCurrent] = createSignal<string>(SETTINGS_SECTIONS[0].id);
-  let content!: HTMLDivElement;
-  onMount(() => {
-    // Highlight the section nearest the top of the scrolled settings page.
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
-        if (visible) setCurrent(visible.target.id);
-      },
-      { rootMargin: '0px 0px -60% 0px' },
-    );
-    for (const section of SETTINGS_SECTIONS) {
-      const element = content.querySelector(`#${section.id}`);
-      if (element) observer.observe(element);
-    }
-    onCleanup(() => observer.disconnect());
-  });
-  function jump(id: string) {
+  const fromHash = () =>
+    SETTINGS_SECTIONS.find((section) => location.hash === `#${section.id}`)?.id ??
+    SETTINGS_SECTIONS[0].id;
+  const [current, setCurrent] = createSignal<string>(fromHash());
+  function choose(id: string) {
     setCurrent(id);
-    content.querySelector(`#${id}`)?.scrollIntoView({ block: 'start' });
+    history.replaceState(null, '', `#${id}`);
   }
   const owners: { what: string; where: string; section: WorkspaceSection }[] = [
     { what: '连接地址、凭据、证书信任、测试连接', where: '位置', section: 'sources' },
     {
       what: '图片库名称、目录、RAW + JPEG 合并、扫描',
-      where: '图片库 → 库设置',
+      where: '图片库 → 侧栏的“更多”',
       section: 'libraries',
     },
     { what: '存储卡名称、绑定、默认导入方案', where: '导入', section: 'cards' },
     { what: '导入方案：目标图片库、目录整理、去重', where: '导入', section: 'cards' },
   ];
+  const shortcuts: { title: string; rows: [string, string][] }[] = [
+    {
+      title: '图片库网格',
+      rows: [
+        ['在主窗口打开照片', 'Enter / 双击'],
+        ['移动焦点（左右 / 上下一行）', '← → ↑ ↓'],
+        ['首张 / 末张 / 翻一屏', 'Home / End / PgUp PgDn'],
+        ['范围选择 / 增减选择 / 全选', 'Shift 点击 / ⌘ 点击 / ⌘ A'],
+        ['评级 / 清除评级（作用于所选）', '1–5 / 0'],
+        ['留用 / 淘汰 / 清除旗标（作用于所选）', 'P / X / U'],
+        ['移到废纸篓', '⌘ ⌫'],
+        ['照片菜单', '右键 / Shift F10'],
+        ['取消多选，否则关闭详情', 'Esc'],
+        ['显示或隐藏详情', 'I'],
+        ['搜索当前图片库', '⌘ F'],
+        ['照片 / 选片 / 概览', '⌘ 1 / 2 / 3'],
+        ['以当前筛选开始选片', 'Shift C'],
+      ],
+    },
+    {
+      title: '查看窗口',
+      rows: [
+        ['上一张 / 下一张', '← / →'],
+        ['评级 / 清除评级', '1–5 / 0'],
+        ['显示或隐藏叠加信息', 'D'],
+        ['影像信息', 'I'],
+        ['裁剪', 'C'],
+        ['显示或隐藏相机对焦点', 'P'],
+        ['适合窗口 ↔ 100%', 'Z / 双击'],
+        ['全屏', 'F'],
+        ['移到废纸篓', '⌘ ⌫'],
+        ['切换到选片', 'Shift C'],
+        ['退出裁剪 / 全屏 / 关闭', 'Esc'],
+      ],
+    },
+    {
+      title: '选图模式',
+      rows: [
+        ['打星 / 清除星级', '1–5 / 0'],
+        ['留用 / 淘汰 / 清除旗标', 'P / X / U'],
+        ['单张 / 对比视图', 'G / C'],
+        ['适合窗口 ↔ 1:1', 'Z'],
+        ['撤销上一次标记', '⌘ Z'],
+        ['显示或隐藏叠加信息', 'Tab / D'],
+        ['显示或隐藏相机对焦点', 'Shift F'],
+        ['切回普通查看', 'Shift C'],
+      ],
+    },
+  ];
   return (
-    <section class="workspace-page settings-workspace" aria-label="设置工作区">
-      <header class="workspace-heading">
-        <div>
-          <h1>设置</h1>
-        </div>
-      </header>
-      <div class="settings-layout">
-        <nav class="settings-nav" aria-label="设置分区">
-          <For each={SETTINGS_SECTIONS}>
-            {(section) => (
-              <button
-                class={`settings-nav-item ${current() === section.id ? 'active' : ''}`}
-                aria-current={current() === section.id ? 'true' : undefined}
-                onClick={() => jump(section.id)}
-              >
-                {section.label}
-              </button>
-            )}
-          </For>
-        </nav>
-        <div class="settings-content" ref={content}>
+    <section class="settings-workspace" aria-label="设置工作区">
+      <PageHeader
+        title="设置"
+        center={(narrow) => (
+          <Segmented
+            size="sm"
+            label="设置分组"
+            compact={false}
+            class={narrow ? 'settings-tabs--narrow' : undefined}
+            value={current()}
+            onChange={choose}
+            options={SETTINGS_SECTIONS.map((section) => ({
+              value: section.id,
+              label: section.label,
+            }))}
+          />
+        )}
+      />
+      <SinglePage class="settings-page">
+        <Show when={current() === 'settings-appearance'}>
           <div id="settings-appearance" class="settings-group">
-            <section class="settings-panel">
-              <h2>外观</h2>
-              <div class="settings-row">
-                <ThemeControl />
-              </div>
-            </section>
+            <Group title="外观">
+              <ListRow
+                title="外观主题"
+                labelFor="appearance-theme"
+                description={themeNotice() || undefined}
+                control={
+                  <Select
+                    id="appearance-theme"
+                    size="sm"
+                    value={themePreference()}
+                    onChange={(value) => setThemePreference(value as ThemePreference)}
+                    options={[
+                      { value: 'dark', label: '深色' },
+                      { value: 'light', label: '浅色' },
+                      { value: 'system', label: '跟随系统' },
+                    ]}
+                  />
+                }
+              />
+            </Group>
             <CullingSettings />
           </div>
+        </Show>
+        <Show when={current() === 'settings-cache'}>
           <div id="settings-cache" class="settings-group">
             <CacheSettings />
           </div>
-          <section id="settings-shortcuts" class="settings-panel">
-            <h2>快捷键</h2>
-            <h3>图片库网格</h3>
-            <div class="settings-shortcuts">
-              <span>独立查看照片</span>
-              <kbd>Enter / 双击</kbd>
-              <span>移动焦点（左右 / 上下一行）</span>
-              <kbd>← → ↑ ↓</kbd>
-              <span>首张 / 末张 / 翻一屏</span>
-              <kbd>Home / End / PgUp PgDn</kbd>
-              <span>范围选择 / 增减选择 / 全选</span>
-              <kbd>Shift 点击 / Ctrl ⌘ 点击 / Ctrl ⌘ A</kbd>
-              <span>评级 / 清除评级（作用于所选）</span>
-              <kbd>1–5 / 0</kbd>
-              <span>留用 / 淘汰 / 清除旗标（作用于所选）</span>
-              <kbd>P / X / U</kbd>
-              <span>照片菜单</span>
-              <kbd>右键 / Shift F10</kbd>
-              <span>取消多选，否则关闭信息</span>
-              <kbd>Esc</kbd>
-              <span>显示或隐藏信息</span>
-              <kbd>I</kbd>
-              <span>搜索当前图片库</span>
-              <kbd>Ctrl / ⌘ F</kbd>
-              <span>以当前筛选开始选图</span>
-              <kbd>Shift C</kbd>
-            </div>
-            <h3>查看窗口</h3>
-            <div class="settings-shortcuts">
-              <span>上一张 / 下一张</span>
-              <kbd>← / →</kbd>
-              <span>评级 / 清除评级</span>
-              <kbd>1–5 / 0</kbd>
-              <span>裁剪</span>
-              <kbd>C</kbd>
-              <span>显示或隐藏相机对焦点</span>
-              <kbd>P</kbd>
-              <span>全屏</span>
-              <kbd>F</kbd>
-              <span>切换到选图模式</span>
-              <kbd>Shift C</kbd>
-              <span>退出裁剪 / 全屏 / 关闭</span>
-              <kbd>Esc</kbd>
-            </div>
-            <h3>选图模式</h3>
-            <div class="settings-shortcuts">
-              <span>打星 / 清除星级</span>
-              <kbd>1–5 / 0</kbd>
-              <span>留用 / 淘汰 / 清除旗标</span>
-              <kbd>P / X / U</kbd>
-              <span>单张 / 对比视图</span>
-              <kbd>G / C</kbd>
-              <span>适合窗口 ↔ 1:1</span>
-              <kbd>Z</kbd>
-              <span>撤销上一次标记</span>
-              <kbd>Ctrl / ⌘ Z</kbd>
-              <span>显示或隐藏选图信息</span>
-              <kbd>Tab</kbd>
-              <span>显示或隐藏相机对焦点</span>
-              <kbd>Shift F</kbd>
-              <span>切回普通查看</span>
-              <kbd>Shift C</kbd>
-            </div>
-          </section>
-          <section id="settings-owners" class="settings-panel">
-            <h2>其他配置在哪里</h2>
-            <p>以下配置属于具体的位置、图片库或存储卡，在各自页面中修改。</p>
-            <ul class="settings-owners">
+        </Show>
+        <Show when={current() === 'settings-shortcuts'}>
+          <div id="settings-shortcuts" class="settings-group">
+            <For each={shortcuts}>
+              {(group) => (
+                <Group title={group.title} plain>
+                  <DataTable
+                    label={group.title}
+                    columns={[
+                      { key: 'what', label: '操作', render: (row: [string, string]) => row[0] },
+                      {
+                        key: 'keys',
+                        label: '按键',
+                        align: 'end',
+                        render: (row: [string, string]) => <Kbd>{row[1]}</Kbd>,
+                      },
+                    ]}
+                    rows={group.rows}
+                  />
+                </Group>
+              )}
+            </For>
+          </div>
+        </Show>
+        <Show when={current() === 'settings-owners'}>
+          <div id="settings-owners" class="settings-group">
+            <Group title="其他配置在哪里" meta="以下配置属于具体的位置、图片库或存储卡">
               <For each={owners}>
                 {(owner) => (
-                  <li>
-                    <span>{owner.what}</span>
-                    <button class="button small" onClick={() => props.onNavigate(owner.section)}>
-                      {owner.where}
-                    </button>
-                  </li>
+                  <ListRow
+                    title={owner.what}
+                    control={
+                      <Button size="sm" onClick={() => props.onNavigate(owner.section)}>
+                        {owner.where}
+                      </Button>
+                    }
+                  />
                 )}
               </For>
-            </ul>
-          </section>
+            </Group>
+          </div>
+        </Show>
+        <Show when={current() === 'settings-about'}>
           <div id="settings-about" class="settings-group">
             <AboutPanel system={props.system} />
           </div>
-        </div>
-      </div>
+        </Show>
+      </SinglePage>
     </section>
   );
 }

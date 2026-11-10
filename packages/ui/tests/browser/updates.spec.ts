@@ -75,6 +75,7 @@ async function openSettings(page: Page) {
     .getByRole('navigation', { name: '主导航' })
     .getByRole('button', { name: '设置', exact: true })
     .click();
+  await page.getByRole('tab', { name: '关于', exact: true }).click();
   return page.getByRole('region', { name: '关于与诊断' });
 }
 

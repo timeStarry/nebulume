@@ -10,6 +10,7 @@ import {
 } from './model';
 import { checkedConnection, credentialLabel, parentPrefix, sourceKind } from './workspace';
 import Icon from './Icon';
+import { Banner, Button, EmptyState, IconButton, PageHeader } from './ui';
 import StorageError from './StorageError';
 
 export default function StorageWorkspace(props: {
@@ -141,255 +142,259 @@ export default function StorageWorkspace(props: {
     }
   }
   return (
-    <section class="workspace-page storage-workspace" aria-label="位置工作区">
-      <header class="workspace-heading">
-        <div>
-          <h1>位置</h1>
-        </div>
-        <div class="workspace-heading-actions">
-          <button class="button" onClick={props.onRefresh} disabled={!!busy()}>
-            <Icon name="refresh" size={15} />
-            刷新
-          </button>
-          <button class="button primary" onClick={props.onAdd}>
-            <Icon name="plus" size={15} />
-            添加网络位置
-          </button>
-        </div>
-      </header>
-      <Show when={!desktop}>
-        <div class="workspace-note">
-          浏览器演示不访问本机目录或远程设备；请使用桌面版管理真实位置。
-        </div>
-      </Show>
-      <Show when={error()}>
-        <div class="workspace-message error" role="alert">
-          <StorageError
-            error={error()}
-            disabled={!!busy()}
-            onSettings={
-              props.sources.some((item) => item.id === errorSourceId())
-                ? () => props.onEdit(props.sources.find((item) => item.id === errorSourceId())!)
-                : undefined
-            }
+    <section class="storage-workspace" aria-label="位置工作区">
+      <PageHeader
+        title="位置"
+        subtitle="网络存储的连接、凭据与证书"
+        actions={
+          <>
+            <IconButton icon="refresh" label="刷新" onClick={props.onRefresh} disabled={!!busy()} />
+            <Button icon="plus" onClick={props.onAdd}>
+              添加网络位置
+            </Button>
+          </>
+        }
+      />
+      <div class="storage-page">
+        <Show when={!desktop}>
+          <Banner
+            tone="info"
+            role="note"
+            message="浏览器演示不访问本机目录或远程设备。"
+            detail="请使用桌面版管理真实位置。"
           />
-        </div>
-      </Show>
-      <Show when={notice()}>
-        <div class="workspace-message success" role="status">
-          {notice()}
-        </div>
-      </Show>
-      <div class="source-list">
-        <div class="source-list-head">
-          <span>存储位置</span>
-          <span>连接状态</span>
-          <span>凭据</span>
-          <span>操作</span>
-        </div>
-        <For
-          each={remoteSources()}
-          fallback={
-            <div class="workspace-empty">
-              <Icon name="cloud" size={30} />
-              <h2>还没有远端连接</h2>
-              <p>连接 WebDAV 或 S3 后浏览远端图片。本地目录可直接建立图片库。</p>
-              <button class="button" onClick={props.onAdd}>
-                添加第一个网络位置
-              </button>
-            </div>
-          }
-        >
-          {(item) => (
-            <article class={`source-row ${selected() === item.id ? 'selected' : ''}`}>
-              <div class="source-description">
-                <Icon name={item.kind === 'local' ? 'folder' : 'cloud'} size={22} />
-                <div>
-                  <strong>
-                    {item.name}
-                    <small>{sourceKind(item.kind)}</small>
-                  </strong>
-                  <p title={item.endpoint}>
-                    {item.endpoint}
-                    {item.root ? ` / ${item.root}` : ''}
-                  </p>
+        </Show>
+        <Show when={error()}>
+          <div class="workspace-message error" role="alert">
+            <StorageError
+              error={error()}
+              disabled={!!busy()}
+              onSettings={
+                props.sources.some((item) => item.id === errorSourceId())
+                  ? () => props.onEdit(props.sources.find((item) => item.id === errorSourceId())!)
+                  : undefined
+              }
+            />
+          </div>
+        </Show>
+        <Show when={notice()}>
+          <div class="workspace-message success" role="status">
+            {notice()}
+          </div>
+        </Show>
+        <div class="source-list">
+          <div class="source-list-head">
+            <span>存储位置</span>
+            <span>连接状态</span>
+            <span>凭据</span>
+            <span>操作</span>
+          </div>
+          <For
+            each={remoteSources()}
+            fallback={
+              <EmptyState
+                icon="server"
+                title="还没有远端连接"
+                description="连接 WebDAV 或 S3 后浏览远端图片。本地目录可直接建立图片库。"
+                actions={
+                  <Button variant="primary" onClick={props.onAdd}>
+                    添加第一个网络位置
+                  </Button>
+                }
+              />
+            }
+          >
+            {(item) => (
+              <article class={`source-row ${selected() === item.id ? 'selected' : ''}`}>
+                <div class="source-description">
+                  <Icon name={item.kind === 'local' ? 'folder' : 'cloud'} size={22} />
+                  <div>
+                    <strong>
+                      {item.name}
+                      <small>{sourceKind(item.kind)}</small>
+                    </strong>
+                    <p title={item.endpoint}>
+                      {item.endpoint}
+                      {item.root ? ` / ${item.root}` : ''}
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <span class={`source-status ${item.connected ? 'verified' : ''}`} role="status">
-                {busy() === item.id
-                  ? '正在验证…'
-                  : item.connected
-                    ? '已验证'
-                    : checks()[item.id]?.ok === false
-                      ? '连接失败'
-                      : '未验证'}
-              </span>
-              <span class="credential-status">{credentialLabel(item.credential_status)}</span>
-              <div class="source-row-actions">
-                <button class="button small" onClick={() => check(item)} disabled={!!busy()}>
-                  测试连接
-                </button>
-                <button class="button small" onClick={() => browse(item)} disabled={!!busy()}>
-                  浏览目录
-                </button>
-                <Show when={item.kind !== 'local'}>
+                <span class={`source-status ${item.connected ? 'verified' : ''}`} role="status">
+                  {busy() === item.id
+                    ? '正在验证…'
+                    : item.connected
+                      ? '已验证'
+                      : checks()[item.id]?.ok === false
+                        ? '连接失败'
+                        : '未验证'}
+                </span>
+                <span class="credential-status">{credentialLabel(item.credential_status)}</span>
+                <div class="source-row-actions">
+                  <button class="button small" onClick={() => check(item)} disabled={!!busy()}>
+                    测试连接
+                  </button>
+                  <button class="button small" onClick={() => browse(item)} disabled={!!busy()}>
+                    浏览目录
+                  </button>
+                  <Show when={item.kind !== 'local'}>
+                    <button
+                      class="button small"
+                      onClick={() => writeCheck(item)}
+                      disabled={!!busy()}
+                      title="写入并删除一个测试文件，确认可以安全导入到这里"
+                    >
+                      {item.write_capability === 'verified'
+                        ? '可导入'
+                        : item.write_capability === 'unsupported'
+                          ? '不可导入'
+                          : '测试写入'}
+                    </button>
+                  </Show>
+                  <button
+                    class="icon-button"
+                    onClick={() => props.onEdit(item)}
+                    disabled={!!busy()}
+                    aria-label={`${item.name} 连接设置`}
+                    title="连接设置 / 重连"
+                  >
+                    <Icon name="settings" size={16} />
+                  </button>
                   <button
                     class="button small"
-                    onClick={() => writeCheck(item)}
+                    onClick={() => props.onRemove(item)}
                     disabled={!!busy()}
-                    title="写入并删除一个测试文件，确认可以安全导入到这里"
+                    aria-label={`移除位置 ${item.name}`}
                   >
-                    {item.write_capability === 'verified'
-                      ? '可导入'
-                      : item.write_capability === 'unsupported'
-                        ? '不可导入'
-                        : '测试写入'}
+                    移除
                   </button>
+                </div>
+              </article>
+            )}
+          </For>
+        </div>
+        <Show when={source()}>
+          {(current) => (
+            <section class="source-directory">
+              <div class="directory-heading">
+                <div>
+                  <h2>{current().name}</h2>
+                  <span>
+                    {current().kind === 'local'
+                      ? '本地目录'
+                      : current().endpoint.startsWith('http:')
+                        ? 'HTTP · 未加密'
+                        : current().tls_certificate_sha256
+                          ? 'HTTPS · 已信任设备证书'
+                          : 'HTTPS · 标准校验'}
+                  </span>
+                </div>
+                <div>
+                  <button
+                    class="button primary small"
+                    disabled={!!busy()}
+                    onClick={() => props.onCreateLibrary(current(), prefix())}
+                  >
+                    <Icon name="plus" size={14} />
+                    从此目录建立图片库
+                  </button>
+                  <button
+                    class="icon-button"
+                    onClick={() => {
+                      request++;
+                      setSelected(undefined);
+                      setBusy('');
+                    }}
+                    aria-label="关闭目录浏览"
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                </div>
+              </div>
+              <div class="directory-path">
+                <button
+                  class="button small"
+                  disabled={!prefix() || !!busy()}
+                  onClick={() => browse(current(), parentPrefix(prefix()))}
+                >
+                  上一级
+                </button>
+                <button class="path-root" onClick={() => browse(current(), '')} disabled={!!busy()}>
+                  根目录
+                </button>
+                <Show when={prefix()}>
+                  <span>/</span>
+                  <code>{prefix()}</code>
                 </Show>
                 <button
                   class="icon-button"
-                  onClick={() => props.onEdit(item)}
+                  aria-label="刷新目录"
                   disabled={!!busy()}
-                  aria-label={`${item.name} 连接设置`}
-                  title="连接设置 / 重连"
+                  onClick={() => browse(current(), prefix())}
                 >
-                  <Icon name="settings" size={16} />
-                </button>
-                <button
-                  class="button small"
-                  onClick={() => props.onRemove(item)}
-                  disabled={!!busy()}
-                  aria-label={`移除位置 ${item.name}`}
-                >
-                  移除
+                  <Icon name="refresh" size={16} />
                 </button>
               </div>
-            </article>
-          )}
-        </For>
-      </div>
-      <Show when={source()}>
-        {(current) => (
-          <section class="source-directory">
-            <div class="directory-heading">
-              <div>
-                <h2>{current().name}</h2>
-                <span>
-                  {current().kind === 'local'
-                    ? '本地目录'
-                    : current().endpoint.startsWith('http:')
-                      ? 'HTTP · 未加密'
-                      : current().tls_certificate_sha256
-                        ? 'HTTPS · 已信任设备证书'
-                        : 'HTTPS · 标准校验'}
-                </span>
-              </div>
-              <div>
-                <button
-                  class="button primary small"
-                  disabled={!!busy()}
-                  onClick={() => props.onCreateLibrary(current(), prefix())}
+              <div class="directory-table">
+                <div class="directory-table-head">
+                  <span>名称</span>
+                  <span>大小</span>
+                  <span>操作</span>
+                </div>
+                <For
+                  each={entries()}
+                  fallback={
+                    <div class="table-empty">
+                      {busy() === 'browse'
+                        ? '正在读取目录…'
+                        : error()
+                          ? '目录读取未完成，请重试或调整连接设置。'
+                          : '此目录为空。'}
+                    </div>
+                  }
                 >
-                  <Icon name="plus" size={14} />
-                  从此目录建立图片库
-                </button>
-                <button
-                  class="icon-button"
-                  onClick={() => {
-                    request++;
-                    setSelected(undefined);
-                    setBusy('');
-                  }}
-                  aria-label="关闭目录浏览"
-                >
-                  <Icon name="close" size={16} />
-                </button>
-              </div>
-            </div>
-            <div class="directory-path">
-              <button
-                class="button small"
-                disabled={!prefix() || !!busy()}
-                onClick={() => browse(current(), parentPrefix(prefix()))}
-              >
-                上一级
-              </button>
-              <button class="path-root" onClick={() => browse(current(), '')} disabled={!!busy()}>
-                根目录
-              </button>
-              <Show when={prefix()}>
-                <span>/</span>
-                <code>{prefix()}</code>
-              </Show>
-              <button
-                class="icon-button"
-                aria-label="刷新目录"
-                disabled={!!busy()}
-                onClick={() => browse(current(), prefix())}
-              >
-                <Icon name="refresh" size={16} />
-              </button>
-            </div>
-            <div class="directory-table">
-              <div class="directory-table-head">
-                <span>名称</span>
-                <span>大小</span>
-                <span>操作</span>
-              </div>
-              <For
-                each={entries()}
-                fallback={
-                  <div class="table-empty">
-                    {busy() === 'browse'
-                      ? '正在读取目录…'
-                      : error()
-                        ? '目录读取未完成，请重试或调整连接设置。'
-                        : '此目录为空。'}
-                  </div>
-                }
-              >
-                {(entry) => (
-                  <div class="directory-entry">
-                    <button
-                      class="directory-entry-name"
-                      disabled={!entry.is_dir || !!busy()}
-                      onClick={() => browse(current(), entry.key)}
-                    >
-                      <Icon name={entry.is_dir ? 'folder' : 'photo'} size={17} />
-                      <span title={entry.key}>
-                        {entry.key.replace(/\/$/, '').split('/').pop() || entry.key}
+                  {(entry) => (
+                    <div class="directory-entry">
+                      <button
+                        class="directory-entry-name"
+                        disabled={!entry.is_dir || !!busy()}
+                        onClick={() => browse(current(), entry.key)}
+                      >
+                        <Icon name={entry.is_dir ? 'folder' : 'photo'} size={17} />
+                        <span title={entry.key}>
+                          {entry.key.replace(/\/$/, '').split('/').pop() || entry.key}
+                        </span>
+                      </button>
+                      <span>
+                        {entry.is_dir ? '文件夹' : entry.size ? bytes(entry.size) : '大小未知'}
                       </span>
-                    </button>
-                    <span>
-                      {entry.is_dir ? '文件夹' : entry.size ? bytes(entry.size) : '大小未知'}
-                    </span>
-                    <button
-                      class="button small"
-                      disabled={!!busy()}
-                      onClick={() =>
-                        entry.is_dir ? browse(current(), entry.key) : download(entry)
-                      }
-                    >
-                      {entry.is_dir ? '打开' : '下载副本'}
-                    </button>
-                  </div>
-                )}
-              </For>
-            </div>
-            <Show when={cursor()}>
-              <div class="load-more">
-                <button
-                  class="button"
-                  disabled={!!busy()}
-                  onClick={() => browse(current(), prefix(), true)}
-                >
-                  载入更多
-                </button>
+                      <button
+                        class="button small"
+                        disabled={!!busy()}
+                        onClick={() =>
+                          entry.is_dir ? browse(current(), entry.key) : download(entry)
+                        }
+                      >
+                        {entry.is_dir ? '打开' : '下载副本'}
+                      </button>
+                    </div>
+                  )}
+                </For>
               </div>
-            </Show>
-          </section>
-        )}
-      </Show>
+              <Show when={cursor()}>
+                <div class="load-more">
+                  <button
+                    class="button"
+                    disabled={!!busy()}
+                    onClick={() => browse(current(), prefix(), true)}
+                  >
+                    载入更多
+                  </button>
+                </div>
+              </Show>
+            </section>
+          )}
+        </Show>
+      </div>
     </section>
   );
 }

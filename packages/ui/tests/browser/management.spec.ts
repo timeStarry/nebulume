@@ -1389,3 +1389,22 @@ test('an unverified network target keeps 开始导入 disabled and says why in t
   await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
   await expect(aside.getByRole('button', { name: '开始导入' })).toBeDisabled();
 });
+
+test('settings sections switch with a segmented control and keep their content', async ({
+  page,
+}) => {
+  await fixture(page);
+  await nav(page, '设置').click();
+  const header = page.locator('.nl-page-header:visible');
+  await expect(header.getByRole('heading', { name: '设置' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '设置分区' })).toHaveCount(0);
+  await header.getByRole('tab', { name: '快捷键' }).click();
+  await expect(page.getByRole('table', { name: '查看窗口' })).toContainText('显示或隐藏叠加信息');
+  await expect(page.getByRole('table', { name: '选图模式' })).toContainText('显示或隐藏叠加信息');
+  await header.getByRole('tab', { name: '外观与浏览' }).click();
+  await page.getByRole('switch', { name: '叠加信息随工具栏淡出' }).click();
+  expect(await page.evaluate(() => localStorage.getItem('nebulume.viewer.overlay-fades'))).toBe(
+    'true',
+  );
+  await expect(page.getByRole('switch', { name: '打标后自动下一张' })).toBeChecked();
+});

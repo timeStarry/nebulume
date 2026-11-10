@@ -104,3 +104,32 @@
   left: 0;
   right: auto;
 }
+.settings-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.settings-workspace > .nl-page {
+  flex: 1;
+}
+.settings-group {
+  display: grid;
+  gap: var(--nl-s-6);
+}
+.storage-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.storage-page {
+  display: grid;
+  align-content: start;
+  gap: var(--nl-s-4);
+  min-height: 0;
+  padding: var(--nl-s-6);
+  overflow: auto;
+}

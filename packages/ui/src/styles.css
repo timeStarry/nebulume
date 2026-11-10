@@ -37,19 +37,18 @@ summary,
 a {
   -webkit-tap-highlight-color: transparent;
 }
-button:disabled,
 input:disabled,
 select:disabled,
 textarea:disabled {
-  color: var(--nl-text-disabled);
-  background: var(--nl-disabled-bg);
-  border-color: var(--nl-disabled-border);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button:disabled {
   cursor: not-allowed;
 }
 :where(button, input, select, textarea, summary, a, [tabindex]):focus-visible {
-  outline: var(--nl-focus-width) solid var(--nl-focus);
-  outline-offset: var(--nl-focus-offset);
-  box-shadow: 0 0 0 var(--nl-focus-offset) var(--nl-focus-gap);
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 2px;
 }
 input,
 select,
@@ -57,10 +56,27 @@ textarea {
   min-width: 0;
   min-height: var(--nl-control-height);
   color: var(--nl-text);
-  background: var(--nl-control-bg);
-  border: 1px solid var(--nl-control-border);
-  border-radius: var(--nl-radius-sm);
-  padding: 6px 10px;
+  background: var(--nl-side);
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-md);
+  padding: 0 10px;
+  font-size: var(--nl-t-13);
+}
+:where(input, select):not([type='checkbox']):not([type='radio']):not([type='range']) {
+  height: var(--nl-h-md);
+  min-height: 0;
+}
+:where(.nl-input, .nl-select) :is(input, select) {
+  height: 100%;
+  border: 0;
+  background: none;
+  padding: 0;
+}
+:where(input, select, textarea):hover:not(:disabled) {
+  border-color: var(--nl-line-strong);
+}
+textarea {
+  padding: var(--nl-s-2) 10px;
 }
 textarea {
   resize: vertical;
@@ -71,10 +87,10 @@ textarea::placeholder {
 }
 input[type='checkbox'],
 input[type='radio'] {
-  accent-color: var(--nl-selected-border);
-  width: 18px;
-  height: 18px;
-  min-height: 18px;
+  accent-color: var(--nl-text);
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
   padding: 0;
   flex-shrink: 0;
 }
@@ -133,83 +149,86 @@ a {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+/*
+ * Legacy class names still used by settings, locations and dialogs render exactly like the
+ * shared Button and IconButton (src/ui), so every page shows one button system.
+ */
 .button,
 .icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: var(--nl-control-height);
-  border: 1px solid var(--nl-control-border);
-  border-radius: var(--nl-radius-sm);
-  background: var(--nl-control-bg);
+  gap: 6px;
+  flex: none;
+  height: var(--nl-h-md);
+  min-height: 0;
+  padding: 0 var(--nl-s-3);
+  border: 0;
+  border-radius: var(--nl-r-md);
+  background: var(--nl-raised);
   color: var(--nl-text);
-  font-size: var(--nl-text-sm);
-  font-weight: var(--nl-weight-medium);
-  line-height: 1.4;
-  padding: 6px 12px;
+  font: inherit;
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+  line-height: 1;
   white-space: nowrap;
+  cursor: pointer;
   transition:
-    background var(--nl-duration-fast) var(--nl-ease-standard),
-    border-color var(--nl-duration-fast) var(--nl-ease-standard);
+    background var(--nl-d-fast) var(--nl-ease),
+    color var(--nl-d-fast) var(--nl-ease);
 }
-.button:hover:not(:disabled),
-.icon-button:hover:not(:disabled) {
-  background: var(--nl-control-hover);
+[data-theme='light'] .button:not(.primary):not(.danger) {
+  box-shadow: inset 0 0 0 1px var(--nl-line);
 }
-.button:active:not(:disabled),
-.icon-button:active:not(:disabled) {
-  background: var(--nl-control-active);
+.button:hover:not(:disabled) {
+  background: var(--nl-pressed);
 }
 .button.primary {
-  background: var(--nl-interactive);
-  border-color: var(--nl-interactive);
-  color: var(--nl-on-interactive);
+  background: var(--nl-primary);
+  color: var(--nl-inverse);
 }
 .button.primary:hover:not(:disabled) {
-  background: var(--nl-interactive-hover);
-  border-color: var(--nl-interactive-hover);
-}
-.button.primary:active:not(:disabled) {
-  background: var(--nl-interactive-active);
-  border-color: var(--nl-interactive-active);
+  background: var(--nl-primary-hover);
 }
 .button.small {
-  min-height: var(--nl-control-height-compact);
-  padding: 4px 10px;
-  font-size: var(--nl-text-xs);
+  height: var(--nl-h-sm);
+  padding: 0 10px;
+  font-size: var(--nl-t-12);
 }
-.button.active,
-.icon-button.active {
-  color: var(--nl-selected-text);
-  border-color: var(--nl-selected-border);
-  background: var(--nl-selected-bg);
-  box-shadow: inset 0 0 0 1px var(--nl-selected-border);
+.button.active {
+  background: var(--nl-pressed);
+  box-shadow: inset 0 0 0 1px var(--nl-ring);
 }
 .button.danger {
-  color: var(--nl-danger);
-  background: var(--nl-danger-bg);
-  border-color: var(--nl-danger);
+  background: var(--nl-tint-reject);
+  color: var(--nl-reject);
 }
 .button.danger:hover:not(:disabled) {
-  background: var(--nl-control-hover);
+  background: var(--nl-tint-reject-strong);
 }
 .icon-button {
-  width: var(--nl-control-height);
-  min-width: var(--nl-control-height);
-  height: var(--nl-control-height);
+  width: var(--nl-h-md);
   padding: 0;
-  flex-shrink: 0;
-  border-color: transparent;
   background: transparent;
-  color: var(--nl-text-secondary);
+  color: var(--nl-text-2);
+}
+.icon-button:hover:not(:disabled) {
+  background: var(--nl-hover);
+  color: var(--nl-text);
+}
+.icon-button.active {
+  background: var(--nl-raised);
+  color: var(--nl-text);
 }
 .button:disabled,
 .icon-button:disabled {
-  background: var(--nl-disabled-bg);
-  border-color: var(--nl-disabled-border);
-  color: var(--nl-text-disabled);
-  box-shadow: none;
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.button:focus-visible,
+.icon-button:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 2px;
 }
 .segmented {
   display: flex;
@@ -885,51 +904,46 @@ kbd {
 
 /* Dialogs and connection forms. */
 .modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
-  position: fixed;
-  inset: 0;
-  padding: 24px;
+  padding: var(--nl-s-6);
   background: var(--nl-scrim);
-  z-index: 100;
 }
 .modal {
-  width: 560px;
+  width: 520px;
   max-width: 100%;
   max-height: calc(100dvh - 48px);
   overflow: auto;
-  border: 1px solid var(--nl-border);
-  border-radius: var(--nl-radius-lg);
-  background: var(--nl-surface-raised);
-  box-shadow: var(--nl-shadow-dialog);
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-lg);
+  background: var(--nl-canvas);
 }
 .modal.wide {
-  width: 820px;
+  width: 760px;
 }
 .modal-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 24px;
-  border-bottom: 1px solid var(--nl-border);
+  gap: var(--nl-s-3);
+  padding: var(--nl-s-4) var(--nl-s-4) var(--nl-s-2) var(--nl-s-5);
 }
 .modal-header h2 {
-  font-size: var(--nl-text-lg);
-  line-height: 27px;
+  margin: 0;
+  font-size: var(--nl-t-16);
+  line-height: var(--nl-h-sm);
 }
 .modal-header p {
-  color: var(--nl-text-muted);
-  font-size: var(--nl-text-sm);
-  line-height: var(--nl-line-height-body);
-  margin-top: 8px;
-}
-.modal-header > .icon-button {
-  margin: -4px -8px 0 0;
+  margin: 2px 0 0;
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-13);
 }
 .dialog-form {
-  padding: 24px;
+  padding: var(--nl-s-2) var(--nl-s-5) var(--nl-s-5);
 }
 .dialog-form > label,
 .form-row > label,
@@ -980,20 +994,20 @@ kbd {
 }
 .modal-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-  border-top: 1px solid var(--nl-border);
-  padding: 20px 24px;
+  gap: var(--nl-s-2);
+  padding: var(--nl-s-3) var(--nl-s-4);
+  border-top: 1px solid var(--nl-line);
 }
 .dialog-form > .modal-footer {
-  margin: 24px -24px -24px;
+  margin: var(--nl-s-5) calc(-1 * var(--nl-s-5)) calc(-1 * var(--nl-s-5));
 }
 .modal-footer small {
-  color: var(--nl-text-muted);
   margin-right: auto;
-  font-size: var(--nl-text-xs);
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
 }
 .form-error,
 .success-message {
@@ -2073,14 +2087,6 @@ kbd {
   }
   .modal {
     max-height: calc(100dvh - 24px);
-  }
-  .modal-header,
-  .dialog-form {
-    padding: 20px;
-  }
-  .dialog-form > .modal-footer {
-    margin: 24px -20px -20px;
-    padding: 16px 20px;
   }
   .modal-footer .button {
     white-space: normal;

@@ -186,3 +186,22 @@
   color: var(--nl-text-3);
   text-align: center;
 }
+@media (max-width: 720px) {
+  .nl-page-header {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--nl-header-height);
+    padding-block: var(--nl-s-2);
+    row-gap: var(--nl-s-2);
+  }
+  .nl-page-center {
+    order: 3;
+    flex: 1 0 100%;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .nl-page-center::-webkit-scrollbar {
+    display: none;
+  }
+}

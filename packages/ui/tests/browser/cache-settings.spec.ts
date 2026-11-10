@@ -267,6 +267,8 @@ async function settings(page: Page) {
     .getByRole('navigation', { name: '主导航' })
     .getByRole('button', { name: '设置', exact: true })
     .click();
+  // Settings sections are tabs; cache lives under 缓存与离线.
+  await page.getByRole('tab', { name: '缓存与离线' }).click();
 }
 async function expectCompactDialogChoices(page: Page, choices: number) {
   const dialog = page.getByRole('dialog');
