@@ -3,7 +3,7 @@
 //! macOS asks `NSFileManager` directly: it reports where each item landed, so an
 //! undo moves that exact file back and no Finder automation permission is needed.
 //! Other platforms use the freedesktop / Windows recycle bin through `trash`.
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Moves `path` to the Trash. Returns where it now is when the platform says so.
@@ -24,6 +24,7 @@ pub fn put_back(original: &Path, trashed: Option<&Path>) -> Result<()> {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
+    use anyhow::bail;
     use objc2_foundation::{NSFileManager, NSString, NSURL};
 
     pub fn move_to_trash(path: &Path) -> Result<Option<PathBuf>> {
@@ -60,13 +61,43 @@ mod platform {
         Ok(None)
     }
 
+    /// The same place on disk, however the platform spells it (Windows short names,
+    /// letter case or a verbatim prefix in the recycle bin's record).
+    pub(super) fn same_place(a: &Path, b: &Path) -> bool {
+        if a == b {
+            return true;
+        }
+        let (Some(a_name), Some(b_name)) = (a.file_name(), b.file_name()) else {
+            return false;
+        };
+        let names_match = if cfg!(windows) {
+            a_name
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&b_name.to_string_lossy())
+        } else {
+            a_name == b_name
+        };
+        if !names_match {
+            return false;
+        }
+        match (a.parent(), b.parent()) {
+            (Some(a_dir), Some(b_dir)) => {
+                match (dunce::canonicalize(a_dir), dunce::canonicalize(b_dir)) {
+                    (Ok(a_dir), Ok(b_dir)) => a_dir == b_dir,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     #[cfg(any(windows, all(unix, not(target_os = "ios"), not(target_os = "android"))))]
     pub fn put_back(original: &Path, _trashed: Option<&Path>) -> Result<()> {
         let items =
             trash::os_limited::list().map_err(|error| anyhow::anyhow!("E_TRASH: {error}"))?;
         let item = items
             .into_iter()
-            .filter(|item| item.original_path() == original)
+            .filter(|item| same_place(&item.original_path(), original))
             .max_by_key(|item| item.time_deleted)
             .context("E_TRASH: The photo is no longer in the Trash")?;
         trash::os_limited::restore_all([item]).map_err(|error| anyhow::anyhow!("E_TRASH: {error}"))
@@ -76,6 +107,31 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_same_folder_spelled_differently_is_the_same_place() {
+        let folder = tempfile::tempdir().unwrap();
+        let canonical = dunce::canonicalize(folder.path()).unwrap();
+        // A non-canonical spelling of the same folder, through "." and "..".
+        let roundabout = canonical
+            .join(".")
+            .join("..")
+            .join(canonical.file_name().unwrap());
+        assert!(platform::same_place(
+            &canonical.join("a.jpg"),
+            &roundabout.join("a.jpg")
+        ));
+        assert!(!platform::same_place(
+            &canonical.join("a.jpg"),
+            &roundabout.join("b.jpg")
+        ));
+        let other = tempfile::tempdir().unwrap();
+        assert!(!platform::same_place(
+            &canonical.join("a.jpg"),
+            &other.path().join("a.jpg")
+        ));
+    }
 
     #[test]
     fn a_trashed_file_comes_back_to_its_place_and_never_overwrites() {
