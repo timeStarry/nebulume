@@ -35,3 +35,21 @@ test('switching theme swaps the canvas colour', async ({ page }) => {
     before,
   );
 });
+
+test('the rail lists library, import and locations in that order, settings at the bottom', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const rail = page.getByRole('navigation', { name: '主导航' });
+  const names = await rail
+    .getByRole('button')
+    .evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute('aria-label') || button.textContent!.trim()),
+    );
+  expect(names.slice(0, 3)).toEqual(['图片库', '导入', '位置']);
+  expect(names.at(-1)).toBe('设置');
+  const settings = await rail.getByRole('button', { name: '设置', exact: true }).boundingBox();
+  const railBox = await rail.boundingBox();
+  // Settings sits at the bottom of the rail, below 打开文件….
+  expect(settings!.y + settings!.height).toBeGreaterThan(railBox!.y + railBox!.height - 80);
+});

@@ -11,15 +11,12 @@ async function appearance(page: Page) {
 test('Appearance persists and uses a dark mark on a light surface', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('.manager-brand .brand-mark')).toHaveAttribute(
-    'src',
-    /brand-mark\.svg/,
-  );
+  await expect(page.locator('.brand-mark:visible')).toHaveAttribute('src', /brand-mark\.svg/);
   await (await appearance(page)).selectOption('light');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect
     .poll(async () => {
-      const source = await page.locator('.manager-brand .brand-mark').getAttribute('src');
+      const source = await page.locator('.brand-mark:visible').getAttribute('src');
       return source?.startsWith('data:')
         ? decodeURIComponent(source).includes("fill='#11151C'")
         : source?.includes('brand-mark-ink');

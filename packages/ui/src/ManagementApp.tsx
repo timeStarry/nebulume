@@ -31,6 +31,7 @@ import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, { type FolderAction } from './LibrarySidebar';
+import AppShell from './AppShell';
 import LibraryOverview from './LibraryOverview';
 import {
   exportPhotos,
@@ -46,7 +47,6 @@ import ImportWorkspace from './ImportWorkspace';
 import Viewer, { type CullQueue, type ViewerMode } from './Viewer';
 import { readAutoAdvance, writeAutoAdvance } from './culling';
 import Icon from './Icon';
-import BrandMark from './BrandMark';
 import ThemeControl from './ThemeControl';
 import CacheSettings from './CacheSettings';
 import CaptureIndexControl from './CaptureIndexControl';
@@ -1322,7 +1322,50 @@ export default function ManagementApp() {
     });
   });
   return (
-    <div class="workspace-app" classList={{ 'nav-open': navigationOpen() }}>
+    <AppShell
+      section={section()}
+      current={section() === 'libraries' && libraryId() ? undefined : section()}
+      onSection={(next) => navigate(next)}
+      onOpenFile={() => void openFile()}
+      openFileDisabled={!!busy()}
+      drawerOpen={navigationOpen()}
+      onToggleDrawer={() => {
+        const opening = !navigationOpen();
+        setNavigationOpen(opening);
+        if (opening)
+          requestAnimationFrame(() => {
+            // Wait until the drawer is visible before moving keyboard focus.
+            if (navigationOpen() && document.activeElement === navigationButton)
+              navigationElement
+                ?.querySelector<HTMLButtonElement>('button')
+                ?.focus({ preventScroll: true });
+          });
+      }}
+      onCloseDrawer={() => closeNavigation()}
+      drawerButtonRef={(el) => (navigationButton = el)}
+      railRef={(el) => (navigationElement = el)}
+      sidebar={
+        section() === 'libraries' ? (
+          <LibrarySidebar
+            libraries={visibleLibraries()}
+            currentId={section() === 'libraries' ? libraryId() : undefined}
+            folder={folder()}
+            folders={folders()}
+            usable={(library) => availabilityPresentation(library).usable}
+            unavailableLabel={(library) => availabilityPresentation(library).label}
+            location={libraryLocation}
+            demoLabel={!desktop}
+            onLibrary={(library) => enterLibrary(library)}
+            onFolder={(path) => {
+              closeNavigation();
+              setFolder(path);
+            }}
+            onFolderAction={(kind, path) => void folderAction(kind, path)}
+            onAddLibrary={() => newLibrary()}
+          />
+        ) : undefined
+      }
+    >
       <input
         ref={fileInput}
         class="visually-hidden"
@@ -1332,110 +1375,7 @@ export default function ManagementApp() {
         aria-label="选择浏览器演示图片"
         onChange={importBrowser}
       />
-      <header class="manager-titlebar">
-        <button
-          ref={navigationButton}
-          class="icon-button navigation-toggle"
-          aria-label={navigationOpen() ? '关闭主导航' : '打开主导航'}
-          aria-controls="manager-navigation"
-          aria-expanded={navigationOpen()}
-          onClick={() => {
-            const opening = !navigationOpen();
-            setNavigationOpen(opening);
-            if (opening)
-              requestAnimationFrame(() => {
-                // Wait until the drawer is visible before moving keyboard focus.
-                if (navigationOpen() && document.activeElement === navigationButton)
-                  navigationElement
-                    ?.querySelector<HTMLButtonElement>('button')
-                    ?.focus({ preventScroll: true });
-              });
-          }}
-        >
-          <Icon name={navigationOpen() ? 'close' : 'menu'} />
-        </button>
-        <div class="manager-brand">
-          <BrandMark size={32} />
-          <strong>Nebulume</strong>
-        </div>
-        <div>
-          <button class="button small" onClick={openFile} disabled={!!busy()}>
-            <Icon name="photo" size={15} />
-            打开文件…
-          </button>
-        </div>
-      </header>
-      <Show when={navigationOpen()}>
-        <button
-          class="navigation-scrim"
-          aria-label="关闭主导航遮罩"
-          tabindex="-1"
-          onClick={() => {
-            closeNavigation();
-          }}
-        />
-      </Show>
-      <nav
-        id="manager-navigation"
-        ref={navigationElement}
-        class="manager-navigation"
-        aria-label="主导航"
-      >
-        <For
-          each={
-            [
-              { id: 'libraries', label: '图片库', icon: 'grid' },
-              { id: 'sources', label: '位置', icon: 'cloud' },
-              { id: 'cards', label: '导入', icon: 'card' },
-              { id: 'settings', label: '设置', icon: 'settings' },
-            ] as const
-          }
-        >
-          {(item) => (
-            <>
-              <button
-                class={`workspace-nav-item ${section() === item.id && !(item.id === 'libraries' && libraryId()) ? 'active' : ''}`}
-                aria-label={item.id === 'libraries' ? item.label : undefined}
-                aria-current={
-                  section() === item.id && !(item.id === 'libraries' && libraryId())
-                    ? 'page'
-                    : undefined
-                }
-                onClick={() => navigate(item.id)}
-              >
-                <Icon name={item.icon} size={19} />
-                <span class="rail-label">{item.label}</span>
-              </button>
-            </>
-          )}
-        </For>
-        <button
-          class="workspace-nav-item rail-open"
-          aria-label="打开文件…"
-          onClick={openFile}
-          disabled={!!busy()}
-        >
-          <Icon name="photo" size={19} />
-          <span class="rail-label">打开文件…</span>
-        </button>
-      </nav>
-      <LibrarySidebar
-        libraries={visibleLibraries()}
-        currentId={section() === 'libraries' ? libraryId() : undefined}
-        folder={folder()}
-        folders={folders()}
-        usable={(library) => availabilityPresentation(library).usable}
-        unavailableLabel={(library) => availabilityPresentation(library).label}
-        location={libraryLocation}
-        demoLabel={!desktop}
-        onLibrary={(library) => enterLibrary(library)}
-        onFolder={(path) => {
-          closeNavigation();
-          setFolder(path);
-        }}
-        onFolderAction={(kind, path) => void folderAction(kind, path)}
-        onAddLibrary={() => newLibrary()}
-      />
+
       <Show when={dropActive()}>
         <div class="drop-overlay" aria-hidden="true">
           <div class="drop-overlay-card">
@@ -2379,7 +2319,7 @@ export default function ManagementApp() {
           />
         )}
       </Show>
-    </div>
+    </AppShell>
   );
 }
 
