@@ -562,7 +562,7 @@ test('library management is the default, metadata is on demand, photos open in p
   await expect(page.locator('.manager-navigation')).toBeVisible();
   await nav(page, '图片库').click();
   await expect(
-    page.locator('.nl-page-header').getByRole('heading', { name: '本地摄影' }),
+    page.locator('.nl-page-header:visible').getByRole('heading', { name: '本地摄影' }),
   ).toBeVisible();
   await servePreviewImages(page);
   await page.goto('/?viewer=1');
@@ -902,9 +902,12 @@ test('card imports target local libraries, retain review across navigation and c
     library_id: local.id,
   });
   expect(calls.filter((call) => call.command === 'library.scan')).toHaveLength(0);
+  await page.getByRole('button', { name: '历史', exact: true }).click();
   await expect(page.locator('.import-history-item')).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await page.screenshot({ path: 'test-results/management-import.png' });
   await page.getByRole('button', { name: '继续导入', exact: true }).click();
+  await page.getByRole('button', { name: '历史', exact: true }).click();
   await expect(page.locator('.import-history-item')).toHaveCount(1);
   await expect(page.locator('.import-history-item')).toContainText('部分完成');
 });
@@ -1121,7 +1124,7 @@ test('a registered card applies its default preset, and import leads straight in
   await expect(page.locator('.organize-example')).toContainText(
     'Z8/2026/2026-10-22/RAW/DSC_0001.NEF',
   );
-  await page.getByRole('button', { name: '设为这张卡的默认方案' }).click();
+  await page.getByLabel('导入方案').selectOption({ label: '设为这张卡的默认方案' });
   await expect
     .poll(() => calls.find((call) => call.command === 'card.update')?.params)
     .toEqual({ id: card.id, default_preset_id: preset.id });
@@ -1203,7 +1206,9 @@ test('a NAS import is planned by library id and blocked until the location passe
     .poll(() => calls.find((call) => call.command === 'import.plan')?.params)
     .toMatchObject({ library_id: remote.id });
   expect(calls.find((call) => call.command === 'import.plan')?.params.destination).toBeUndefined();
-  await expect(page.getByText('疑似重复', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('table', { name: '导入文件' }).getByText('疑似重复', { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText(/需要先在“位置”中对这个网络位置“测试写入”/)).toBeVisible();
   await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
   await expect(page.getByRole('button', { name: '开始导入' })).toBeDisabled();
@@ -1263,7 +1268,7 @@ test('library settings build content fingerprints, confirming before a NAS downl
 test('the library header has one entry per action', async ({ page }) => {
   await fixture(page);
   await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
-  const header = page.locator('.nl-page-header');
+  const header = page.locator('.nl-page-header:visible');
   await expect(header.getByRole('heading', { name: '本地摄影' })).toBeVisible();
   await expect(header.getByRole('tab', { name: '选片' })).toBeVisible();
   await expect(header.getByRole('button', { name: '选图' })).toHaveCount(0);
@@ -1285,7 +1290,7 @@ test('the app opens the last library and the sidebar menu holds the library acti
   await page.addInitScript(() => localStorage.setItem('nebulume.last-library', 'library-nas'));
   await fixture(page);
   await expect(
-    page.locator('.nl-page-header').getByRole('heading', { name: 'NAS 旅行' }),
+    page.locator('.nl-page-header:visible').getByRole('heading', { name: 'NAS 旅行' }),
   ).toBeVisible();
   await page.getByRole('button', { name: '本地摄影 更多操作' }).click();
   const menu = page.getByRole('menu', { name: '本地摄影 更多操作' });
@@ -1320,11 +1325,67 @@ test('at 1024×700 the header view switch goes icon-only and nothing overlaps', 
   await page.setViewportSize({ width: 1024, height: 700 });
   await fixture(page);
   await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
-  const header = page.locator('.nl-page-header');
+  const header = page.locator('.nl-page-header:visible');
   await expect(header.locator('.nl-seg')).toHaveClass(/nl-seg--compact/);
   const boxes = await header.evaluate((el) =>
     [...el.children].map((child) => child.getBoundingClientRect()).map((r) => [r.left, r.right]),
   );
   for (let i = 1; i < boxes.length; i++)
     expect(boxes[i][0]).toBeGreaterThanOrEqual(boxes[i - 1][1] - 0.5);
+});
+
+test('import shows one progress indicator and one primary action per step', async ({ page }) => {
+  await fixture(page);
+  await nav(page, '导入').click();
+  const header = page.locator('.nl-page-header:visible');
+  await expect(header.getByRole('heading', { name: '导入' })).toBeVisible();
+  await expect(header.getByRole('list', { name: '导入步骤' })).toBeVisible();
+  await expect(
+    page.locator('.import-stepper, .import-card-index, .import-route-arrow'),
+  ).toHaveCount(0);
+  await expect(page.locator('.nl-btn--primary:visible')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '生成导入计划' })).toHaveClass(/nl-btn--primary/);
+  // History moved into a drawer.
+  await expect(page.getByRole('complementary', { name: '导入历史' })).toHaveCount(0);
+  await header.getByRole('button', { name: '历史' }).click();
+  await expect(page.getByRole('dialog', { name: '导入历史' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '导入历史' })).toHaveCount(0);
+});
+
+test('the setup aside summarises the route and shows where files will land', async ({ page }) => {
+  await fixture(page);
+  await nav(page, '导入').click();
+  await page.getByLabel('目标图片库').selectOption(local.id);
+  const aside = page.getByRole('complementary', { name: '将会导入' });
+  await expect(aside).toContainText('本地摄影');
+  await expect(aside).toContainText('按拍摄日期');
+  await expect(aside.locator('.organize-example')).toContainText('DSC_0001.NEF');
+});
+
+test('an unverified network target keeps 开始导入 disabled and says why in the aside', async ({
+  page,
+}) => {
+  await fixture(page, (call) => {
+    if (call.command === 'import.plan')
+      return {
+        id: 'nas-plan',
+        source: call.params.source,
+        destination: '',
+        duplicate_count: 0,
+        total_bytes: 10,
+        warnings: [],
+        write_capability: 'unverified',
+        items: [{ source: 'E:\\a.png', relative_path: 'a.png', size: 10, status: 'pending' }],
+      };
+    return undefined;
+  });
+  await nav(page, '导入').click();
+  await page.getByLabel('目标图片库').selectOption(remote.id);
+  await page.getByRole('button', { name: /CAMERA CARD/ }).click();
+  await page.getByRole('button', { name: '生成导入计划' }).click();
+  const aside = page.getByRole('complementary', { name: '导入计划摘要' });
+  await expect(aside).toContainText('需要先');
+  await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
+  await expect(aside.getByRole('button', { name: '开始导入' })).toBeDisabled();
 });

@@ -1,0 +1,225 @@
+.import-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.import-workspace > .nl-split,
+.import-form,
+.import-form > .nl-split {
+  flex: 1;
+  min-height: 0;
+}
+.import-form {
+  display: flex;
+  flex-direction: column;
+}
+.import-banners {
+  display: grid;
+  gap: var(--nl-s-2);
+  padding: var(--nl-s-3) var(--nl-s-5) 0;
+}
+.import-sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--nl-s-2);
+  margin-bottom: var(--nl-s-2);
+}
+.import-sources:empty {
+  display: none;
+}
+.import-source {
+  display: grid;
+  gap: var(--nl-s-1);
+  padding: var(--nl-s-3) var(--nl-s-4);
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-lg);
+  background: var(--nl-side);
+  color: var(--nl-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--nl-d-fast) var(--nl-ease);
+}
+.import-source:hover:not(:disabled) {
+  border-color: var(--nl-line-strong);
+}
+.import-source[aria-pressed='true'] {
+  border-color: var(--nl-text);
+}
+.import-source:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 2px;
+}
+.import-source-top {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+}
+.import-source-top b {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-source-top svg {
+  color: var(--nl-text-2);
+}
+.import-source-meta {
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.import-source-rows,
+.card-identity {
+  margin-top: var(--nl-s-2);
+}
+.import-path-input {
+  width: 260px;
+}
+.import-target-select {
+  width: 260px;
+}
+.import-note {
+  margin: var(--nl-s-1) 0;
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.import-aside-title {
+  margin: 0;
+  font-size: var(--nl-t-14);
+}
+.import-summary {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.import-summary div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--nl-s-3);
+}
+.import-summary dt {
+  color: var(--nl-text-2);
+}
+.import-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-preview {
+  display: grid;
+  gap: 6px;
+}
+.import-preview > span,
+.import-preview > small,
+.import-foot-note {
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.import-foot-note {
+  text-align: center;
+}
+.import-example,
+.import-folder {
+  display: block;
+  padding: var(--nl-s-2) 10px;
+  overflow-wrap: anywhere;
+  border-radius: var(--nl-r-md);
+  background: var(--nl-side);
+  color: var(--nl-text-2);
+  font: 400 var(--nl-t-12) / 1.6 var(--nl-mono);
+}
+.import-example i {
+  padding: 0 2px;
+  color: var(--nl-text-3);
+  font-style: normal;
+}
+.import-example b {
+  color: var(--nl-text);
+  font-weight: 400;
+}
+.import-example b.file {
+  color: var(--nl-text-2);
+}
+.import-folder {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--nl-s-2);
+}
+.import-folder b {
+  color: var(--nl-text);
+  font-weight: 500;
+}
+.import-review-main,
+.import-result-main {
+  display: grid;
+  align-content: start;
+  gap: var(--nl-s-4);
+  min-width: 0;
+}
+.import-review-main > .nl-seg {
+  justify-self: start;
+}
+.review-path {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.review-path small {
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.date-source {
+  color: var(--nl-warn);
+  font-size: var(--nl-t-12);
+  font-style: normal;
+}
+.result-file-error {
+  color: var(--nl-reject);
+}
+.import-result-note {
+  margin: 0;
+  color: var(--nl-text-2);
+  text-align: center;
+}
+.import-history-item {
+  border-bottom: 1px solid var(--nl-line);
+}
+.import-history-item summary {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-3);
+  padding: var(--nl-s-3) 0;
+  list-style: none;
+  cursor: pointer;
+}
+.import-history-item summary::-webkit-details-marker {
+  display: none;
+}
+.import-history-text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+}
+.import-history-text small,
+.import-history-item > p {
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+}
+.import-history-count {
+  color: var(--nl-text-2);
+}
+.import-history-item > p {
+  margin: 0 0 var(--nl-s-2);
+  overflow-wrap: anywhere;
+}
+.import-history-item > p.history-failure {
+  color: var(--nl-reject);
+}

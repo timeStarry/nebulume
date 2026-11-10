@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, on } from 'solid-js';
+import { For, Show, createEffect, createSignal, on, type JSX } from 'solid-js';
 import { chooseDirectory, desktop, execute, listVolumes } from './api';
 import {
   bytes,
@@ -28,7 +28,30 @@ import {
   subfolderError,
 } from './workspace';
 import Icon from './Icon';
-import './import.css';
+import {
+  Badge,
+  Banner,
+  Button,
+  Checkbox,
+  DataTable,
+  Dialog,
+  Drawer,
+  EmptyState,
+  Field,
+  Group,
+  IconButton,
+  ListRow,
+  PageHeader,
+  Progress,
+  Segmented,
+  Select,
+  SplitPage,
+  StatusDot,
+  Steps,
+  Switch,
+  TextInput,
+} from './ui';
+import './import/import.css';
 
 const RULES_KEY = 'nebulume.import.rules';
 function readRules(): OrganizeRules {
@@ -74,6 +97,7 @@ export default function ImportWorkspace(props: {
   const [presets, setPresets] = createSignal<ImportPreset[]>([]);
   const [presetId, setPresetId] = createSignal('');
   const [presetName, setPresetName] = createSignal('');
+  const [savingPreset, setSavingPreset] = createSignal(false);
   const [identified, setIdentified] = createSignal<CardIdentification>();
   const [cardName, setCardName] = createSignal('');
   const [bindId, setBindId] = createSignal('');
@@ -391,213 +415,252 @@ export default function ImportWorkspace(props: {
     return index < 0 ? ['', path] : [path.slice(0, index + 1), path.slice(index + 1)];
   };
   const step = () => (result() ? 3 : plan() ? 2 : 1);
+  const [historyOpen, setHistoryOpen] = createSignal(false);
+  const canPlan = () =>
+    !busy() && desktop && !!targetId() && !!source().trim() && !subfolderError(rules().subfolder);
+  const canRun = () =>
+    !busy() &&
+    reviewed() &&
+    (!!counts().pending || (includeLikely() && !!counts().likely)) &&
+    !writeBlocked();
+  const writeStatus = (library?: Library) => locationOf(library)?.write_capability;
+  const dateLayouts: { value: NonNullable<OrganizeRules['date_layout']>; label: string }[] = [
+    { value: 'Y-M-D', label: '2026-10-22' },
+    { value: 'Y/Y-M-D', label: '2026 / 2026-10-22' },
+    { value: 'Y/M/Y-M-D', label: '2026 / 10 / 2026-10-22' },
+    { value: 'Y/M/D', label: '2026 / 10 / 22' },
+  ];
+  const Example = () => (
+    <code class="organize-example import-example">
+      <For each={organizeExample(rules()).split('/')}>
+        {(part, index) => (
+          <>
+            <Show when={index() > 0}>
+              <i>/</i>
+            </Show>
+            <b classList={{ file: index() === organizeExample(rules()).split('/').length - 1 }}>
+              {part}
+            </b>
+          </>
+        )}
+      </For>
+    </code>
+  );
+  const Summary = (summaryProps: { rows: [string, JSX.Element][] }) => (
+    <dl class="import-summary">
+      <For each={summaryProps.rows}>
+        {([label, value]) => (
+          <div>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        )}
+      </For>
+    </dl>
+  );
   return (
-    <section class="workspace-page import-workspace" aria-label="导入工作区">
-      <header class="import-header">
-        <div>
-          <h1>导入</h1>
-          <p>从存储卡或文件夹导入到图片库。原片始终保留在卡上，已有文件不会被覆盖。</p>
-        </div>
-        <ol class="import-stepper" aria-label="导入步骤">
-          <li classList={{ current: step() === 1, done: step() > 1 }}>
-            <span>1</span>选择
-          </li>
-          <li classList={{ current: step() === 2, done: step() > 2 }}>
-            <span>2</span>审核
-          </li>
-          <li classList={{ current: step() === 3 }}>
-            <span>3</span>完成
-          </li>
-        </ol>
-      </header>
-      <Show when={!desktop}>
-        <div class="workspace-note">
-          存储卡与持久导入任务需要桌面版。浏览器演示只支持选择单独图片进行查看。
-        </div>
-      </Show>
-      <Show when={error()}>
-        <div class="workspace-message error" role="alert">
-          {error()}
+    <section class="import-workspace" aria-label="导入工作区">
+      <PageHeader
+        title="导入"
+        center={() => (
+          <Steps label="导入步骤" steps={['设置', '核对', '完成']} current={step() - 1} />
+        )}
+        actions={
+          <Button variant="ghost" icon="history" onClick={() => setHistoryOpen(true)}>
+            历史
+          </Button>
+        }
+      />
+      <Show when={!desktop || error()}>
+        <div class="import-banners">
+          <Show when={!desktop}>
+            <Banner
+              tone="info"
+              message="存储卡与持久导入任务需要桌面版。"
+              detail="浏览器演示只支持选择单独图片进行查看。"
+            />
+          </Show>
+          <Show when={error()}>
+            <Banner tone="error" message={error()} onClose={() => setError('')} />
+          </Show>
         </div>
       </Show>
-      <div class="import-layout">
-        <div class="import-main" aria-busy={!!busy()}>
-          <Show when={!plan()}>
-            <form class="import-setup" onSubmit={makePlan}>
-              <div class="import-route">
-                <section class="import-card" aria-labelledby="import-source-title">
-                  <header class="import-card-head">
-                    <span class="import-card-index">1</span>
-                    <h2 id="import-source-title">从哪里导入</h2>
-                    <div class="import-card-tools">
-                      <label class="import-mini-check">
-                        <input
-                          type="checkbox"
-                          checked={showAll()}
-                          onChange={(e) => setShowAll(e.currentTarget.checked)}
-                        />
-                        所有卷
-                      </label>
-                      <button
-                        type="button"
-                        class="icon-button"
+      <Show when={!plan()}>
+        <form class="import-form" onSubmit={makePlan} aria-busy={!!busy()}>
+          <SplitPage
+            asideLabel="将会导入"
+            main={
+              <>
+                <Group
+                  title="从哪里导入"
+                  action={
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon="folder-open"
+                        onClick={chooseSource}
+                        disabled={!!busy() || !desktop}
+                      >
+                        其他文件夹…
+                      </Button>
+                      <IconButton
+                        size="sm"
+                        icon="refresh"
+                        label="刷新设备"
+                        disabled={!!busy() || !desktop}
                         onClick={() => {
                           void refreshVolumes();
                           void refreshHistory();
                         }}
-                        disabled={!!busy() || !desktop}
-                        aria-label="刷新设备"
-                        title="刷新设备"
-                      >
-                        <Icon name="refresh" size={16} />
-                      </button>
-                    </div>
-                  </header>
-                  <Show when={volumeError()}>
-                    <p class="field-note">设备检测未完成：{volumeError()}。仍可手动选择文件夹。</p>
-                  </Show>
-                  <div class="source-tiles">
+                      />
+                    </>
+                  }
+                  plain
+                >
+                  <div class="import-sources">
                     <For each={shownVolumes()}>
                       {(volume) => (
                         <button
                           type="button"
-                          class="source-tile"
-                          classList={{ selected: source() === volume.path }}
+                          class="import-source source-tile"
                           aria-pressed={source() === volume.path}
                           onClick={() => void identify(volume)}
                           disabled={!!busy()}
                         >
-                          <span class="source-tile-icon">
-                            <Icon name={volume.removable ? 'card' : 'folder'} size={20} />
+                          <span class="import-source-top">
+                            <Icon name={volume.removable ? 'sd' : 'device-laptop'} size={20} />
+                            <b>{volume.name || volume.path}</b>
+                            <Show when={source() === volume.path}>
+                              <Icon name="check" size={16} />
+                            </Show>
                           </span>
-                          <span class="source-tile-text">
-                            <strong>{volume.name || volume.path}</strong>
-                            <small>
-                              {volume.available_bytes != null
-                                ? `${bytes(volume.available_bytes)} 可用`
-                                : volume.removable
-                                  ? '可移动卷'
-                                  : volume.kind}
-                            </small>
+                          <span class="import-source-meta">
+                            {volume.available_bytes != null
+                              ? `${bytes(volume.available_bytes)} 可用`
+                              : volume.removable
+                                ? '可移动卷'
+                                : volume.kind}
                           </span>
-                          <Show when={source() === volume.path}>
-                            <Icon name="check" size={16} class="source-tile-check" />
-                          </Show>
                         </button>
                       )}
                     </For>
-                    <button
-                      type="button"
-                      class="source-tile other"
-                      classList={{ selected: !!source() && !selectedVolume() }}
-                      onClick={chooseSource}
-                      disabled={!!busy() || !desktop}
-                    >
-                      <span class="source-tile-icon">
-                        <Icon name="plus" size={20} />
-                      </span>
-                      <span class="source-tile-text">
-                        <strong>其他文件夹…</strong>
-                        <small>DCIM、读卡器或任意目录</small>
-                      </span>
-                    </button>
                   </div>
-                  <Show when={!shownVolumes().length && desktop}>
-                    <p class="field-note">未检测到存储卡。插卡后点刷新，或选择其他文件夹。</p>
+                  <Show when={volumeError()}>
+                    <p class="import-note">设备检测未完成：{volumeError()}。仍可手动选择文件夹。</p>
                   </Show>
-                  <label class="import-path">
-                    <span>来源路径</span>
-                    <input
-                      value={source()}
-                      onInput={(e) => {
-                        setSource(e.currentTarget.value);
-                        setIdentified(undefined);
-                      }}
-                      placeholder="/Volumes/NIKON 或 E:\"
-                      required
-                      disabled={!!busy()}
+                  <Show when={!shownVolumes().length && desktop}>
+                    <p class="import-note">未检测到存储卡。插卡后点刷新，或选择其他文件夹。</p>
+                  </Show>
+                  <div class="nl-list import-source-rows">
+                    <ListRow
+                      title="来源路径"
+                      labelFor="import-source-path"
+                      control={
+                        <TextInput
+                          id="import-source-path"
+                          size="sm"
+                          wrapClass="import-path-input"
+                          value={source()}
+                          onInput={(e) => {
+                            setSource(e.currentTarget.value);
+                            setIdentified(undefined);
+                          }}
+                          placeholder="/Volumes/NIKON 或 E:\"
+                          required
+                          disabled={!!busy()}
+                        />
+                      }
                     />
-                  </label>
+                    <ListRow
+                      title="显示所有卷"
+                      description="包括内置硬盘与网络卷"
+                      control={
+                        <Switch label="显示所有卷" checked={showAll()} onChange={setShowAll} />
+                      }
+                    />
+                  </div>
                   <Show when={identified()}>
-                    <div class="card-identity" classList={{ known: !!knownCard() }} role="status">
+                    <div
+                      class="nl-list card-identity"
+                      classList={{ known: !!knownCard() }}
+                      role="status"
+                    >
                       <Show
                         when={knownCard()}
                         fallback={
                           <>
-                            <div class="card-identity-head">
-                              <Icon name="card" size={18} />
-                              <div>
-                                <strong>未登记的存储卡</strong>
-                                <p>
-                                  登记后会在卡根目录写入一个很小的识别文件
-                                  .nebulume/volume.json，用来记住名称和默认方案。照片不会被改动。
-                                </p>
-                              </div>
-                            </div>
-                            <div class="card-identity-row">
-                              <label>
-                                <span>卡名称</span>
-                                <input
-                                  value={cardName()}
-                                  onInput={(e) => setCardName(e.currentTarget.value)}
-                                  disabled={!!busy()}
-                                />
-                              </label>
-                              <button
-                                class="button"
-                                type="button"
-                                disabled={!!busy() || !cardName().trim()}
-                                onClick={() => void registerCard(false)}
-                              >
-                                登记这张卡
-                              </button>
-                            </div>
-                            <Show when={cards().length}>
-                              <div class="card-identity-row">
-                                <label>
-                                  <span>
-                                    {candidates().length
-                                      ? '可能是已登记的卡（格式化会丢失识别文件）'
-                                      : '或绑定到已有记录'}
-                                  </span>
-                                  <select
-                                    value={bindId()}
-                                    onChange={(e) => setBindId(e.currentTarget.value)}
+                            <ListRow
+                              leading="sd"
+                              title="未登记的存储卡"
+                              description="登记后会在卡根目录写入一个很小的识别文件 .nebulume/volume.json，用来记住名称和默认方案。照片不会被改动。也可以不登记，直接按本次设置导入。"
+                            />
+                            <ListRow
+                              title="卡名称"
+                              labelFor="import-card-name"
+                              control={
+                                <>
+                                  <TextInput
+                                    id="import-card-name"
+                                    size="sm"
+                                    value={cardName()}
+                                    onInput={(e) => setCardName(e.currentTarget.value)}
                                     disabled={!!busy()}
+                                  />
+                                  <Button
+                                    size="sm"
+                                    disabled={!!busy() || !cardName().trim()}
+                                    onClick={() => void registerCard(false)}
                                   >
-                                    <option value="">选择已登记的卡</option>
-                                    <For each={cards()}>
-                                      {(card) => (
-                                        <option value={card.id}>
-                                          {card.name}
-                                          {candidates().some((item) => item.id === card.id)
-                                            ? '（可能匹配）'
-                                            : ''}
-                                        </option>
-                                      )}
-                                    </For>
-                                  </select>
-                                </label>
-                                <button
-                                  class="button"
-                                  type="button"
-                                  disabled={!!busy() || !bindId()}
-                                  onClick={() => void registerCard(true)}
-                                >
-                                  绑定到此记录
-                                </button>
-                              </div>
+                                    登记这张卡
+                                  </Button>
+                                </>
+                              }
+                            />
+                            <Show when={cards().length}>
+                              <ListRow
+                                title={
+                                  candidates().length ? '可能是已登记的卡' : '或绑定到已有记录'
+                                }
+                                description={
+                                  candidates().length ? '格式化会丢失识别文件' : undefined
+                                }
+                                control={
+                                  <>
+                                    <Select
+                                      size="sm"
+                                      aria-label="绑定到已登记的卡"
+                                      value={bindId()}
+                                      onChange={setBindId}
+                                      disabled={!!busy()}
+                                      options={[
+                                        { value: '', label: '选择已登记的卡' },
+                                        ...cards().map((card) => ({
+                                          value: card.id,
+                                          label: `${card.name}${candidates().some((item) => item.id === card.id) ? '（可能匹配）' : ''}`,
+                                        })),
+                                      ]}
+                                    />
+                                    <Button
+                                      size="sm"
+                                      disabled={!!busy() || !bindId()}
+                                      onClick={() => void registerCard(true)}
+                                    >
+                                      绑定到此记录
+                                    </Button>
+                                  </>
+                                }
+                              />
                             </Show>
-                            <p class="field-note">也可以不登记，直接按本次设置导入。</p>
                           </>
                         }
                       >
                         {(card) => (
-                          <div class="card-identity-head">
-                            <Icon name="card" size={18} />
-                            <div>
-                              <strong>{card().name}</strong>
-                              <p>
+                          <ListRow
+                            leading="sd"
+                            title={card().name}
+                            description={
+                              <>
                                 {card().last_import_at
                                   ? `上次导入 ${displayDate(card().last_import_at!)}`
                                   : '尚未从这张卡导入'}
@@ -606,403 +669,357 @@ export default function ImportWorkspace(props: {
                                   {presets().find((item) => item.id === card().default_preset_id)
                                     ?.name || ''}
                                 </Show>
-                              </p>
-                            </div>
-                          </div>
+                              </>
+                            }
+                          />
                         )}
                       </Show>
                     </div>
                   </Show>
-                </section>
-                <div class="import-route-arrow" aria-hidden="true">
-                  <Icon name="right" size={20} />
-                </div>
-                <section class="import-card" aria-labelledby="import-target-title">
-                  <header class="import-card-head">
-                    <span class="import-card-index">2</span>
-                    <h2 id="import-target-title">导入到</h2>
-                  </header>
-                  <label class="import-field">
-                    <span>目标图片库</span>
-                    <select
-                      value={targetId()}
-                      onChange={(e) => setTargetId(e.currentTarget.value)}
-                      required
-                      disabled={!!busy()}
-                    >
-                      <option value="" disabled>
-                        选择图片库
-                      </option>
-                      <For each={targets()}>
-                        {(library) => (
-                          <option value={library.id}>
-                            {library.name} — {libraryLocation(library)}
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                  </label>
-                  <Show
-                    when={selectedTarget()}
-                    fallback={
-                      <div class="target-empty">
-                        <p>还没有可导入的图片库。</p>
-                        <button class="button" type="button" onClick={props.onCreateLibrary}>
-                          建立图片库
-                        </button>
-                      </div>
+                </Group>
+                <Group title="导入到">
+                  <ListRow
+                    title="目标图片库"
+                    labelFor="import-target"
+                    description={
+                      selectedTarget()
+                        ? libraryLocation(selectedTarget()!)
+                        : '还没有可导入的图片库。'
                     }
-                  >
+                    control={
+                      <Show
+                        when={targets().length}
+                        fallback={
+                          <Button size="sm" onClick={props.onCreateLibrary}>
+                            新建图片库
+                          </Button>
+                        }
+                      >
+                        <Select
+                          id="import-target"
+                          aria-label="目标图片库"
+                          value={targetId()}
+                          onChange={setTargetId}
+                          required
+                          disabled={!!busy()}
+                          wrapClass="import-target-select"
+                          options={[
+                            { value: '', label: '选择图片库', disabled: true },
+                            ...targets().map((library) => ({
+                              value: library.id,
+                              label: `${library.name} — ${libraryLocation(library)}`,
+                            })),
+                          ]}
+                        />
+                      </Show>
+                    }
+                  />
+                  <Show when={selectedTarget()}>
                     {(library) => (
-                      <div class="target-summary">
-                        <span class="target-summary-icon">
-                          <Icon name={isRemoteLibrary(library()) ? 'cloud' : 'folder'} size={22} />
-                        </span>
-                        <div class="target-summary-text">
-                          <strong>{library().name}</strong>
-                          <small title={libraryLocation(library())}>
-                            {libraryLocation(library())}
-                          </small>
-                          <div class="target-badges">
-                            <span class="import-badge">{sourceKind(library().source_kind)}</span>
-                            <span
-                              class="import-badge"
-                              classList={{
-                                good: library().availability === 'online',
-                                bad: !availabilityPresentation(library()).usable,
-                              }}
-                            >
-                              {availabilityPresentation(library()).label}
-                            </span>
+                      <ListRow
+                        title="位置"
+                        description={sourceKind(library().source_kind)}
+                        control={
+                          <>
+                            <StatusDot
+                              showLabel
+                              state={
+                                library().availability === 'online'
+                                  ? 'ok'
+                                  : availabilityPresentation(library()).usable
+                                    ? 'off'
+                                    : 'bad'
+                              }
+                              label={availabilityPresentation(library()).label}
+                            />
                             <Show when={isRemoteLibrary(library())}>
-                              <span
-                                class="import-badge"
-                                classList={{
-                                  good: locationOf(library())?.write_capability === 'verified',
-                                  bad: locationOf(library())?.write_capability === 'unsupported',
-                                  warn:
-                                    !locationOf(library())?.write_capability ||
-                                    locationOf(library())?.write_capability === 'unverified',
-                                }}
+                              <Badge
+                                tone={
+                                  writeStatus(library()) === 'verified'
+                                    ? 'pick'
+                                    : writeStatus(library()) === 'unsupported'
+                                      ? 'reject'
+                                      : 'warn'
+                                }
                               >
-                                {locationOf(library())?.write_capability === 'verified'
+                                {writeStatus(library()) === 'verified'
                                   ? '可写入'
-                                  : locationOf(library())?.write_capability === 'unsupported'
+                                  : writeStatus(library()) === 'unsupported'
                                     ? '不可写入'
                                     : '需测试写入'}
-                              </span>
+                              </Badge>
                             </Show>
-                          </div>
-                        </div>
-                      </div>
+                          </>
+                        }
+                      />
                     )}
                   </Show>
                   <Show
                     when={
                       isRemoteLibrary(selectedTarget()) &&
-                      locationOf(selectedTarget())?.write_capability !== 'verified' &&
+                      writeStatus(selectedTarget()) !== 'verified' &&
                       props.onOpenLocations
                     }
                   >
-                    <p class="field-note target-hint">
-                      导入到网络位置前，需要先在“位置”中测试写入。
-                      <button type="button" class="link-button" onClick={props.onOpenLocations}>
-                        去测试写入
-                      </button>
-                    </p>
-                  </Show>
-                  <label class="import-switch">
-                    <input
-                      type="checkbox"
-                      checked={deduplicate()}
-                      onChange={(e) => setDeduplicate(e.currentTarget.checked)}
-                      disabled={!!busy()}
-                    />
-                    <span>
-                      跳过图片库里已有的照片
-                      <small>按文件内容判断，同名不同内容会另存</small>
-                    </span>
-                  </label>
-                </section>
-              </div>
-              <section class="import-card organize" aria-labelledby="import-organize-title">
-                <header class="import-card-head">
-                  <span class="import-card-index">3</span>
-                  <h2 id="import-organize-title">怎么整理</h2>
-                  <div class="import-card-tools preset-tools">
-                    <label class="import-inline-field">
-                      <span>导入方案</span>
-                      <select
-                        value={presetId()}
-                        onChange={(e) =>
-                          e.currentTarget.value
-                            ? applyPreset(e.currentTarget.value)
-                            : setPresetId('')
-                        }
-                        disabled={!!busy()}
-                      >
-                        <option value="">手动设置</option>
-                        <For each={presets()}>
-                          {(preset) => <option value={preset.id}>{preset.name}</option>}
-                        </For>
-                      </select>
-                    </label>
-                    <Show when={knownCard()}>
-                      <button
-                        class="button small"
-                        type="button"
-                        disabled={
-                          !!busy() || knownCard()!.default_preset_id === (presetId() || null)
-                        }
-                        onClick={() => void setCardDefault()}
-                      >
-                        {presetId() ? '设为这张卡的默认方案' : '清除这张卡的默认方案'}
-                      </button>
-                    </Show>
-                  </div>
-                </header>
-                <div class="organize-preview">
-                  <span>导入后的位置示例</span>
-                  <code class="organize-example">
-                    <For each={organizeExample(rules()).split('/')}>
-                      {(part, index) => (
-                        <>
-                          <Show when={index() > 0}>
-                            <i>/</i>
-                          </Show>
-                          <b
-                            classList={{
-                              file: index() === organizeExample(rules()).split('/').length - 1,
-                            }}
-                          >
-                            {part}
-                          </b>
-                        </>
-                      )}
-                    </For>
-                  </code>
-                  <small>
-                    <Show
-                      when={rules().date_basis === 'capture' && rules().unknown_date === 'folder'}
-                    >
-                      没有拍摄时间的文件放入 unknown-date。
-                    </Show>
-                    <Show when={rules().date_basis === 'import'}>导入日在生成计划时确定。</Show>
-                    文件名不会改变。
-                  </small>
-                </div>
-                <fieldset class="organize-grid" disabled={!!busy()}>
-                  <div class="organize-field wide">
-                    <span id="date-basis-label">分类依据</span>
-                    <div class="segmented" role="radiogroup" aria-labelledby="date-basis-label">
-                      <For each={['capture', 'import', 'preserve', 'none'] as const}>
-                        {(basis) => (
-                          <button
-                            type="button"
-                            role="radio"
-                            aria-checked={rules().date_basis === basis}
-                            classList={{ active: rules().date_basis === basis }}
-                            onClick={() => updateRules({ date_basis: basis })}
-                          >
-                            {basisName(basis)}
-                          </button>
-                        )}
-                      </For>
-                    </div>
-                  </div>
-                  <Show when={rules().date_basis === 'capture' || rules().date_basis === 'import'}>
-                    <label class="organize-field">
-                      <span>日期层级</span>
-                      <select
-                        value={rules().date_layout}
-                        onChange={(e) =>
-                          updateRules({
-                            date_layout: e.currentTarget.value as OrganizeRules['date_layout'],
-                          })
-                        }
-                      >
-                        <option value="Y-M-D">2026-10-22</option>
-                        <option value="Y/Y-M-D">2026 / 2026-10-22</option>
-                        <option value="Y/M/Y-M-D">2026 / 10 / 2026-10-22</option>
-                        <option value="Y/M/D">2026 / 10 / 22</option>
-                      </select>
-                    </label>
-                  </Show>
-                  <label class="organize-field">
-                    <span>子目录（可选）</span>
-                    <input
-                      value={rules().subfolder}
-                      onInput={(e) => updateRules({ subfolder: e.currentTarget.value.trim() })}
-                      placeholder="例如 Camera/Z8"
-                      aria-invalid={!!subfolderError(rules().subfolder)}
-                    />
-                  </label>
-                  <label class="import-switch">
-                    <input
-                      type="checkbox"
-                      checked={rules().type_split === 'by_kind'}
-                      onChange={(e) =>
-                        updateRules({ type_split: e.currentTarget.checked ? 'by_kind' : 'none' })
+                    <ListRow
+                      title="写入测试"
+                      description="导入到网络位置前，需要先在“位置”中测试写入。"
+                      control={
+                        <Button size="sm" onClick={props.onOpenLocations}>
+                          去测试写入
+                        </Button>
                       }
                     />
-                    <span>
-                      按类型分目录
-                      <small>RAW / JPG / TIFF / OTHER，XMP 跟随 RAW</small>
-                    </span>
-                  </label>
-                  <Show when={rules().date_basis === 'capture'}>
-                    <label class="import-switch">
-                      <input
-                        type="checkbox"
-                        checked={rules().unknown_date === 'modified_time'}
-                        onChange={(e) =>
-                          updateRules({
-                            unknown_date: e.currentTarget.checked ? 'modified_time' : 'folder',
-                          })
-                        }
-                      />
-                      <span>
-                        无拍摄时间时用修改日期
-                        <small>计划中逐项标注，默认关闭</small>
-                      </span>
-                    </label>
                   </Show>
-                </fieldset>
-                <Show when={subfolderError(rules().subfolder)}>
-                  <p class="form-error">{subfolderError(rules().subfolder)}</p>
-                </Show>
-                <details class="preset-save">
-                  <summary>保存为导入方案…</summary>
-                  <div class="card-identity-row">
-                    <label>
-                      <span>方案名称</span>
-                      <input
-                        value={presetName()}
-                        onInput={(e) => setPresetName(e.currentTarget.value)}
-                        placeholder="例如 NAS 归档"
+                  <ListRow
+                    title="跳过图片库里已有的照片"
+                    description="按文件内容判断，同名不同内容会另存"
+                    control={
+                      <Switch
+                        label="跳过图片库里已有的照片"
+                        checked={deduplicate()}
+                        onChange={setDeduplicate}
                         disabled={!!busy()}
                       />
-                    </label>
-                    <button
-                      class="button"
-                      type="button"
-                      disabled={
-                        !!busy() ||
-                        !presetName().trim() ||
-                        !targetId() ||
-                        !!subfolderError(rules().subfolder)
-                      }
-                      onClick={() => void savePreset()}
-                    >
-                      保存方案
-                    </button>
-                  </div>
-                  <p class="field-note">方案记住目标图片库、整理方式和去重选项；同名会覆盖。</p>
-                </details>
-              </section>
-              <footer class="import-actionbar">
-                <div class="import-actionbar-summary">
-                  <Show
-                    when={busy()}
-                    fallback={
-                      <>
-                        <strong>{sourceLabel() || '选择来源'}</strong>
-                        <Icon name="right" size={14} />
-                        <strong>{selectedTarget()?.name || '选择图片库'}</strong>
-                        <span>· {basisName(rules().date_basis)}</span>
-                      </>
                     }
-                  >
-                    <span class="import-busy" role="status">
-                      {busy()}
-                    </span>
-                  </Show>
-                </div>
-                <button
-                  class="button primary"
-                  disabled={
-                    !!busy() || !desktop || !targetId() || !!subfolderError(rules().subfolder)
+                  />
+                </Group>
+                <Group
+                  title="怎么整理"
+                  action={
+                    <Select
+                      size="sm"
+                      aria-label="导入方案"
+                      value={presetId()}
+                      disabled={!!busy()}
+                      onChange={(value) => {
+                        if (value === '__save') {
+                          setPresetName('');
+                          setSavingPreset(true);
+                        } else if (value === '__card') void setCardDefault();
+                        else if (value) applyPreset(value);
+                        else setPresetId('');
+                      }}
+                      options={[
+                        { value: '', label: '手动设置' },
+                        ...presets().map((preset) => ({ value: preset.id, label: preset.name })),
+                        { value: '__save', label: '另存为方案…' },
+                        ...(knownCard() && knownCard()!.default_preset_id !== (presetId() || null)
+                          ? [
+                              {
+                                value: '__card',
+                                label: presetId() ? '设为这张卡的默认方案' : '清除这张卡的默认方案',
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
                   }
                 >
-                  生成导入计划
-                </button>
-              </footer>
-            </form>
-          </Show>
-          <Show when={plan() && !result()}>
-            <section class="import-review" aria-label="导入计划">
-              <div class="review-route">
-                <div>
-                  <span>来源</span>
-                  <strong>{sourceLabel() || plan()!.source}</strong>
-                  <small title={plan()!.source}>{plan()!.source}</small>
-                </div>
-                <Icon name="right" size={18} />
-                <div>
-                  <span>目标</span>
-                  <strong>{plannedTarget()?.name}</strong>
-                  <small>{plannedTarget() ? libraryLocation(plannedTarget()!) : ''}</small>
-                </div>
-              </div>
-              <div class="review-stats">
-                <div class="review-stat primary">
-                  <strong>{counts().pending}</strong>
-                  <span>待导入 · {bytes(plan()!.total_bytes)}</span>
-                </div>
-                <div class="review-stat">
-                  <strong>{counts().existing}</strong>
-                  <span>已在库中，跳过</span>
-                </div>
-                <Show when={counts().likely}>
-                  <div class="review-stat warn">
-                    <strong>{counts().likely}</strong>
-                    <span>疑似重复 · 未校验</span>
-                  </div>
-                </Show>
-                <div class="review-stat">
-                  <strong>{counts().all}</strong>
-                  <span>卡上照片</span>
-                </div>
-              </div>
-              <Show when={writeBlocked()}>
-                <div class="workspace-message error" role="alert">
-                  <span>
-                    {plan()!.write_capability === 'unsupported'
-                      ? '这个网络位置无法保证不覆盖已有文件，Nebulume 不会向它导入。'
-                      : '导入前需要先在“位置”中对这个网络位置“测试写入”，确认它能安全地新建文件且不覆盖已有内容。'}
-                  </span>
-                  <Show when={props.onOpenLocations && plan()!.write_capability === 'unverified'}>
-                    <button class="button small" type="button" onClick={props.onOpenLocations}>
-                      前往位置
-                    </button>
-                  </Show>
-                </div>
-              </Show>
-              <For each={plan()!.warnings || []}>
-                {(warning) => <p class="review-warning">{warning}</p>}
-              </For>
-              <Show when={counts().likely}>
-                <label class="import-switch likely">
-                  <input
-                    type="checkbox"
-                    checked={includeLikely()}
-                    onChange={(e) => setIncludeLikely(e.currentTarget.checked)}
-                    disabled={!!busy()}
+                  <ListRow
+                    title="分类依据"
+                    control={
+                      <Segmented
+                        size="sm"
+                        role="radiogroup"
+                        label="分类依据"
+                        value={rules().date_basis}
+                        onChange={(basis) => updateRules({ date_basis: basis })}
+                        options={(['capture', 'import', 'preserve', 'none'] as const).map(
+                          (basis) => ({
+                            value: basis,
+                            label: basisName(basis),
+                          }),
+                        )}
+                      />
+                    }
                   />
-                  <span>
-                    仍然导入疑似重复项
-                    <small>
-                      文件名、大小与拍摄日期相同，但内容未经校验。可在图片库中建立内容指纹以严格判重。
-                    </small>
-                  </span>
-                </label>
+                  <Show when={rules().date_basis === 'capture' || rules().date_basis === 'import'}>
+                    <ListRow
+                      title="日期层级"
+                      description={
+                        rules().date_basis === 'import' ? '导入日在生成计划时确定。' : undefined
+                      }
+                      control={
+                        <Select
+                          size="sm"
+                          aria-label="日期层级"
+                          value={rules().date_layout ?? 'Y-M-D'}
+                          onChange={(value) =>
+                            updateRules({ date_layout: value as OrganizeRules['date_layout'] })
+                          }
+                          options={dateLayouts}
+                        />
+                      }
+                    />
+                  </Show>
+                  <Show when={rules().date_basis === 'capture'}>
+                    <ListRow
+                      title="无拍摄时间时用修改日期"
+                      description="默认放进 unknown-date；打开后在计划中逐项标注"
+                      control={
+                        <Switch
+                          label="无拍摄时间时用修改日期"
+                          checked={rules().unknown_date === 'modified_time'}
+                          onChange={(on) =>
+                            updateRules({ unknown_date: on ? 'modified_time' : 'folder' })
+                          }
+                        />
+                      }
+                    />
+                  </Show>
+                  <ListRow
+                    title="子目录"
+                    labelFor="import-subfolder"
+                    description={subfolderError(rules().subfolder) || '可选，例如 Camera/Z8'}
+                    control={
+                      <TextInput
+                        id="import-subfolder"
+                        size="sm"
+                        aria-label="子目录（可选）"
+                        value={rules().subfolder ?? ''}
+                        onInput={(e) => updateRules({ subfolder: e.currentTarget.value.trim() })}
+                        placeholder="例如 Camera/Z8"
+                        invalid={!!subfolderError(rules().subfolder)}
+                      />
+                    }
+                  />
+                  <ListRow
+                    title="按类型分目录"
+                    description="RAW / JPG / TIFF / OTHER，XMP 跟随 RAW"
+                    control={
+                      <Switch
+                        label="按类型分目录"
+                        checked={rules().type_split === 'by_kind'}
+                        onChange={(on) => updateRules({ type_split: on ? 'by_kind' : 'none' })}
+                      />
+                    }
+                  />
+                </Group>
+              </>
+            }
+            aside={
+              <>
+                <h3 class="import-aside-title">将会导入</h3>
+                <Summary
+                  rows={[
+                    ['来源', sourceLabel() || '尚未选择'],
+                    ['目标', selectedTarget()?.name || '尚未选择'],
+                    ['整理', basisName(rules().date_basis)],
+                  ]}
+                />
+                <div class="import-preview">
+                  <span>导入后的位置示例</span>
+                  <Example />
+                  <small>文件名不会改变。</small>
+                </div>
+              </>
+            }
+            asideFooter={
+              <>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="lg"
+                  disabled={!canPlan()}
+                  busy={!!busy()}
+                >
+                  生成导入计划
+                </Button>
+                <span class="import-foot-note" role="status">
+                  {busy() || '下一步逐项列出，确认后才开始复制'}
+                </span>
+              </>
+            }
+          />
+        </form>
+      </Show>
+      <Show when={plan() && !result()}>
+        <SplitPage
+          class="import-review"
+          asideLabel="导入计划摘要"
+          main={
+            <section class="import-review-main" aria-label="导入计划">
+              <Segmented
+                size="sm"
+                label="按状态筛选"
+                value={filter()}
+                onChange={setFilter}
+                options={tabs().map(([value, label]) => ({ value, label }))}
+              />
+              <DataTable
+                label="导入文件"
+                empty="没有符合条件的文件。"
+                rows={visibleItems().slice(0, 200)}
+                columns={[
+                  {
+                    key: 'file',
+                    label: '文件',
+                    render: (item) => (
+                      <span class="review-path" title={item.source}>
+                        <small>{splitPath(item.relative_path)[0]}</small>
+                        {splitPath(item.relative_path)[1]}
+                        <Show
+                          when={
+                            item.date_source === 'modified_time' || item.date_source === 'unknown'
+                          }
+                        >
+                          <em class={`date-source ${item.date_source}`}>
+                            {dateSourceName(item.date_source)}
+                          </em>
+                        </Show>
+                      </span>
+                    ),
+                  },
+                  { key: 'size', label: '大小', align: 'end', render: (item) => bytes(item.size) },
+                  {
+                    key: 'status',
+                    label: '状态',
+                    align: 'end',
+                    render: (item) => (
+                      <Badge
+                        tone={
+                          item.status === 'pending'
+                            ? 'info'
+                            : item.status === 'likely_duplicate'
+                              ? 'warn'
+                              : item.status === 'failed'
+                                ? 'reject'
+                                : 'neutral'
+                        }
+                      >
+                        {statusName(item.status)}
+                      </Badge>
+                    ),
+                  },
+                ]}
+              />
+              <Show when={visibleItems().length > 200}>
+                <p class="import-note">显示前 200 项，共 {visibleItems().length} 项。</p>
               </Show>
+            </section>
+          }
+          aside={
+            <>
+              <h3 class="import-aside-title">导入计划</h3>
+              <Summary
+                rows={[
+                  ['来源', sourceLabel() || plan()!.source],
+                  ['目标', plannedTarget()?.name ?? ''],
+                  ['待导入', `${counts().pending} 张 · ${bytes(plan()!.total_bytes)}`],
+                  ['已在库中，跳过', `${counts().existing} 张`],
+                  ...(counts().likely
+                    ? ([['疑似重复', `${counts().likely} 张 · 未校验`]] as [string, JSX.Element][])
+                    : []),
+                  ['卡上照片', `${counts().all} 张`],
+                ]}
+              />
               <Show when={folders().length}>
-                <div class="review-folders">
+                <div class="import-preview">
                   <span>新文件将放入</span>
                   <For each={folders().slice(0, 6)}>
                     {([folder, count]) => (
-                      <code>
+                      <code class="import-folder">
                         {folder}
                         <b>{count}</b>
                       </code>
@@ -1013,197 +1030,217 @@ export default function ImportWorkspace(props: {
                   </Show>
                 </div>
               </Show>
-              <div class="review-files">
-                <div class="review-tabs" role="tablist" aria-label="按状态筛选">
-                  <For each={tabs()}>
-                    {([value, label]) => (
-                      <button
-                        type="button"
-                        role="tab"
-                        aria-selected={filter() === value}
-                        classList={{ active: filter() === value }}
-                        onClick={() => setFilter(value)}
-                      >
-                        {label}
-                      </button>
-                    )}
-                  </For>
-                </div>
-                <div class="review-list">
-                  <For
-                    each={visibleItems().slice(0, 200)}
-                    fallback={<p class="review-empty">没有符合条件的文件。</p>}
-                  >
-                    {(item) => (
-                      <div class={`review-row status-${item.status}`}>
-                        <span class="review-path" title={item.source}>
-                          <small>{splitPath(item.relative_path)[0]}</small>
-                          {splitPath(item.relative_path)[1]}
-                          <Show
-                            when={
-                              item.date_source === 'modified_time' || item.date_source === 'unknown'
-                            }
-                          >
-                            <em class={`date-source ${item.date_source}`}>
-                              {dateSourceName(item.date_source)}
-                            </em>
-                          </Show>
-                        </span>
-                        <span class="review-size">{bytes(item.size)}</span>
-                        <span class={`review-pill ${item.status}`}>{statusName(item.status)}</span>
-                      </div>
-                    )}
-                  </For>
-                </div>
-                <Show when={visibleItems().length > 200}>
-                  <p class="field-note">显示前 200 项，共 {visibleItems().length} 项。</p>
-                </Show>
-              </div>
-              <footer class="import-actionbar">
-                <label class="import-mini-check confirm">
-                  <input
-                    type="checkbox"
-                    checked={reviewed()}
-                    onChange={(e) => setReviewed(e.currentTarget.checked)}
-                    disabled={!!busy()}
-                  />
-                  我已核对来源、目标和导入计划
-                </label>
-                <Show when={busy()}>
-                  <span class="import-busy" role="status">
-                    {busy()}
-                  </span>
-                </Show>
-                <div class="import-actionbar-buttons">
-                  <button class="button" onClick={reset} disabled={!!busy()}>
-                    返回修改
-                  </button>
-                  <button
-                    class="button primary"
-                    onClick={run}
-                    disabled={
-                      !!busy() ||
-                      !reviewed() ||
-                      (!counts().pending && !(includeLikely() && counts().likely)) ||
-                      writeBlocked()
-                    }
-                  >
-                    开始导入
-                  </button>
-                </div>
-              </footer>
-            </section>
-          </Show>
-          <Show when={result()}>
-            <section
-              class="import-result"
-              classList={{ 'has-issues': result()!.status !== 'completed' }}
-              aria-label="导入结果"
-            >
-              <div class="import-result-hero">
-                <span class="import-result-icon">
-                  <Icon name={result()!.failed ? 'info' : 'check'} size={28} />
+              <Show when={writeBlocked()}>
+                <Banner
+                  tone="warn"
+                  message={
+                    plan()!.write_capability === 'unsupported'
+                      ? '这个网络位置无法保证不覆盖已有文件，Nebulume 不会向它导入。'
+                      : '导入前需要先在“位置”中对这个网络位置“测试写入”，确认它能安全地新建文件且不覆盖已有内容。'
+                  }
+                  action={
+                    <Show when={props.onOpenLocations && plan()!.write_capability === 'unverified'}>
+                      <Button size="sm" onClick={props.onOpenLocations}>
+                        前往位置
+                      </Button>
+                    </Show>
+                  }
+                />
+              </Show>
+              <For each={plan()!.warnings || []}>
+                {(warning) => <Banner tone="warn" message={warning} />}
+              </For>
+              <Show when={counts().likely}>
+                <Checkbox
+                  checked={includeLikely()}
+                  onChange={setIncludeLikely}
+                  disabled={!!busy()}
+                  help="文件名、大小与拍摄日期相同，但内容未经校验。可在图片库中建立内容指纹以严格判重。"
+                >
+                  仍然导入疑似重复项
+                </Checkbox>
+              </Show>
+            </>
+          }
+          asideFooter={
+            <>
+              <Show when={busy()}>
+                <Progress label={busy()} />
+                <span class="import-foot-note" role="status">
+                  {busy()}
                 </span>
-                <div>
-                  <h2>{statusName(result()!.status)}</h2>
-                  <p>
+              </Show>
+              <Checkbox checked={reviewed()} onChange={setReviewed} disabled={!!busy()}>
+                我已核对来源、目标和导入计划
+              </Checkbox>
+              <Button variant="primary" size="lg" onClick={run} disabled={!canRun()}>
+                开始导入
+              </Button>
+              <Button variant="ghost" onClick={reset} disabled={!!busy()}>
+                返回修改
+              </Button>
+            </>
+          }
+        />
+      </Show>
+      <Show when={result()}>
+        <SplitPage
+          class="import-result"
+          asideLabel="导入结果摘要"
+          main={
+            <section class="import-result-main" aria-label="导入结果">
+              <EmptyState
+                icon={result()!.failed ? 'alert-triangle' : 'circle-check'}
+                title={statusName(result()!.status)}
+                description={
+                  <>
                     已导入 {result()!.copied} 个文件到 {plannedTarget()?.name}
                     {result()!.duplicates ? `，跳过 ${result()!.duplicates} 个已有文件` : ''}
                     {result()!.failed ? `，${result()!.failed} 个失败` : ''}。卡上原片已保留。
-                  </p>
-                  <Show when={scanMessage()}>
-                    <p class="import-result-note" role="status">
-                      {scanMessage()}
-                    </p>
-                  </Show>
-                </div>
-              </div>
-              <div class="review-stats">
-                <div class="review-stat primary">
-                  <strong>{result()!.copied}</strong>
-                  <span>已导入</span>
-                </div>
-                <div class="review-stat">
-                  <strong>{result()!.duplicates}</strong>
-                  <span>已跳过</span>
-                </div>
-                <div class="review-stat" classList={{ bad: !!result()!.failed }}>
-                  <strong>{result()!.failed}</strong>
-                  <span>失败</span>
-                </div>
-              </div>
+                  </>
+                }
+              />
+              <Show when={scanMessage()}>
+                <p class="import-result-note" role="status">
+                  {scanMessage()}
+                </p>
+              </Show>
               <Show when={result()!.items.some((item) => item.status === 'failed')}>
-                <div class="review-list failures">
-                  <For each={result()!.items.filter((item) => item.status === 'failed')}>
-                    {(item) => (
-                      <div class="review-row status-failed">
+                <DataTable
+                  label="失败的文件"
+                  rows={result()!.items.filter((item) => item.status === 'failed')}
+                  columns={[
+                    {
+                      key: 'file',
+                      label: '文件',
+                      render: (item) => (
                         <span class="review-path">
                           {item.destination}
                           <small class="result-file-error">{item.error}</small>
                         </span>
-                        <span class="review-size">{bytes(item.size)}</span>
-                        <span class="review-pill failed">{statusName(item.status)}</span>
-                      </div>
-                    )}
-                  </For>
-                </div>
+                      ),
+                    },
+                    {
+                      key: 'size',
+                      label: '大小',
+                      align: 'end',
+                      render: (item) => bytes(item.size),
+                    },
+                  ]}
+                />
               </Show>
-              <footer class="import-actionbar">
-                <div class="import-actionbar-summary" />
-                <div class="import-actionbar-buttons">
-                  <button class="button" disabled={!!busy()} onClick={reset}>
-                    继续导入
-                  </button>
-                  <button
-                    class="button"
+            </section>
+          }
+          aside={
+            <>
+              <h3 class="import-aside-title">本次导入</h3>
+              <Summary
+                rows={[
+                  ['已导入', `${result()!.copied}`],
+                  ['已跳过', `${result()!.duplicates}`],
+                  ['失败', `${result()!.failed}`],
+                ]}
+              />
+            </>
+          }
+          asideFooter={
+            <>
+              <Show
+                when={result()?.batch?.asset_count && props.onCull}
+                fallback={
+                  <Button
+                    variant="primary"
+                    size="lg"
                     disabled={!!busy()}
                     onClick={() => plannedTarget() && props.onOpenLibrary(plannedTarget()!)}
                   >
                     查看目标图片库
-                  </button>
-                  <Show when={result()?.batch?.asset_count && props.onCull}>
-                    <button
-                      class="button primary"
-                      disabled={!!busy()}
-                      onClick={() => props.onCull!(plannedTarget()!, result()!.batch!)}
-                    >
-                      <Icon name="star" size={15} />
-                      开始选图（{result()!.batch!.asset_count} 张）
-                    </button>
-                  </Show>
-                </div>
-              </footer>
-            </section>
-          </Show>
-        </div>
-        <aside class="import-history" aria-label="导入历史">
-          <header>
-            <h2>导入历史</h2>
-            <Show when={historyJobs().length > 0}>
-              <span>{historyJobs().length}</span>
-            </Show>
-          </header>
+                  </Button>
+                }
+              >
+                <Button
+                  variant="primary"
+                  size="lg"
+                  icon="flag"
+                  disabled={!!busy()}
+                  onClick={() => props.onCull!(plannedTarget()!, result()!.batch!)}
+                >
+                  开始选图（{result()!.batch!.asset_count} 张）
+                </Button>
+                <Button
+                  disabled={!!busy()}
+                  onClick={() => plannedTarget() && props.onOpenLibrary(plannedTarget()!)}
+                >
+                  查看目标图片库
+                </Button>
+              </Show>
+              <Button variant="ghost" disabled={!!busy()} onClick={reset}>
+                继续导入
+              </Button>
+            </>
+          }
+        />
+      </Show>
+      <Show when={savingPreset()}>
+        <Dialog
+          title="另存为导入方案"
+          onClose={() => setSavingPreset(false)}
+          busy={!!busy()}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setSavingPreset(false)}>
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                disabled={
+                  !!busy() ||
+                  !presetName().trim() ||
+                  !targetId() ||
+                  !!subfolderError(rules().subfolder)
+                }
+                onClick={() => void savePreset().then(() => setSavingPreset(false))}
+              >
+                保存方案
+              </Button>
+            </>
+          }
+        >
+          <Field label="方案名称" help="方案记住目标图片库、整理方式和去重选项；同名会覆盖。">
+            {(id, describedBy) => (
+              <TextInput
+                id={id}
+                aria-describedby={describedBy}
+                value={presetName()}
+                onInput={(e) => setPresetName(e.currentTarget.value)}
+                placeholder="例如 NAS 归档"
+              />
+            )}
+          </Field>
+        </Dialog>
+      </Show>
+      <Show when={historyOpen()}>
+        <Drawer title="导入历史" onClose={() => setHistoryOpen(false)}>
           <For
             each={historyJobs()}
             fallback={
-              <div class="import-history-empty">
-                <Icon name="clock" size={22} />
-                <p>{result() ? '暂无其他导入记录' : '暂无导入记录'}</p>
-              </div>
+              <EmptyState icon="history" title={result() ? '暂无其他导入记录' : '暂无导入记录'} />
             }
           >
             {(job) => (
               <details class={`import-history-item ${job.status}`}>
                 <summary>
-                  <i aria-hidden="true" />
-                  <span>
-                    <strong>{statusName(job.status)}</strong>
+                  <StatusDot
+                    state={
+                      job.status === 'completed' ? 'ok' : job.status === 'failed' ? 'bad' : 'warn'
+                    }
+                    label={statusName(job.status)}
+                  />
+                  <span class="import-history-text">
+                    <b>{statusName(job.status)}</b>
                     <small>{displayDate(job.started_at)}</small>
                   </span>
-                  <em>
-                    {job.copied}
-                    <small> 张</small>
-                  </em>
+                  <span class="import-history-count">{job.copied} 张</span>
                 </summary>
                 <p>
                   复制 {job.copied} · 重复 {job.duplicates} · 失败 {job.failed}
@@ -1219,8 +1256,8 @@ export default function ImportWorkspace(props: {
               </details>
             )}
           </For>
-        </aside>
-      </div>
+        </Drawer>
+      </Show>
     </section>
   );
 }
