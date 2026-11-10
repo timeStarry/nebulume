@@ -55,3 +55,7 @@ test('forbidden values on their own line are still caught', () => {
     'shadow',
   ]);
 });
+
+test('removing a shadow is allowed', () => {
+  expect(checkCss('src/x.css', '.a {\n  box-shadow: none;\n}')).toEqual([]);
+});

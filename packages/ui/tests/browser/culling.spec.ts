@@ -221,7 +221,7 @@ async function fixture(page: Page, options: { failFlag?: boolean; fromFile?: boo
   return { calls, assets };
 }
 
-const hud = (page: Page) => page.locator('.cull-hud');
+const hud = (page: Page) => page.locator('.cull-status');
 
 test('grid culls inside the library window over the filtered queue', async ({ page }) => {
   const { calls } = await fixture(page);
@@ -438,4 +438,22 @@ test('the viewer’s more menu reaches export, the path and the Trash', async ({
       ids: ['photo-1'],
     });
   await expect(viewer.locator('.viewer-filename strong')).toHaveText('Frame-2.png');
+});
+
+test('the mark confirmation plays on the panel even with no rating widget in the overlay', async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    localStorage.setItem(
+      'nebulume.viewer.overlay',
+      JSON.stringify({ tl: [], tr: [], bl: [], br: [] }),
+    ),
+  );
+  await fixture(page);
+  await page.goto('/?viewer=1');
+  await expect(hud(page)).toContainText('1 / 3');
+  await page.keyboard.press('3');
+  await expect(page.locator('.cull-panel')).toHaveClass(/pulse-rate/);
+  await expect(hud(page)).toContainText('2 / 3');
+  await expect(page.locator('.cull-hud')).toHaveCount(0);
 });

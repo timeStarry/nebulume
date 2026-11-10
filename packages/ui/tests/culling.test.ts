@@ -20,7 +20,7 @@ describe('culling shortcuts', () => {
     expect(cullKeyAction({ key: 'g' })).toEqual({ kind: 'view', value: 'single' });
     expect(cullKeyAction({ key: 'c' })).toEqual({ kind: 'view', value: 'compare' });
     expect(cullKeyAction({ key: 'z' })).toEqual({ kind: 'zoom' });
-    expect(cullKeyAction({ key: 'Tab' })).toEqual({ kind: 'hud' });
+    expect(cullKeyAction({ key: 'Tab' })).toEqual({ kind: 'overlay' });
     expect(cullKeyAction({ key: 'f' })).toEqual({ kind: 'fullscreen' });
     expect(cullKeyAction({ key: 'Escape' })).toEqual({ kind: 'escape' });
     expect(cullKeyAction({ key: 'C', shiftKey: true })).toEqual({ kind: 'mode' });

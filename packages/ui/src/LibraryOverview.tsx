@@ -1,5 +1,7 @@
 import { createResource, For, Show } from 'solid-js';
 import { execute } from './api';
+import { Button } from './ui';
+import './library/overview.css';
 import type { AssetListOptions, LibraryStats, StatsBin } from './model';
 
 export type OverviewPick = { label: string; options: Partial<AssetListOptions> };
@@ -169,9 +171,9 @@ export default function LibraryOverview(props: {
               <section>
                 <div class="ov-head">
                   <h2>选片进度</h2>
-                  <button class="button small" onClick={() => props.onCull()}>
+                  <Button size="sm" icon="flag" onClick={() => props.onCull()}>
                     继续选片
-                  </button>
+                  </Button>
                 </div>
                 <p class="ov-hint">点一段，只看这部分照片。</p>
                 <div class="ov-funnel">

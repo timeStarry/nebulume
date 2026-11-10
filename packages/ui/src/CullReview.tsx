@@ -1,5 +1,6 @@
 import { For, Show, createSignal, onMount } from 'solid-js';
 import Icon from './Icon';
+import { Button } from './ui';
 import { Thumbnail } from './PhotoView';
 import { formatBytes } from './photo-actions';
 import type { Asset } from './model';
@@ -52,10 +53,9 @@ export default function CullReview(props: {
     <section class="cull-review" role="region" aria-label="完成选片">
       <header class="cull-review-head">
         <h2>完成选片</h2>
-        <button ref={back} class="button" onClick={() => props.onBack()}>
-          <Icon name="left" size={15} />
+        <Button ref={back} icon="left" onClick={() => props.onBack()}>
           继续选片
-        </button>
+        </Button>
       </header>
       <div class="cull-review-cols">
         <div class="review-col">
@@ -71,14 +71,14 @@ export default function CullReview(props: {
             <Grid items={props.picks} />
           </Show>
           <div class="review-actions">
-            <button
-              class="button primary"
+            <Button
+              variant="primary"
+              icon="export"
               disabled={!props.picks.length || props.busy}
               onClick={() => props.onExport(props.picks.map((item) => item.id))}
             >
-              <Icon name="export" size={15} />
               导出 JPEG…
-            </button>
+            </Button>
           </div>
         </div>
         <div class="review-col">
@@ -101,17 +101,18 @@ export default function CullReview(props: {
               <Show
                 when={confirming()}
                 fallback={
-                  <button
-                    class="button danger"
+                  <Button
+                    variant="danger"
+                    icon="trash"
                     disabled={!props.rejects.length || props.busy}
                     onClick={() => setConfirming(true)}
                   >
                     移到废纸篓…
-                  </button>
+                  </Button>
                 }
               >
-                <button
-                  class="button danger"
+                <Button
+                  variant="danger"
                   disabled={props.busy}
                   onClick={() => {
                     setConfirming(false);
@@ -119,10 +120,10 @@ export default function CullReview(props: {
                   }}
                 >
                   确认移走 {props.rejects.length + extraFiles()} 个文件
-                </button>
-                <button class="button" onClick={() => setConfirming(false)}>
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirming(false)}>
                   取消
-                </button>
+                </Button>
               </Show>
               <span class="review-note">
                 {props.rejects.length + extraFiles()} 个文件

@@ -1,0 +1,217 @@
+.overview-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  overflow: auto;
+  background: var(--nl-canvas);
+}
+.library-overview {
+  max-width: 1120px;
+  padding: var(--nl-s-2) var(--nl-s-6) 64px;
+}
+.library-overview section {
+  padding: 22px 0;
+  border-top: 1px solid var(--nl-line);
+}
+.library-overview h2 {
+  margin: 0 0 2px;
+  font-size: var(--nl-t-16);
+}
+.ov-hint,
+.ov-empty,
+.ov-error {
+  margin: 0 0 14px;
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-13);
+}
+.ov-error {
+  color: var(--nl-reject);
+}
+.ov-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nl-s-3);
+}
+.ov-head .nl-btn {
+  margin-left: auto;
+}
+.ov-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 48px;
+  padding: 10px 0 22px;
+}
+.ov-figures b {
+  display: block;
+  font-size: var(--nl-t-22);
+}
+.ov-figures span {
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-13);
+}
+.ov-bars {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 150px;
+  padding-bottom: var(--nl-s-5);
+  border-bottom: 1px solid var(--nl-line);
+}
+.ov-two .ov-bars {
+  height: 120px;
+}
+.ov-bar {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  justify-content: center;
+  min-width: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.ov-bar:disabled {
+  cursor: default;
+}
+.ov-bar-fill {
+  width: min(100%, 28px);
+  min-height: 0;
+  border-radius: var(--nl-r-xs) var(--nl-r-xs) 0 0;
+  background: var(--nl-series);
+  transition: opacity var(--nl-d-fast) var(--nl-ease);
+}
+.ov-bar:hover:not(:disabled) .ov-bar-fill,
+.ov-bar:focus-visible .ov-bar-fill {
+  opacity: 0.8;
+}
+.ov-bar:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 2px;
+}
+.ov-bar-tick {
+  position: absolute;
+  bottom: -20px;
+  left: 50%;
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+.ov-funnel {
+  display: flex;
+  gap: 2px;
+  height: 22px;
+  overflow: hidden;
+  border-radius: var(--nl-r-xs);
+}
+.ov-funnel button {
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  cursor: pointer;
+  transition: opacity var(--nl-d-fast) var(--nl-ease);
+}
+.ov-funnel button:hover {
+  opacity: 0.85;
+}
+.ov-funnel button:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: -2px;
+}
+.f-pick {
+  background: var(--nl-pick);
+}
+.f-reject {
+  background: var(--nl-reject);
+}
+.f-rated {
+  background: var(--nl-series);
+}
+.f-unseen {
+  background: var(--nl-raised);
+}
+.ov-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  margin-top: 10px;
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-13);
+}
+.ov-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ov-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.ov-legend b {
+  color: var(--nl-text);
+}
+.ov-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--nl-s-10);
+}
+.ov-ranked {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ov-ranked button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px 48px;
+  align-items: center;
+  gap: var(--nl-s-3);
+  width: 100%;
+  height: var(--nl-h-md);
+  padding: 0 var(--nl-s-2);
+  border: 0;
+  border-radius: var(--nl-r-sm);
+  background: transparent;
+  color: var(--nl-text-2);
+  font: inherit;
+  font-size: var(--nl-t-13);
+  text-align: start;
+  cursor: pointer;
+}
+.ov-ranked button:hover {
+  background: var(--nl-hover);
+  color: var(--nl-text);
+}
+.ov-ranked button:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: -2px;
+}
+.ov-name {
+  overflow: hidden;
+  color: var(--nl-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-meter {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--nl-raised);
+}
+.ov-meter span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--nl-series);
+}
+.ov-num {
+  text-align: end;
+}
+@media (max-width: 959px) {
+  .ov-two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

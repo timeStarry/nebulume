@@ -45,7 +45,7 @@ import {
   writeAutoAdvance,
   type Mark,
 } from './culling';
-import CullPanel from './CullPanel';
+import CullPanel, { CullStatus } from './CullPanel';
 import CullStrip from './CullStrip';
 import CullReview from './CullReview';
 import {
@@ -61,6 +61,7 @@ import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import type { Library } from './model';
 import './viewer-focus.css';
 import './culling.css';
+import './cull.css';
 
 export type ViewerMode = 'view' | 'cull';
 export interface CullQueue {
@@ -105,7 +106,7 @@ export default function Viewer(props: {
   const [mode, setMode] = createSignal<ViewerMode>(props.initialMode || 'view');
   const [cullView, setCullView] = createSignal<'single' | 'compare'>('single');
   const [compareCount] = createSignal(2);
-  const [hud, setHud] = createSignal(true);
+  const [overlayVisible, setOverlayVisible] = createSignal(true);
   const [autoAdvance, setAutoAdvance] = createSignal(readAutoAdvance());
   const [pulse, setPulse] = createSignal<{ kind: 'rate' | 'flag'; value: string; key: number }>();
   const [zoomToggle, setZoomToggle] = createSignal(0);
@@ -644,7 +645,7 @@ export default function Viewer(props: {
     else if (action.kind === 'view') setCullView(action.value);
     else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
     else if (action.kind === 'undo') void undoMark();
-    else if (action.kind === 'hud') setHud((value) => !value);
+    else if (action.kind === 'overlay') setOverlayVisible((value) => !value);
     else if (action.kind === 'mode') toggleMode();
     else if (action.kind === 'focus') toggleFocus();
     else if (action.kind === 'fullscreen') void fullscreen();
@@ -1283,31 +1284,14 @@ export default function Viewer(props: {
             />
           )}
         </Show>
-        <Show when={mode() === 'cull' && hud() && asset()}>
+        <Show when={mode() === 'cull' && info() && asset()}>
           {(current) => (
-            <div
-              class={`cull-hud ${pulse() ? `pulse pulse-${pulse()!.kind}` : ''} flag-${current().flag || 'none'}`}
-              role="status"
-              aria-live="polite"
-            >
-              <span class="cull-hud-stars" aria-label={`${current().rating} 星`}>
-                <For each={[1, 2, 3, 4, 5]}>
-                  {(value) => <i class={value <= current().rating ? 'on' : ''}>★</i>}
-                </For>
-              </span>
-              <span class={`cull-hud-flag ${current().flag || 'none'}`}>
-                {current().flag === 'pick'
-                  ? '留用'
-                  : current().flag === 'reject'
-                    ? '淘汰'
-                    : '未标记'}
-              </span>
-              <span class="cull-hud-count">
-                {queueLoading() ? '队列载入中…' : `${Math.max(0, index() + 1)} / ${ids().length}`}
-              </span>
-              <span class="cull-hud-keys" aria-hidden="true">
-                1–5 星 · P 留用 · X 淘汰 · U 清除 · ⌘/Ctrl+Z 撤销
-              </span>
+            <div class="cull-status cull-status--floating" role="status" aria-live="polite">
+              <CullStatus
+                asset={current()}
+                position={queueLoading() ? undefined : Math.max(0, index() + 1)}
+                total={ids().length}
+              />
             </div>
           )}
         </Show>
@@ -1343,6 +1327,8 @@ export default function Viewer(props: {
             onFlag={(flag) => void mark('flag', flag)}
             onRate={(rating) => void mark('rate', rating)}
             onFinish={() => setReview(true)}
+            pulse={pulse()?.kind}
+            position={queueLoading() ? undefined : Math.max(0, index() + 1)}
           />
         )}
       </Show>

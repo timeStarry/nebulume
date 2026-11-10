@@ -49,6 +49,7 @@ import {
 } from './ui';
 import type { MenuEntry } from './ui';
 import './library/library.css';
+import './library/wall.css';
 import LibraryOverview from './LibraryOverview';
 import {
   exportPhotos,

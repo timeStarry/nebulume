@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const RULES = [
   ['hex-color', /#[0-9a-f]{3,8}\b/i],
-  ['shadow', /box-shadow\s*:\s*(?!none\b)(?!inset\b)(?![^;]*\binset\b)[^;]*/i],
+  ['shadow', /box-shadow\s*:\s*(?![\s]|none\b)(?!inset\b)(?![^;]*\binset\b)[^;]*/i],
   ['font-weight', /font-weight\s*:\s*(?![\s]|400\b|500\b|inherit\b|var\()[^;]+/i],
   ['font-size-px', /font-size\s*:\s*\d+(\.\d+)?px/i],
   ['gradient', /(linear|radial|conic)-gradient\s*\(/i],

@@ -1,6 +1,7 @@
 import { For, Show, createMemo, createResource } from 'solid-js';
 import { execute } from './api';
 import Icon from './Icon';
+import { Button } from './ui';
 import { exposureParameters } from './inspector-metadata';
 import { histogramPath, imageRequestKey, type Asset, type Flag, type Histogram } from './model';
 
@@ -18,6 +19,10 @@ export default function CullPanel(props: {
   onFlag: (flag: Flag) => void;
   onRate: (rating: number) => void;
   onFinish: () => void;
+  /** The last mark's kind while its confirmation plays. */
+  pulse?: 'rate' | 'flag';
+  /** 1-based position in the queue; undefined while the queue loads. */
+  position?: number;
 }) {
   // The service answers from its histogram memory for photos already seen.
   const [histogram] = createResource(
@@ -45,7 +50,13 @@ export default function CullPanel(props: {
   );
   const seenShare = () => (props.total ? (props.seen / props.total) * 100 : 0);
   return (
-    <aside class="cull-panel" aria-label="选片面板">
+    <aside
+      class={`cull-panel${props.pulse ? ` pulse pulse-${props.pulse}` : ''}`}
+      aria-label="选片面板"
+    >
+      <div class="cull-status" role="status" aria-live="polite">
+        <CullStatus asset={props.asset} position={props.position} total={props.total} />
+      </div>
       <div class="cull-progress">
         <div class="cull-progress-line">
           <span>
@@ -64,9 +75,9 @@ export default function CullPanel(props: {
             <Icon name="close" size={14} />
             {props.rejects} 淘汰
           </span>
-          <button class="button small primary" onClick={() => props.onFinish()}>
+          <Button size="sm" variant="primary" icon="checks" onClick={() => props.onFinish()}>
             完成选片
-          </button>
+          </Button>
         </div>
       </div>
       <div class="cull-panel-name">
@@ -150,5 +161,24 @@ export default function CullPanel(props: {
         </div>
       </div>
     </aside>
+  );
+}
+
+/** Position, stars and flag of the photo on screen: the confirmation that a mark landed. */
+export function CullStatus(props: { asset: Asset; position?: number; total: number }) {
+  return (
+    <>
+      <span class="cull-status-position">
+        {props.position === undefined ? '队列载入中…' : `${props.position} / ${props.total}`}
+      </span>
+      <span class="cull-status-stars" aria-label={`${props.asset.rating} 星`}>
+        <For each={[1, 2, 3, 4, 5]}>
+          {(value) => <i class={value <= props.asset.rating ? 'on' : ''}>★</i>}
+        </For>
+      </span>
+      <span class={`cull-status-flag ${props.asset.flag || 'none'}`}>
+        {props.asset.flag === 'pick' ? '留用' : props.asset.flag === 'reject' ? '淘汰' : '未标记'}
+      </span>
+    </>
   );
 }
