@@ -399,9 +399,13 @@ test('repeated blur/focus preserves all loaded pages, detail, selection, scroll 
   page,
 }) => {
   const { calls } = await fixture(page);
-  // Clicking scrolls the button into view, so the list is at its end and paging continues.
-  await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
+  // Scrolling to the end keeps automatic paging going until every page is loaded.
+  await expect
+    .poll(async () => {
+      await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = el.scrollHeight));
+      return page.locator('.collection-status').textContent();
+    })
+    .toContain('已载入 410 / ');
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = 700));
@@ -1240,20 +1244,34 @@ test('opening a photo zooms it out of its tile and closing returns to the photo 
   const cells = page.locator('.photo-grid .thumbnail');
   await expect(cells.first().locator('img')).toBeVisible();
   const tile = (await cells.first().boundingBox())!;
+  // The ghost lives for a few hundred milliseconds, so record it as it is added, not by polling.
+  await page.evaluate(() => {
+    const seen: { left: number; top: number; width: number }[] = [];
+    Object.assign(window, { __zoomGhosts: seen });
+    new MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes)
+          if (node instanceof HTMLElement && node.classList.contains('zoom-ghost'))
+            seen.push({
+              left: parseFloat(node.style.left),
+              top: parseFloat(node.style.top),
+              width: parseFloat(node.style.width),
+            });
+    }).observe(document.body, { childList: true });
+  });
   await cells.first().dblclick();
   const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
   await expect(viewer).toBeVisible();
   // A copy of the tile's image starts exactly where the tile is and grows into the stage.
   const ghost = page.locator('.zoom-ghost');
-  await expect(ghost).toHaveCount(1);
-  const start = await ghost.evaluate((element) => {
-    const style = (element as HTMLElement).style;
-    return {
-      left: parseFloat(style.left),
-      top: parseFloat(style.top),
-      width: parseFloat(style.width),
-    };
-  });
+  const ghosts = () =>
+    page.evaluate(
+      () =>
+        (window as unknown as { __zoomGhosts: { left: number; top: number; width: number }[] })
+          .__zoomGhosts,
+    );
+  await expect.poll(async () => (await ghosts()).length).toBe(1);
+  const [start] = await ghosts();
   expect(Math.abs(start.left - tile.x)).toBeLessThan(2);
   expect(Math.abs(start.width - tile.width)).toBeLessThan(2);
   await expect(ghost).toHaveCount(0);
