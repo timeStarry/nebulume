@@ -743,6 +743,15 @@ export default function Viewer(props: {
   function keyboard(event: KeyboardEvent) {
     recoverFocus();
     if (!container.contains(document.activeElement)) return;
+    if (editingOverlay()) {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        event.preventDefault();
+        setEditingOverlay(false);
+        container.focus({ preventScroll: true });
+      }
+      // Tab and the overlay's own Enter/Space handling still work; nothing acts on the photo.
+      return;
+    }
     if (
       (event.metaKey || event.ctrlKey) &&
       (event.key === 'Backspace' || event.key === 'Delete') &&

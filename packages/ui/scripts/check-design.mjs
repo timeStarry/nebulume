@@ -4,38 +4,105 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const RULES = [
-  ['hex-color', /#[0-9a-f]{3,8}\b/i],
-  ['shadow', /box-shadow\s*:\s*(?![\s]|none\b)(?!inset\b)(?![^;]*\binset\b)[^;]*/i],
-  ['font-weight', /font-weight\s*:\s*(?![\s]|400\b|500\b|inherit\b|var\()[^;]+/i],
-  ['font-size-px', /font-size\s*:\s*\d+(\.\d+)?px/i],
-  ['gradient', /(linear|radial|conic)-gradient\s*\(/i],
-  ['blur', /\bblur\s*\(/i],
-  ['rgb-color', /\b(rgb|rgba|hsl|hsla)\s*\(/i],
-];
+const NAMED_COLORS =
+  /^(white|black|red|green|blue|gray|grey|silver|yellow|orange|purple|pink|brown|navy|teal|aqua|lime|maroon|olive|fuchsia)$/i;
+
+/** Splits a comma-separated value at top level (not inside parentheses). */
+function layers(value) {
+  const out = [];
+  let depth = 0;
+  let current = '';
+  for (const char of value) {
+    if (char === '(') depth++;
+    if (char === ')') depth--;
+    if (char === ',' && depth === 0) {
+      out.push(current.trim());
+      current = '';
+    } else current += char;
+  }
+  if (current.trim()) out.push(current.trim());
+  return out;
+}
+
+/** The rules a single declaration breaks. Values are judged; selectors never are. */
+function judge(property, value) {
+  const found = [];
+  const prop = property.toLowerCase();
+  const v = value.trim();
+  if (/#[0-9a-f]{3,8}\b/i.test(v)) found.push('hex-color');
+  if (/\b(rgb|rgba|hsl|hsla|color-mix)\s*\(/i.test(v)) found.push('rgb-color');
+  if (/^(color|background|background-color|border(-[a-z]+)?-color|border|outline|outline-color|fill|stroke|text-decoration-color)$/.test(prop))
+    for (const word of v.split(/[\s,]+/)) if (NAMED_COLORS.test(word)) {
+      found.push('named-color');
+      break;
+    }
+  if (prop === 'box-shadow' && !/^none$/i.test(v)) {
+    // Only rings drawn inside the box are allowed; any outer layer is a shadow.
+    if (layers(v).some((layer) => !/\binset\b/i.test(layer))) found.push('shadow');
+  }
+  if (prop === 'text-shadow' && !/^none$/i.test(v)) found.push('shadow');
+  if (/\bdrop-shadow\s*\(/i.test(v)) found.push('shadow');
+  const weight = prop === 'font-weight' ? v : prop === 'font' ? (v.match(/^(?:italic\s+|normal\s+)?(\d{3}|bold|bolder|lighter)\b/i)?.[1] ?? '') : '';
+  if (weight && !/^(400|500|normal|inherit|initial|unset)$/i.test(weight) && !/^var\(/.test(weight))
+    found.push('font-weight');
+  const size = prop === 'font-size' ? v : prop === 'font' ? v : '';
+  if (size && /(^|\s|\/)\d+(\.\d+)?px\b/.test(prop === 'font' ? v.replace(/\/\s*[\d.]+(px)?/, '') : v))
+    found.push('font-size-px');
+  if (/(linear|radial|conic)-gradient\s*\(/i.test(v)) found.push('gradient');
+  if (/\bblur\s*\(/i.test(v)) found.push('blur');
+  return found;
+}
 
 const exempt = (path) => {
   const normal = path.split(sep).join('/');
   return /(^|\/)src\/ui\//.test(normal) || /(^|\/)src\/tokens\.css$/.test(normal);
 };
 
-/** Returns one finding per rule per line. Comments are stripped first, keeping line numbers. */
+/**
+ * Returns the broken rules for each declaration, with its line. Comments are stripped first
+ * (keeping line numbers). A box-shadow used as a mask is allowed on the line after a
+ * `/* design: mask *\/` comment.
+ */
 export function checkCss(path, text) {
   if (exempt(path)) return [];
-  // A box-shadow used as a mask (the crop overlay) is declared on the line before it.
   const masked = new Set();
   text.split('\n').forEach((line, index) => {
     if (/\/\*\s*design:\s*mask\s*\*\//.test(line)) masked.add(index + 2);
   });
   const stripped = text.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
   const findings = [];
-  stripped.split('\n').forEach((line, index) => {
-    for (const [rule, pattern] of RULES) {
-      const match = line.match(pattern);
-      if (rule === 'shadow' && masked.has(index + 1)) continue;
-      if (match) findings.push({ line: index + 1, rule, snippet: match[0].trim() });
-    }
-  });
+  const declaration = /([a-z-]+)\s*:\s*([^;{}]+)/gi;
+  // Declarations live inside braces; strip selectors by only scanning brace bodies.
+  let depth = 0;
+  let line = 1;
+  let body = '';
+  let bodyStart = 1;
+  const flush = () => {
+    let offset = 0;
+    const lines = body.split('\n');
+    lines.forEach((text, index) => {
+      for (const match of text.matchAll(declaration)) {
+        const at = bodyStart + index;
+        for (const rule of judge(match[1], match[2])) {
+          if (rule === 'shadow' && masked.has(at)) continue;
+          findings.push({ line: at, rule, snippet: `${match[1]}: ${match[2].trim()}` });
+        }
+      }
+      offset += text.length + 1;
+    });
+    body = '';
+  };
+  for (const char of stripped) {
+    if (char === '{') {
+      depth++;
+      body = '';
+      bodyStart = line;
+    } else if (char === '}') {
+      flush();
+      depth = Math.max(0, depth - 1);
+    } else if (depth > 0) body += char;
+    if (char === '\n') line++;
+  }
   return findings;
 }
 

@@ -95,9 +95,12 @@ export function MenuList(props: {
                 aria-keyshortcuts={item.shortcut}
                 title={item.title}
                 disabled={item.disabled}
-                onClick={() => {
+                onClick={(event) => {
+                  const menu = event.currentTarget.closest('[role="menu"]');
                   item.onSelect();
-                  props.onClose(false);
+                  // Return focus to the opener unless the action moved it somewhere else.
+                  const active = document.activeElement;
+                  props.onClose(!active || active === document.body || !!menu?.contains(active));
                 }}
               >
                 <Show when={item.icon} fallback={<span class="nl-menu-icon" />}>

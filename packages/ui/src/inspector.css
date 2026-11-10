@@ -210,17 +210,7 @@
 .asset-inspector .exposure-summary .is-missing dd {
   color: var(--nl-text-2);
 }
-.asset-inspector .inspector-metadata-group + .inspector-metadata-group {
-  margin-top: var(--nl-s-5);
-  padding-top: var(--nl-s-4);
-  border-top: 1px solid var(--nl-line);
-}
-.asset-inspector .inspector-metadata-group h4 {
-  margin: 0 0 var(--nl-s-3);
-  color: var(--nl-text-2);
-  font-size: var(--nl-t-13);
-  font-weight: 500;
-}
+
 .asset-inspector .metadata {
   display: grid;
   grid-template-columns: minmax(76px, 0.8fr) minmax(0, 1.6fr);
@@ -336,8 +326,8 @@
 }
 .asset-inspector .crop-inputs input {
   width: 100%;
-  height: 36px;
-  padding: var(--nl-s-2);
+  height: var(--nl-h-md);
+  padding: 0 var(--nl-s-2);
   color: var(--nl-text);
   background: transparent;
   border: 0;

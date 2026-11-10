@@ -30,7 +30,12 @@ const photo = (index: number): Asset => ({
 
 export async function fixture(
   page: Page,
-  options: { failFlag?: boolean; fromFile?: boolean; metadata?: Record<string, string> } = {},
+  options: {
+    failFlag?: boolean;
+    fromFile?: boolean;
+    metadata?: Record<string, string>;
+    failHistogram?: boolean;
+  } = {},
 ) {
   const calls: Call[] = [];
   const assets = new Map(
@@ -142,6 +147,7 @@ export async function fixture(
           result = { width: 1, height: 1, source: 'fixture', tier: call.params.tier || 'p2560' };
           break;
         case 'asset.histogram':
+          if (options.failHistogram) throw new Error('histogram unavailable');
           result = {
             red: Array(256).fill(1),
             green: Array(256).fill(1),

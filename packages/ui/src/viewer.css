@@ -264,7 +264,7 @@
   align-items: center;
   justify-content: center;
   gap: var(--nl-s-3);
-  min-height: 44px;
+  min-height: var(--nl-h-lg);
   padding: var(--nl-s-1) var(--nl-s-5);
   border-top: 1px solid var(--nl-line);
   color: var(--nl-v-text);
@@ -393,17 +393,7 @@
   z-index: 9;
   width: var(--nl-aside-width);
 }
-.filmstrip {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--nl-s-2);
-  height: 104px;
-  padding: var(--nl-s-3);
-  overflow-x: auto;
-  border-top: 1px solid var(--nl-line);
-  background: var(--nl-v-panel);
-}
+
 .thumbnail.compact {
   flex: none;
   width: 96px;
@@ -424,43 +414,7 @@
 .thumbnail.compact .thumbnail-fallback span {
   font-size: var(--nl-t-12);
 }
-.loupe-layout {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-}
-.loupe-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--nl-s-3);
-  padding: var(--nl-s-3) var(--nl-s-5);
-  border-bottom: 1px solid var(--nl-line);
-}
-.loupe-toolbar > div:first-child {
-  min-width: 0;
-}
-.loupe-toolbar strong {
-  display: block;
-  max-width: 300px;
-  color: var(--nl-text);
-  font-size: var(--nl-t-13);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.loupe-toolbar small {
-  display: block;
-  margin-top: var(--nl-s-1);
-  color: var(--nl-text-2);
-  font-size: var(--nl-t-12);
-}
-.loupe-toolbar > div:last-child {
-  display: flex;
-  gap: var(--nl-s-2);
-}
+
 @media (max-width: 1279px) {
   .immersive-toolbar {
     gap: var(--nl-s-2);
@@ -503,8 +457,8 @@
     justify-content: flex-end;
   }
   .viewer-toolbar-actions .icon-button {
-    min-width: 36px;
-    height: 36px;
+    min-width: var(--nl-h-md);
+    height: var(--nl-h-md);
   }
   .viewer-alert {
     top: 120px;

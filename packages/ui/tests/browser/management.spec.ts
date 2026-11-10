@@ -1408,3 +1408,27 @@ test('settings sections switch with a segmented control and keep their content',
   );
   await expect(page.getByRole('switch', { name: '打标后自动下一张' })).toBeChecked();
 });
+
+test('choosing a menu action returns focus to the button that opened the menu', async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  const more = page.locator('.nl-page-header:visible').getByRole('button', { name: '更多' });
+  await more.click();
+  await page.getByRole('menuitem', { name: '补全拍摄时间…' }).click();
+  await expect(more).toBeFocused();
+});
+
+test('arrow keys move across the view switch without starting culling', async ({ page }) => {
+  const calls = await fixture(page);
+  await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
+  await expect(page.getByRole('button', { name: 'Mountain.png，0 星' })).toBeVisible();
+  const views = page.locator('.nl-page-header:visible').getByRole('tablist', { name: '视图' });
+  await views.getByRole('tab', { name: '照片' }).focus();
+  // 选片 is an action, not a view: the arrow skips it and lands on 概览.
+  await page.keyboard.press('ArrowRight');
+  await expect(views.getByRole('tab', { name: '概览' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('dialog', { name: '沉浸影像查看器' })).toHaveCount(0);
+  expect(calls.some((call) => call.command === '$native/open_viewer')).toBe(false);
+});

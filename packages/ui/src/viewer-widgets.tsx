@@ -1,4 +1,4 @@
-import { Show, type JSX } from 'solid-js';
+import type { JSX } from 'solid-js';
 import { fieldValue, formatCaptured } from './inspector-fields';
 import { histogramPath, type Asset, type Histogram } from './model';
 import './ui/Widget.css';
@@ -171,11 +171,8 @@ export const WIDGETS: readonly WidgetDef[] = [
     name: '直方图',
     group: '其他',
     needsHistogram: true,
-    render: (_asset, context) => (
-      <Show when={context.histogram} fallback={null}>
-        {(histogram) => <HistogramMark histogram={histogram()} />}
-      </Show>
-    ),
+    render: (_asset, context) =>
+      context.histogram ? <HistogramMark histogram={context.histogram} /> : null,
   },
   {
     id: 'dimensions',

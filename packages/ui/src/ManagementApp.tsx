@@ -65,7 +65,7 @@ import {
   trashSummary,
 } from './photo-actions';
 import { Thumbnail } from './PhotoView';
-import { gridTier, previewUrl, watchDevicePixelRatio } from './preview-url';
+import { gridTier, watchDevicePixelRatio } from './preview-url';
 import StorageWorkspace from './StorageWorkspace';
 import ImportWorkspace from './ImportWorkspace';
 import Viewer, { type CullQueue, type ViewerMode } from './Viewer';
@@ -100,7 +100,6 @@ import {
 import {
   availabilityPresentation,
   libraryLocation,
-  sourceKind,
   variantViewerIds,
   type WorkspaceSection,
   LAST_LIBRARY_KEY,
@@ -1576,6 +1575,7 @@ export default function ManagementApp() {
                           label: '选片',
                           icon: 'flag',
                           shortcut: 'Meta+2',
+                          action: true,
                           disabled: !assets().length || !!busy(),
                         },
                         { value: 'overview', label: '概览', icon: 'chart-bar', shortcut: 'Meta+3' },
@@ -2393,24 +2393,6 @@ function CullingSettings() {
         />
       </Show>
     </Group>
-  );
-}
-/** Up to four recent photos as a mosaic; an empty library shows its kind instead. */
-function LibraryCovers(props: { library: Library }) {
-  const ids = () => props.library.cover_asset_ids || [];
-  return (
-    <div class={`library-covers count-${Math.min(4, ids().length)}`} aria-hidden="true">
-      <Show when={ids().length} fallback={<Icon name="photo" size={30} />}>
-        <For each={ids()}>{(id) => <CoverImage id={id} />}</For>
-      </Show>
-    </div>
-  );
-}
-function CoverImage(props: { id: string }) {
-  const [src, setSrc] = createSignal<string>();
-  void Promise.resolve(previewUrl({ id: props.id }, 't256')).then(setSrc, () => undefined);
-  return (
-    <Show when={src()}>{(url) => <img src={url()} alt="" loading="lazy" draggable={false} />}</Show>
   );
 }
 const SETTINGS_SECTIONS = [

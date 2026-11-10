@@ -112,3 +112,29 @@ test('missing values in pinned fields show a dash, never undefined', async ({ pa
   await expect(pinned.getByRole('listitem').first()).toContainText('—');
   await expect(pinned).not.toContainText('undefined');
 });
+
+test('a photo whose histogram cannot be read shows no empty widget box', async ({ page }) => {
+  await fixture(page, { fromFile: true, metadata: exif, failHistogram: true });
+  await page.goto('/?viewer=1');
+  await expect(page.locator('[data-widget="exposure"]')).toBeVisible();
+  await page.waitForTimeout(400);
+  await expect(page.locator('[data-widget="histogram"]')).toHaveCount(0);
+});
+
+test('while editing the overlay, Esc leaves edit mode and photo keys do nothing', async ({
+  page,
+}) => {
+  const { assets } = await fixture(page, { metadata: exif });
+  await page.goto('/?viewer=1');
+  await expect(page.locator('.cull-status').first()).toContainText('1 / 3');
+  await editOverlay(page);
+  await expect(page.getByRole('button', { name: '添加到左上' })).toBeFocused();
+  await page.keyboard.press('3');
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(300);
+  expect(assets.get('photo-1')!.rating).toBe(0);
+  await expect(page.locator('.cull-status').first()).toContainText('1 / 3');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.nl-overlay-tray')).toHaveCount(0);
+  await expect(page.locator('.immersive-viewer')).toBeVisible();
+});

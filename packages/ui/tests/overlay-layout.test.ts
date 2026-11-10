@@ -91,6 +91,6 @@ describe('widget registry', async () => {
     const empty = WIDGETS.filter((widget) => !['filename', 'format'].includes(widget.id)).map(
       (widget) => widget.render(bare, { index: 1, total: 1 }),
     );
-    for (const result of empty) expect(result === null || typeof result === 'function').toBe(true);
+    for (const result of empty) expect(result).toBeNull();
   });
 });

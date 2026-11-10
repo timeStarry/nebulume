@@ -8,6 +8,8 @@ export interface SegmentedOption<T extends string> {
   icon?: IconName;
   shortcut?: string;
   disabled?: boolean;
+  /** Runs on click or Enter but is never selected; arrow keys skip it. */
+  action?: boolean;
 }
 
 /**
@@ -28,7 +30,7 @@ export default function Segmented<T extends string>(props: {
   const itemRole = () => (role() === 'tablist' ? 'tab' : 'radio');
   function key(event: KeyboardEvent) {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    const enabled = props.options.filter((option) => !option.disabled);
+    const enabled = props.options.filter((option) => !option.disabled && !option.action);
     const at = enabled.findIndex((option) => option.value === props.value);
     const next =
       event.key === 'Home'

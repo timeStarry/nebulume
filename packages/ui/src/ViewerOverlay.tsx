@@ -1,4 +1,13 @@
-import { For, Show, createMemo, createResource, createSignal, type JSX } from 'solid-js';
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  on,
+  type JSX,
+} from 'solid-js';
 import { execute } from './api';
 import Icon from './Icon';
 import { ContextMenu, type ContextMenuState, type MenuEntry } from './ui';
@@ -136,8 +145,19 @@ export default function ViewerOverlay(props: {
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   };
 
+  let root!: HTMLDivElement;
+  createEffect(
+    on(
+      () => props.editing,
+      (editing) => {
+        if (editing)
+          queueMicrotask(() => root.querySelector<HTMLElement>('.nl-overlay-add')?.focus());
+      },
+    ),
+  );
   return (
     <div
+      ref={root}
       class={`nl-overlay${props.editing ? ' nl-overlay--editing' : ''}`}
       hidden={!props.visible && !props.editing}
       onKeyDown={(event) => {
@@ -205,7 +225,7 @@ export default function ViewerOverlay(props: {
                 aria-label={`添加到${CORNER_LABELS[corner]}`}
                 aria-haspopup="menu"
                 onClick={(event) => addMenu(corner, event.currentTarget)}
-                onKeyDown={(event) => event.stopPropagation()}
+                onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}
               >
                 <Icon name="plus" size={14} />
                 添加
@@ -219,7 +239,7 @@ export default function ViewerOverlay(props: {
           class="nl-overlay-tray"
           role="toolbar"
           aria-label="可添加的叠加信息"
-          onKeyDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.key !== 'Escape' && event.stopPropagation()}
         >
           <span class="nl-overlay-hint">拖到任意角</span>
           <For each={available()}>
