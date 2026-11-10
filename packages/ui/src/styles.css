@@ -2593,12 +2593,13 @@ kbd {
 }
 .toast-stack {
   position: absolute;
-  inset-block-end: var(--nl-s-10);
-  inset-inline-end: var(--nl-s-5);
+  inset-block-end: var(--nl-s-6);
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 30;
   display: flex;
   flex-direction: column-reverse;
-  align-items: flex-end;
+  align-items: center;
   gap: var(--nl-s-2);
   max-width: min(440px, calc(100% - var(--nl-s-10)));
   pointer-events: none;
