@@ -80,6 +80,15 @@
   font-weight: 500;
   cursor: pointer;
 }
+.nl-toast-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+}
+.nl-toast-kbd {
+  background: var(--nl-tint-info);
+  color: inherit;
+}
 .nl-toast-close {
   display: grid;
   place-items: center;
@@ -120,12 +129,10 @@
     transform: translateX(340%);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .nl-progress--indeterminate > span {
-    width: 100%;
-    animation: none;
-    opacity: 0.5;
-  }
+[data-motion='reduced'] .nl-progress--indeterminate > span {
+  width: 100%;
+  animation: none;
+  opacity: 0.5;
 }
 .nl-empty {
   display: grid;

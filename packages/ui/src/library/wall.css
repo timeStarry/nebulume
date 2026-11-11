@@ -86,8 +86,8 @@
   bottom: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px var(--nl-s-2);
+  gap: var(--nl-s-2);
+  padding: var(--nl-s-2) var(--nl-s-2);
   background: var(--nl-v-overlay);
   color: var(--nl-v-text);
   font-size: var(--nl-t-12);
@@ -128,7 +128,7 @@
 }
 .tile-card .asset-variants .button {
   min-height: 22px;
-  padding: 0 6px;
+  padding: 0 var(--nl-s-2);
   border-color: transparent;
   background: var(--nl-v-overlay);
   color: var(--nl-v-text);

@@ -35,7 +35,6 @@ import { viewerIds } from './workspace';
 import { focusPresentation } from './viewer-focus';
 import {
   CULL_MARK_ANIMATION_MS,
-  UndoStack,
   compareWindow,
   cullKeyAction,
   markOf,
@@ -46,7 +45,8 @@ import {
   type Mark,
 } from './culling';
 import CullPanel, { CullStatus } from './CullPanel';
-import { IconButton, Segmented, Toggle } from './ui';
+import { IconButton, Segmented, Toggle, createHud } from './ui';
+import { createUndoHistory, markHudText, type UndoEntry } from './undo';
 import ViewerOverlay from './ViewerOverlay';
 import { readOverlayFades } from './overlay-layout';
 import CullStrip from './CullStrip';
@@ -88,6 +88,9 @@ export default function Viewer(props: {
   const [ids, setIds] = createSignal<string[]>(props.initialAssetIds || []);
   const [id, setId] = createSignal(props.initialAssetId);
   const [asset, setAsset] = createSignal<Asset>();
+  // The photo shown before the current load began; its frame stays dimmed behind the
+  // spinner when the next photo has no decoded thumbnail yet, so the stage never flashes empty.
+  const [previousFrame, setPreviousFrame] = createSignal<string>();
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
@@ -124,8 +127,6 @@ export default function Viewer(props: {
   const [items, setItems] = createSignal<Record<string, Asset>>({});
   const [seen, setSeen] = createSignal(new Set<string>());
   const [review, setReview] = createSignal(false);
-  const [undoable, setUndoable] = createSignal<{ text: string; run: () => Promise<void> }>();
-  let undoTimer: ReturnType<typeof setTimeout> | undefined;
   const remember = (list: Asset[]) =>
     setItems((map) => {
       const next = { ...map };
@@ -157,7 +158,8 @@ export default function Viewer(props: {
       }
     }),
   );
-  const undo = new UndoStack();
+  const history = createUndoHistory(200);
+  const hud = createHud();
   let pulseTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingAdvance: (() => void) | undefined;
   let container!: HTMLDivElement;
@@ -319,6 +321,11 @@ export default function Viewer(props: {
     setPreviewMapping(undefined);
     setError('');
     setNotice('');
+    const leaving = asset();
+    if (leaving && leaving.id !== nextId)
+      setPreviousFrame(
+        decodedThumbnail({ id: leaving.id, preview_revision: revisions.get(leaving.id) }),
+      );
     setAsset(undefined);
     setCropMode(false);
     try {
@@ -511,7 +518,6 @@ export default function Viewer(props: {
     onCleanup(() => {
       clearTimeout(timer);
       clearTimeout(pulseTimer);
-      clearTimeout(undoTimer);
       window.removeEventListener('keydown', keyboard);
       request++;
       focusRequest++;
@@ -583,7 +589,7 @@ export default function Viewer(props: {
           : await execute<Asset>('asset.rate', { id: next.id, rating: next.rating });
     await changed(result, next.flag !== target.flag ? 'flag' : 'rating');
   }
-  async function mark(kind: 'rate' | 'flag', value: number | Flag) {
+  async function mark(kind: 'rate' | 'flag', value: number | Flag, fromKeyboard = false) {
     // A key during the confirmation finishes it (and its advance) first, so each key
     // applies to the photo the user sees next; none is dropped or applied twice.
     if (pulse()) finishPulse();
@@ -605,11 +611,20 @@ export default function Viewer(props: {
     const position = ids().indexOf(targetId);
     const step = nextAfterMark(position, ids().length, autoAdvance());
     setPulse({ kind, value: String(value), key: Date.now() });
+    if (fromKeyboard)
+      hud.show(
+        markHudText(kind === 'rate' ? { rating: value as number } : { flag: value as Flag }),
+        kind === 'rate' ? 'star' : 'flag',
+      );
     let failed = false;
     if (!unchanged) {
       const previous = before;
       optimistic.set(targetId, next);
-      undo.push(previous);
+      history.push({
+        label: markHudText(kind === 'rate' ? { rating: next.rating } : { flag: next.flag }),
+        ids: [targetId],
+        revert: () => revertMark(previous),
+      });
       void persistMark(previous, next)
         .catch((e) => {
           failed = true;
@@ -629,26 +644,32 @@ export default function Viewer(props: {
     };
     pulseTimer = setTimeout(finishPulse, CULL_MARK_ANIMATION_MS);
   }
-  async function undoMark() {
+  async function revertMark(previous: Mark) {
+    const updated = await execute<Asset>('asset.mark_batch', {
+      ids: [previous.id],
+      rating: previous.rating,
+      flag: previous.flag,
+    }).then(() => execute<Asset>('asset.get', { id: previous.id }));
+    if (id() !== previous.id && ids().includes(previous.id)) setId(previous.id);
+    applyLocal(previous);
+    await changed(updated, 'flag');
+  }
+  /** Ctrl/⌘+Z in either mode, and the toast's undo button (`entry`). */
+  async function undoLatest(entry?: UndoEntry) {
     if (pulse()) finishPulse();
-    const previous = undo.pop();
-    if (!previous) {
-      setNotice('没有可撤销的标记。');
+    if (!entry && !history.size) {
+      hud.show('没有可撤销的操作', 'history');
       return;
     }
-    try {
-      const updated = await execute<Asset>('asset.mark_batch', {
-        ids: [previous.id],
-        rating: previous.rating,
-        flag: previous.flag,
-      }).then(() => execute<Asset>('asset.get', { id: previous.id }));
-      if (id() !== previous.id && ids().includes(previous.id)) setId(previous.id);
-      applyLocal(previous);
-      await changed(updated, 'flag');
-    } catch (e) {
-      undo.push(previous);
-      setError(`撤销失败：${errorMessage(e)}`);
-    }
+    const run = async () => {
+      const done = await history.undo(entry);
+      if (done) hud.show(`已撤销：${done.label}`, 'history');
+    };
+    if (entry?.toast || (!entry && history.peek()?.toast)) await action('正在放回原处…', run);
+    else
+      await run().catch((e) => {
+        setError(`撤销失败：${errorMessage(e)}`);
+      });
   }
   function toggleMode() {
     if (cropMode()) setCropMode(false);
@@ -680,11 +701,11 @@ export default function Viewer(props: {
     if (!action) return false;
     event.preventDefault();
     if (action.kind === 'rate' || action.kind === 'flag') {
-      if (!event.repeat) void mark(action.kind, action.value);
+      if (!event.repeat) void mark(action.kind, action.value, true);
     } else if (action.kind === 'move') move(action.delta);
     else if (action.kind === 'view') setCullView(action.value);
     else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
-    else if (action.kind === 'undo') void undoMark();
+    else if (action.kind === 'undo') void undoLatest();
     else if (action.kind === 'overlay') setOverlayVisible((value) => !value);
     else if (action.kind === 'mode') toggleMode();
     else if (action.kind === 'focus') toggleFocus();
@@ -801,6 +822,17 @@ export default function Viewer(props: {
       return;
     }
     if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === 'z' &&
+      !isTextEntry(event.target) &&
+      !cropMode()
+    ) {
+      event.preventDefault();
+      void undoLatest();
+      return;
+    }
+    if (
       isTextEntry(event.target) ||
       event.ctrlKey ||
       event.metaKey ||
@@ -826,7 +858,7 @@ export default function Viewer(props: {
     else if (key === 'escape') {
       event.preventDefault();
       void escape();
-    } else if (/^[0-5]$/.test(key)) void rate(Number(key));
+    } else if (/^[0-5]$/.test(key)) void rate(Number(key), true);
     else if (key === 'c' && event.shiftKey) toggleMode();
   }
   function toggleFocus() {
@@ -873,11 +905,6 @@ export default function Viewer(props: {
         setError('编辑已保存，但未能通知图库更新。请在图库使用“扫描更新”。');
       }
   }
-  function offerUndo(text: string, run: () => Promise<void>) {
-    clearTimeout(undoTimer);
-    setUndoable({ text, run });
-    undoTimer = setTimeout(() => setUndoable(undefined), 10_000);
-  }
   async function librarySynced() {
     if (props.onTrashed) props.onTrashed();
     else if (desktop && asset())
@@ -905,7 +932,7 @@ export default function Viewer(props: {
         if (at >= 0) browser.ids.splice(at, 1);
       }
     setIds(remaining);
-    undo.forget(gone);
+    history.forget(gone);
     if (gone.has(id() || '')) {
       const next = remaining[Math.min(position, remaining.length - 1)];
       if (next) setId(next);
@@ -915,26 +942,24 @@ export default function Viewer(props: {
       }
     }
     const moved = result.trashed;
-    offerUndo(`已把 ${targets.length} 张照片移到废纸篓。`, async () => {
-      const restored = await restorePhotos(moved);
-      const back = new Set(restored.restored);
-      setIds((list) => before.filter((each) => back.has(each) || list.includes(each)));
-      const browser = folder();
-      if (browser) browser.ids.splice(0, browser.ids.length, ...ids());
-      if (!id() && restored.restored[0]) setId(before.find((each) => back.has(each)));
-      if (restored.failed.length)
-        setError(`${restored.failed.length} 张未能放回：${restored.failed[0].message}`);
-      else setNotice(`已放回 ${restored.restored.length} 个文件。`);
-      await librarySynced();
+    history.push({
+      label: `已把 ${targets.length} 张照片移到废纸篓。`,
+      toast: true,
+      ids: moved,
+      revert: async () => {
+        const restored = await restorePhotos(moved);
+        const back = new Set(restored.restored);
+        setIds((list) => before.filter((each) => back.has(each) || list.includes(each)));
+        const browser = folder();
+        if (browser) browser.ids.splice(0, browser.ids.length, ...ids());
+        if (!id() && restored.restored[0]) setId(before.find((each) => back.has(each)));
+        if (restored.failed.length)
+          setError(`${restored.failed.length} 张未能放回：${restored.failed[0].message}`);
+        else setNotice(`已放回 ${restored.restored.length} 个文件。`);
+        await librarySynced();
+      },
     });
     await librarySynced();
-  }
-  async function runUndo() {
-    const pending = undoable();
-    if (!pending) return;
-    clearTimeout(undoTimer);
-    setUndoable(undefined);
-    await action('正在放回原处…', pending.run);
   }
   async function exportPicks(targets: string[]) {
     const directory = desktop ? await chooseDirectory('选择导出文件夹') : '';
@@ -951,12 +976,24 @@ export default function Viewer(props: {
       else setNotice(summary.notice!);
     });
   }
-  async function rate(rating: number) {
+  async function rate(rating: number, fromKeyboard = false) {
     const target = asset();
     if (!target) return;
-    await action('保存评级…', async () =>
-      changed(await execute<Asset>('asset.rate', { id: target.id, rating }), 'rating'),
-    );
+    const before = target.rating;
+    if (fromKeyboard) hud.show(markHudText({ rating }), 'star');
+    if (before === rating) return;
+    let saved = false;
+    await action('保存评级…', async () => {
+      await changed(await execute<Asset>('asset.rate', { id: target.id, rating }), 'rating');
+      saved = true;
+    });
+    if (saved)
+      history.push({
+        label: markHudText({ rating }),
+        ids: [target.id],
+        revert: async () =>
+          changed(await execute<Asset>('asset.rate', { id: target.id, rating: before }), 'rating'),
+      });
   }
   function beginCrop() {
     if (!asset() || busy()) return;
@@ -1179,17 +1216,22 @@ export default function Viewer(props: {
             />
           )}
         </Show>
-        <Show when={undoable()}>
-          {(pending) => (
+        <Show when={history.offer()} keyed>
+          {(entry) => (
             <div class="viewer-alert success" role="status">
               <Icon name="check" />
-              <span>{pending().text}</span>
-              <button class="button small" onClick={() => void runUndo()}>
-                撤销
+              <span>{entry.label}</span>
+              <button
+                class="button small"
+                aria-keyshortcuts="Meta+Z Control+Z"
+                onClick={() => void undoLatest(entry)}
+              >
+                撤销 <kbd class="nl-kbd">⌘Z</kbd>
               </button>
             </div>
           )}
         </Show>
+        <hud.Host tone="viewer" />
         <Show when={compareIds().length}>
           <div
             class={`cull-compare count-${compareIds().length}`}
@@ -1231,7 +1273,21 @@ export default function Viewer(props: {
             <div class="viewer-loading" role="status" aria-live="polite">
               {loading() ? (
                 <>
-                  <Show when={stagePlaceholder()}>
+                  <Show
+                    when={stagePlaceholder()}
+                    fallback={
+                      <Show when={previousFrame()}>
+                        {(src) => (
+                          <img
+                            class="photo-placeholder previous-frame"
+                            src={src()}
+                            alt=""
+                            aria-hidden="true"
+                          />
+                        )}
+                      </Show>
+                    }
+                  >
                     {(src) => (
                       <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />
                     )}

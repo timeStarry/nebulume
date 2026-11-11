@@ -168,6 +168,8 @@ export function Thumbnail(props: {
         if (!layer) return;
         loadedKey = key;
         image.style.visibility = '';
+        // First reveal of this photo fades in; a sharper tier replacing it does not.
+        if (!shown()) image.classList.add('nl-reveal');
         setLayers([layer]);
         setShown(true);
       })
@@ -354,6 +356,8 @@ export default function PhotoView(props: {
           ...lane,
           rejectInFlightOnAbort: true,
         });
+        // Coming back to this photo, or leaving it, can show this decode at once.
+        if (!uncropped) rememberDecodedPreview({ id, preview_revision: revision }, url);
         return { data, image, error: '' };
       } catch (error) {
         return { data: null, image: null, error: isQueueAbort(error) ? '' : errorMessage(error) };

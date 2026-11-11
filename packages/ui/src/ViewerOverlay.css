@@ -11,7 +11,7 @@
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--nl-s-2);
   max-width: 44%;
   min-width: 0;
   pointer-events: auto;
@@ -85,9 +85,9 @@
 .nl-overlay-add {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--nl-s-1);
   height: var(--nl-h-xs);
-  padding: 0 10px;
+  padding: 0 var(--nl-s-2);
   border: 1px dashed var(--nl-v-text-3);
   border-radius: var(--nl-r-sm);
   background: transparent;
@@ -129,7 +129,7 @@
   display: inline-flex;
   align-items: center;
   height: var(--nl-h-xs);
-  padding: 0 10px;
+  padding: 0 var(--nl-s-2);
   border-radius: var(--nl-r-pill);
   background: var(--nl-v-hover);
   color: var(--nl-v-text);
@@ -138,7 +138,7 @@
 }
 .nl-overlay-reset {
   height: var(--nl-h-sm);
-  padding: 0 10px;
+  padding: 0 var(--nl-s-2);
   border: 0;
   border-radius: var(--nl-r-md);
   background: transparent;

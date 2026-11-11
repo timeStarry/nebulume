@@ -1,7 +1,8 @@
 .ds {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  overflow-y: auto;
 }
 .ds-nav {
   position: sticky;
@@ -20,7 +21,7 @@
   font-weight: 500;
 }
 .ds-nav a {
-  padding: 5px var(--nl-s-2);
+  padding: var(--nl-s-1) var(--nl-s-2);
   border-radius: var(--nl-r-sm);
   color: var(--nl-text-2);
   text-decoration: none;
@@ -35,7 +36,7 @@
 }
 .ds-main {
   min-width: 0;
-  padding: var(--nl-s-8) var(--nl-s-10) 120px;
+  padding: var(--nl-s-8) var(--nl-s-10) calc(var(--nl-s-10) * 3);
 }
 .ds-section {
   max-width: 1120px;
@@ -136,7 +137,7 @@
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--nl-s-2);
   max-width: 44%;
 }
 .ds-corner--tl {

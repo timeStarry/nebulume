@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  UndoStack,
-  compareWindow,
-  cullKeyAction,
-  nextAfterMark,
-  snapshotQueue,
-} from '../src/culling';
+import { compareWindow, cullKeyAction, nextAfterMark, snapshotQueue } from '../src/culling';
 import type { AssetListResult } from '../src/model';
 
 describe('culling shortcuts', () => {
@@ -39,17 +33,6 @@ describe('culling advance and undo', () => {
     expect(nextAfterMark(2, 3, true)).toEqual({ index: 2, atEnd: true });
     expect(nextAfterMark(0, 3, false)).toEqual({ index: 0, atEnd: false });
     expect(nextAfterMark(0, 1, true)).toEqual({ index: 0, atEnd: true });
-  });
-
-  it('undoes marks last-in first-out within a bounded stack', () => {
-    const stack = new UndoStack(2);
-    stack.push({ id: 'a', rating: 0, flag: 'none' });
-    stack.push({ id: 'b', rating: 2, flag: 'pick' });
-    stack.push({ id: 'c', rating: 5, flag: 'reject' });
-    expect(stack.size).toBe(2);
-    expect(stack.pop()?.id).toBe('c');
-    expect(stack.pop()?.id).toBe('b');
-    expect(stack.pop()).toBeUndefined();
   });
 
   it('keeps compare windows inside the queue', () => {

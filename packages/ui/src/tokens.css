@@ -191,12 +191,14 @@
   --nl-tint-recipe: rgba(106, 85, 144, 0.1);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :root,
-  [data-theme] {
-    --nl-d-fast: 0ms;
-    --nl-d-base: 0ms;
-    --nl-d-slow: 0ms;
-    --nl-d-spring: 0ms;
-  }
+/* Motion follows the user's choice (src/motion.ts), defaulting to the OS setting. */
+[data-motion='standard'] {
+  --nl-spring: var(--nl-ease);
+}
+
+[data-motion='reduced'] {
+  --nl-d-fast: 0ms;
+  --nl-d-base: 0ms;
+  --nl-d-slow: 0ms;
+  --nl-d-spring: 0ms;
 }

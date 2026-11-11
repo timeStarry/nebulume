@@ -11,7 +11,8 @@ export default function Tooltip(props: {
   return (
     <span
       class="nl-tip-host"
-      data-tooltip={props.shortcut ? `${props.label}  ${props.shortcut}` : props.label}
+      data-tooltip={props.label}
+      data-kbd={props.shortcut}
       data-tip-side={props.side ?? 'bottom'}
     >
       {props.children}

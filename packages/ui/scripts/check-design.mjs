@@ -1,6 +1,7 @@
 // Design-rule check for CSS outside the design system.
 // Colours, shadows, weights, pixel font sizes, gradients, blur and glass belong in src/ui/ and tokens.css.
 // Layout-property transitions are banned everywhere outside src/ui/ (AGENTS.md, UI rule 6).
+// Spacing outside src/ui/ uses --nl-s-* tokens (AGENTS.md, UI rule 2).
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -55,6 +56,10 @@ function judge(property, value) {
     found.push('font-size-px');
   if (/(linear|radial|conic)-gradient\s*\(/i.test(v)) found.push('gradient');
   if (/\bblur\s*\(/i.test(v)) found.push('blur');
+  // Spacing sits on the 4px grid through --nl-s-* tokens; 1-2px hairlines and calc() pass.
+  if (/^(gap|row-gap|column-gap|padding|margin)(-[a-z-]+)?$/.test(prop) && !/calc\(/i.test(v))
+    if (v.split(/\s+/).some((part) => /^-?(\d+(\.\d+)?)px$/.test(part) && Math.abs(parseFloat(part)) > 2))
+      found.push('spacing-px');
   if (/^(-webkit-)?backdrop-filter$/.test(prop) && !/^none$/i.test(v)) found.push('glass');
   if (/^(transition|transition-property)$/.test(prop) && LAYOUT_TRANSITION.test(v))
     found.push('layout-transition');

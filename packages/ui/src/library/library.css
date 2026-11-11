@@ -21,7 +21,7 @@
   place-items: center;
   min-width: 16px;
   height: 16px;
-  padding: 0 4px;
+  padding: 0 var(--nl-s-1);
   border-radius: var(--nl-r-pill);
   background: var(--nl-raised);
   color: var(--nl-text);

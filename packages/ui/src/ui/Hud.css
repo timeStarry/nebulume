@@ -1,0 +1,44 @@
+.nl-hud-slot {
+  position: absolute;
+  z-index: 40;
+  left: 50%;
+  bottom: var(--nl-s-10);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.nl-hud {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+  height: var(--nl-h-lg);
+  padding: 0 var(--nl-s-5);
+  border-radius: var(--nl-r-pill);
+  background: var(--nl-glass);
+  -webkit-backdrop-filter: var(--nl-glass-blur);
+  backdrop-filter: var(--nl-glass-blur);
+  box-shadow:
+    inset 0 1px 0 var(--nl-highlight),
+    inset 0 0 0 1px var(--nl-line);
+  color: var(--nl-text);
+  font-size: var(--nl-t-14);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  animation: nl-hud-in var(--nl-d-spring) var(--nl-spring);
+}
+.nl-hud-slot--viewer .nl-hud {
+  background: var(--nl-v-glass);
+  box-shadow:
+    inset 0 1px 0 var(--nl-v-highlight),
+    inset 0 0 0 1px var(--nl-v-line);
+  color: var(--nl-v-text);
+}
+@keyframes nl-hud-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+[data-motion='reduced'] .nl-hud {
+  animation: none;
+}
