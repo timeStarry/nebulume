@@ -1342,3 +1342,65 @@ test('⌘⌫ moves the selected photo to the Trash and the toast puts it back', 
   await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
   await expect(page.getByRole('button', { name: name! })).toBeVisible();
 });
+
+test('a keyboard rating shows the HUD, applies at once and ⌘Z restores the previous value', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page, 6);
+  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  const first = page.locator('.thumbnail').first();
+  await first.click();
+  await page.keyboard.press('3');
+  await expect(page.getByTestId('hud')).toContainText('★★★');
+  await expect(first).toHaveAttribute('aria-label', /3 星/);
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.rate')?.params)
+    .toEqual({ id: 'photo-0', rating: 3 });
+  await page.keyboard.press('x');
+  await expect(page.getByTestId('hud')).toContainText('淘汰');
+  await expect.poll(() => calls.filter((call) => call.command === 'asset.flag').length).toBe(1);
+  // Undo goes back one step at a time: the flag first, then the rating.
+  await page.keyboard.press('Meta+z');
+  await expect(page.getByTestId('hud')).toContainText('已撤销');
+  // Each step restores the photo's whole previous mark in one transaction.
+  const batches = () => calls.filter((call) => call.command === 'asset.mark_batch');
+  await expect
+    .poll(() => batches().at(-1)?.params)
+    .toEqual({ ids: ['photo-0'], rating: 3, flag: 'none' });
+  await page.keyboard.press('Meta+z');
+  await expect
+    .poll(() => batches().at(-1)?.params)
+    .toEqual({ ids: ['photo-0'], rating: 0, flag: 'none' });
+  await expect(first).toHaveAttribute('aria-label', /0 星/);
+});
+
+test('⌘Z puts trashed photos back without clicking the toast', async ({ page }) => {
+  const { calls } = await fixture(page, 6);
+  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await page.locator('.thumbnail').nth(2).click();
+  await page.keyboard.press('Meta+Backspace');
+  await expect(page.locator('.collection-status')).toContainText('已载入 5 / 5');
+  await expect(page.getByRole('button', { name: /撤销/ })).toContainText('⌘Z');
+  await page.keyboard.press('Meta+z');
+  await expect
+    .poll(() => calls.find((call) => call.command === 'asset.restore')?.params)
+    .toEqual({ ids: ['photo-2'] });
+  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.getByRole('button', { name: /撤销/ })).toHaveCount(0);
+});
+
+test('a failed rating write restores the previous value and explains why', async ({ page }) => {
+  await fixture(page, 4);
+  await expect(page.locator('.collection-status')).toContainText('已载入 4 / 4');
+  await page.route('**/__sync_rpc', async (route) => {
+    const body = route.request().postDataJSON() as { command: string };
+    if (body.command === 'asset.rate')
+      return route.fulfill({ json: { error: { code: 'E_IO', message: '磁盘只读' } } });
+    return route.fallback();
+  });
+  const first = page.locator('.thumbnail').first();
+  await first.click();
+  await page.keyboard.press('5');
+  await expect(page.getByRole('alert')).toContainText('标记未保存');
+  await expect(first).toHaveAttribute('aria-label', /0 星/);
+});

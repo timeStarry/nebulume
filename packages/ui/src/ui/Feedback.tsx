@@ -54,6 +54,8 @@ export function Toast(props: {
   tone?: 'neutral' | 'error' | 'busy';
   message: JSX.Element;
   action?: { label: string; run: () => void };
+  /** Key that triggers `action`, shown next to it. */
+  shortcut?: string;
   onClose?: () => void;
   closeLabel?: string;
 }) {
@@ -69,8 +71,16 @@ export function Toast(props: {
       <span class="nl-toast-message">{props.message}</span>
       <Show when={props.action}>
         {(action) => (
-          <button type="button" class="nl-toast-action" onClick={() => action().run()}>
+          <button
+            type="button"
+            class="nl-toast-action"
+            aria-keyshortcuts={props.shortcut}
+            onClick={() => action().run()}
+          >
             {action().label}
+            <Show when={props.shortcut}>
+              <kbd class="nl-kbd nl-toast-kbd">{props.shortcut}</kbd>
+            </Show>
           </button>
         )}
       </Show>

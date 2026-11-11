@@ -184,7 +184,7 @@
 .cache-clean-options input,
 .cache-migration-review input[type='radio'],
 .cache-authorization input {
-  margin-top: 4px;
+  margin-top: var(--nl-s-1);
   flex: none;
 }
 .cache-migration-review fieldset {
@@ -222,7 +222,7 @@
   max-width: 18px;
   height: 18px;
   min-height: 18px;
-  margin: 3px 0 0;
+  margin: var(--nl-s-1) 0 0;
   padding: 0;
 }
 .dialog-form .cache-checkbox > span {

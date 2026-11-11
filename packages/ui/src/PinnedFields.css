@@ -11,7 +11,7 @@
   align-items: center;
   gap: var(--nl-s-2);
   min-height: 30px;
-  padding: 0 var(--nl-s-1) 0 6px;
+  padding: 0 var(--nl-s-1) 0 var(--nl-s-2);
   border-radius: var(--nl-r-sm);
   font-size: var(--nl-t-13);
 }

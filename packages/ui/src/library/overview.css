@@ -7,10 +7,10 @@
 }
 .library-overview {
   max-width: 1120px;
-  padding: var(--nl-s-2) var(--nl-s-6) 64px;
+  padding: var(--nl-s-2) var(--nl-s-6) calc(var(--nl-s-2) * 8);
 }
 .library-overview section {
-  padding: 22px 0;
+  padding: var(--nl-s-6) 0;
   border-top: 1px solid var(--nl-line);
 }
 .library-overview h2 {
@@ -20,7 +20,7 @@
 .ov-hint,
 .ov-empty,
 .ov-error {
-  margin: 0 0 14px;
+  margin: 0 0 var(--nl-s-4);
   color: var(--nl-text-3);
   font-size: var(--nl-t-13);
 }
@@ -38,8 +38,8 @@
 .ov-figures {
   display: flex;
   flex-wrap: wrap;
-  gap: 48px;
-  padding: 10px 0 22px;
+  gap: calc(var(--nl-s-2) * 6);
+  padding: var(--nl-s-2) 0 var(--nl-s-6);
 }
 .ov-figures b {
   display: block;
@@ -136,15 +136,15 @@
 .ov-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 22px;
-  margin-top: 10px;
+  gap: var(--nl-s-6);
+  margin-top: var(--nl-s-2);
   color: var(--nl-text-2);
   font-size: var(--nl-t-13);
 }
 .ov-legend span {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--nl-s-2);
 }
 .ov-legend i {
   width: 10px;
@@ -160,7 +160,7 @@
   gap: var(--nl-s-10);
 }
 .ov-ranked {
-  margin: 10px 0 0;
+  margin: var(--nl-s-2) 0 0;
   padding: 0;
   list-style: none;
 }

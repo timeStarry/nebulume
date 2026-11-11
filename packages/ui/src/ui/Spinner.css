@@ -17,8 +17,6 @@
     transform: rotate(360deg);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .nl-spinner {
-    animation-duration: 2400ms;
-  }
+[data-motion='reduced'] .nl-spinner {
+  animation-duration: 2400ms;
 }

@@ -1,0 +1,41 @@
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+input,
+textarea,
+select,
+[contenteditable='true'],
+code,
+pre,
+kbd,
+dd,
+td,
+details,
+.nl-selectable,
+.path-value,
+.review-path,
+.cache-path,
+.directory-path,
+.library-tile-path,
+.nl-pinned-value,
+.metadata,
+.certificate-details,
+.storage-error-content,
+.nl-banner > p,
+.nl-toast-message,
+[role='alert'] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+img {
+  -webkit-user-drag: none;
+}

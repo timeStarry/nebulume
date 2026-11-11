@@ -35,6 +35,97 @@ Browser tests use Playwright Chromium by default (`pnpm exec playwright install 
 - Unsupported RAW sensor decoding may use a bounded standard-TIFF embedded JPEG for viewing and RGB histograms. Both views explicitly identify the camera preview; preview-only dimensions are labeled, and JPEG export still requires successful sensor decoding. Common EXIF parameters are readable without ASCII padding; all valid raw EXIF fields remain in a collapsed disclosure.
 - Browser mode decodes only formats supported by the browser; EXIF, native RAW, durable index, SD card and remote access require the desktop service. Browser metadata, ratings and recipes disappear when the page closes.
 
+## Design tokens and primitives
+
+Governance rules live in [AGENTS.md](../../AGENTS.md#ui--ux-工程治理铁律); the development and review workflow in [UI_WORKFLOW.md](../../docs/UI_WORKFLOW.md). Values are defined once in [`src/tokens.css`](src/tokens.css), with dark (default) and light sets switched by `data-theme` on `<html>` (`src/theme.ts`). The viewer is dark in both themes and uses the fixed `--nl-v-*` set.
+
+`pnpm check:design` (part of `pnpm test`) rejects, in any CSS outside `src/ui/` and `tokens.css`: hex/`rgb()`/named colours, outer shadows, weights other than 400/500, pixel font sizes, gradients, `blur()`, `backdrop-filter` (`glass`), transitions on layout properties (`layout-transition`) and pixel spacing above 2px in `gap`/`padding`/`margin` (`spacing-px`; use `--nl-s-*` or `calc()` of them). Opt-outs are line comments: `/* design: mask */` (crop mask shadow) and `/* design: bounded */` (one fixed element such as a progress fill; never a grid item).
+
+### Spatial surfaces
+
+Dark theme orders surfaces by lightness: stage < rail < sidebar < canvas < card.
+
+| Role            | Token                            | Alias                        | Use                                                                                      |
+| --------------- | -------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
+| Stage           | `--nl-stage`                     |                              | Viewer and loupe background, dark in both themes                                         |
+| Rail            | `--nl-rail`                      |                              | Icon rail                                                                                |
+| Sidebar         | `--nl-side`                      | `--nl-surface-sidebar`       | Library tree, settings sub-navigation                                                    |
+| Canvas          | `--nl-canvas`                    | `--nl-surface-canvas`        | Main work area and grid background                                                       |
+| Card / raised   | `--nl-raised`                    | `--nl-surface-card`          | Buttons, inputs, segmented controls, cards, menus                                        |
+| Hover / pressed | `--nl-hover` `--nl-pressed`      |                              | Interaction states                                                                       |
+| Overlay glass   | `--nl-glass` + `--nl-glass-blur` | `--nl-v-glass` in the viewer | Floating layers only: toast, HUD, floating dock, menus, viewer toolbar                   |
+| Scrim           | `--nl-scrim`                     |                              | Dialog backdrop                                                                          |
+| Border subtle   | `--nl-line`                      | `--nl-border-subtle`         | Default 1px divider                                                                      |
+| Border strong   | `--nl-line-strong`               |                              | Hover and emphasis                                                                       |
+| Highlight       | `--nl-highlight`                 | `--nl-v-highlight`           | Top 1px edge on raised/floating layers (`box-shadow: inset 0 1px 0 var(--nl-highlight)`) |
+| Skeleton        | `--nl-skeleton`                  |                              | Static placeholder cells, no shimmer                                                     |
+
+Text: `--nl-text` (primary), `--nl-text-2` (secondary), `--nl-text-3` (hint), `--nl-inverse`. Action: `--nl-primary`, `--nl-primary-hover`, `--nl-ring` (focus ring).
+
+### Photographic semantics
+
+Each state colour always appears with an icon or a word, never alone. Every value exists in both themes.
+
+| Meaning                      | Foreground                                | Tint                                          | Family                                      |
+| ---------------------------- | ----------------------------------------- | --------------------------------------------- | ------------------------------------------- |
+| Pick / keep                  | `--nl-pick`                               | `--nl-tint-pick`                              | Emerald                                     |
+| Reject                       | `--nl-reject`                             | `--nl-tint-reject`, `--nl-tint-reject-strong` | Coral                                       |
+| Rating stars                 | `--nl-rating` (= `--nl-star`)             | `--nl-tint-rating`                            | Amber gold                                  |
+| Remote, not cached           | `--nl-remote`                             | `--nl-tint-remote`                            | Slate blue                                  |
+| Crop recipe / read-only edit | `--nl-recipe`                             | `--nl-tint-recipe`                            | Muted violet                                |
+| Warning                      | `--nl-warn`                               | `--nl-tint-warn`                              |                                             |
+| Info, chart series           | `--nl-info`, `--nl-series`                | `--nl-tint-info`                              |                                             |
+| Histogram, AF points, crop   | `--nl-hist-*`, `--nl-af-*`, `--nl-crop-*` |                                               | Photo-content colours, fixed in both themes |
+
+### Space, radius, size, type
+
+| Scale              | Tokens                                                                                                                                              |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spacing (4px grid) | `--nl-s-1` 4 · `-2` 8 · `-3` 12 · `-4` 16 · `-5` 20 · `-6` 24 · `-8` 32 · `-10` 40                                                                  |
+| Radius             | `--nl-r-thumb` 2 (thumbnails) · `-xs` 4 (badges, kbd) · `-sm` 6 (controls) · `-md` 8 (menus, toasts) · `-lg` 12 (dialogs, cards) · `-pill`          |
+| Control height     | `--nl-h-xs` 24 · `-sm` 28 · `-md` 32 · `-lg` 40                                                                                                     |
+| Layout             | `--nl-rail-width` 56 · `--nl-sidebar-width` 220 · `--nl-aside-width` 300 · `--nl-header-height` 56 · `--nl-toolbar-height` 44 · `--nl-page-max` 760 |
+| Type               | `--nl-t-11` … `--nl-t-22`; weights 400/500 only; `--nl-font`, `--nl-mono`; numbers use `tabular-nums` (set on `body`)                               |
+
+### Motion
+
+| Token                             | Value                    | Use                                                                                              |
+| --------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------ |
+| `--nl-ease`                       | `cubic-bezier(.2,0,0,1)` | Default for every transition                                                                     |
+| `--nl-d-fast` / `-base` / `-slow` | 120 / 180 / 280ms        | Hover · open/close · grid-to-viewer                                                              |
+| `--nl-spring` + `--nl-d-spring`   | overshoot curve, 220ms   | Segmented thumb, floating dock, single-tile hover, local state flips; `transform`/`opacity` only |
+| `--nl-d-hud`                      | 1200ms                   | Blind-action HUD capsule lifetime                                                                |
+| `--nl-d-undo`                     | 10000ms                  | Undo toast lifetime                                                                              |
+
+Motion strength is a user setting (Settings → 外观 → 界面动效, `src/motion.ts`), written to `<html data-motion>`: `full` (default when the OS does not ask for less) runs springs and the grid-to-viewer zoom; `standard` maps `--nl-spring` to `--nl-ease` and skips the zoom; `reduced` sets every duration to 0. `system` follows `prefers-reduced-motion`. Style reduced variants with `[data-motion='reduced']`, never the media query directly.
+
+### Primitives (`src/ui/`, exported from `src/ui/index.ts`)
+
+| Primitive                                                                          | Notes                                                                                |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `Button`                                                                           | `primary` `secondary` `ghost` `danger`; `sm`/`md`/`lg`; `busy`; one primary per area |
+| `IconButton`                                                                       | Required `label` (aria-label + tooltip); optional shortcut shown as `Kbd`            |
+| `Tooltip`, `Kbd`                                                                   | Every high-frequency action shows its key in `<Kbd>`                                 |
+| `Field`, `TextInput`, `Select`, `Checkbox`, `Radio`, `Switch`, `Slider`            | Form controls; inputs keep text selection                                            |
+| `Segmented`                                                                        | View switch / single choice; the spring-motion candidate                             |
+| `Chip`, `Toggle`, `Badge`, `StatusDot`                                             | Filters, pill toggles, `pick`/`reject`/`warn`/`info` badges                          |
+| `Banner`, `Toast`, `Progress`, `EmptyState`                                        | `toasts.show({ message, action })` is the single undo channel (10s with action)      |
+| `Group`, `ListRow`                                                                 | All settings rows                                                                    |
+| `Dialog`, `Drawer`                                                                 | Focus trap; only for irreversible or wide-scope actions                              |
+| `PageHeader`, `Toolbar`, `Spacer`, `SinglePage`, `SplitPage`, `Steps`, `DataTable` | Page skeletons                                                                       |
+| `ContextMenu`, `MenuList`                                                          | The only right-click surface; suppresses the WebView menu                            |
+
+| `createHud()` / `Hud.Host` | Blind-action glass capsule (`role="status"`, mounted only while showing) |
+
+Window-level helpers outside `src/ui/`:
+
+- `src/feedback.tsx`: `createFeedback()` owns busy/error/notice/sync-error state, the undo history and the HUD; `<FeedbackStack>` renders them with `Toast`.
+- `src/undo.ts`: `createUndoHistory()`; `Ctrl/⌘+Z` reverts the latest entry, the toast reverts its own; a revert waits for the forward write.
+- `src/desktop.ts` + `src/ui/desktop.css`: viewport lock, default `user-select: none` with selectable paths/EXIF/inputs, WebView context menu suppressed (Shift+right-click passes in dev builds).
+- `src/keymap.ts`: the shortcut table rendered by Settings → 快捷键.
+
+Still planned: `FloatingDock` (batch bar) and a `Skeleton` primitive. New views must not hand-roll them in feature CSS; add them under `src/ui/` first.
+
 ## Validation scope
 
 Unit tests cover pure interaction and coordinate behavior; Playwright workflows cover browser UI behavior and IPC contracts. Browser IPC fixtures do not establish real network transport or native OS window behavior. The root `node scripts/smoke.mjs --ui` workflow connects the UI to the Rust stdio service. Generated screenshots belong in ignored `test-results/` or root `artifacts/` directories.

@@ -1,4 +1,5 @@
 import './base.css';
+import './desktop.css';
 
 export { default as Button } from './Button';
 export type { ButtonSize, ButtonVariant } from './Button';
@@ -28,3 +29,5 @@ export { default as ContextMenu, MenuList } from './Menu';
 export type { ContextMenuState, OverflowItem, MenuEntry } from './Menu';
 export { toasts } from './toasts';
 export type { ToastInput } from './toasts';
+export { createHud, HUD_MS } from './Hud';
+export type { Hud } from './Hud';

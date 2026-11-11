@@ -372,7 +372,7 @@
   line-height: 1.65;
 }
 .viewer-alert > svg {
-  margin-top: 3px;
+  margin-top: var(--nl-s-1);
 }
 .viewer-alert > span {
   flex: 1;
@@ -398,7 +398,7 @@
   flex: none;
   width: 96px;
   height: 72px;
-  padding: 3px;
+  padding: var(--nl-s-1);
   border-radius: var(--nl-r-xs);
 }
 .thumbnail.compact .thumbnail-image {
@@ -408,7 +408,7 @@
 .thumbnail.compact .filetype {
   left: 3px;
   bottom: 3px;
-  padding: 1px 3px;
+  padding: 1px var(--nl-s-1);
   font-size: var(--nl-t-12);
 }
 .thumbnail.compact .thumbnail-fallback span {
@@ -515,6 +515,9 @@
   object-fit: contain;
   pointer-events: none;
   user-select: none;
+}
+.photo-placeholder.previous-frame {
+  opacity: 0.35;
 }
 .viewer-message.over-placeholder {
   position: absolute;

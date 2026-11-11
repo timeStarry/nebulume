@@ -86,26 +86,6 @@ export function markOf(asset: Pick<Asset, 'id' | 'rating' | 'flag'>): Mark {
   return { id: asset.id, rating: asset.rating, flag: asset.flag || 'none' };
 }
 
-/** Session-only undo of marks; each entry is the state before one mark. */
-export class UndoStack {
-  private entries: Mark[] = [];
-  constructor(private readonly limit = 200) {}
-  push(before: Mark) {
-    this.entries.push(before);
-    if (this.entries.length > this.limit) this.entries.shift();
-  }
-  pop(): Mark | undefined {
-    return this.entries.pop();
-  }
-  get size() {
-    return this.entries.length;
-  }
-  /** Drops marks of photos that are no longer in the session (moved to the Trash). */
-  forget(ids: Set<string>) {
-    this.entries = this.entries.filter((entry) => !ids.has(entry.id));
-  }
-}
-
 /** Ids shown together in compare view: the focused image and the ones after it. */
 export function compareWindow(ids: string[], index: number, count: number): string[] {
   const size = Math.max(2, Math.min(4, count));

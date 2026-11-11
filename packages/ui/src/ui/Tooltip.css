@@ -10,6 +10,11 @@
 .nl-tip-host:focus-within::after {
   content: attr(data-tooltip);
 }
+[data-kbd]:hover::after,
+[data-kbd]:focus-visible::after,
+.nl-tip-host[data-kbd]:focus-within::after {
+  content: attr(data-tooltip) '\2002' attr(data-kbd);
+}
 [data-tooltip]::after {
   position: absolute;
   z-index: 50;

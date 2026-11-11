@@ -101,3 +101,36 @@ describe('design check catches what the spec forbids', () => {
     expect(rules('#add .a {\n  color: var(--nl-text);\n}')).toEqual([]);
   });
 });
+
+describe('governance rules: glass and layout motion', () => {
+  const rules = (css: string) => checkCss('src/x.css', css).map((finding: Finding) => finding.rule);
+  test('backdrop glass is reserved for src/ui primitives', () => {
+    expect(rules('.a {\n  backdrop-filter: var(--nl-glass-blur);\n}')).toEqual(['glass']);
+    expect(rules('.a {\n  backdrop-filter: none;\n}')).toEqual([]);
+    expect(checkCss('src/ui/Toast.css', '.a{backdrop-filter:var(--nl-glass-blur)}')).toEqual([]);
+  });
+  test('transitions on layout properties are caught, transform and opacity pass', () => {
+    expect(rules('.a {\n  transition: width var(--nl-d-base);\n}')).toEqual(['layout-transition']);
+    expect(rules('.a {\n  transition: all 120ms;\n}')).toEqual(['layout-transition']);
+    expect(rules('.a {\n  transition-property: opacity, top;\n}')).toEqual(['layout-transition']);
+    expect(rules('.a {\n  transition: opacity 120ms, transform 120ms;\n}')).toEqual([]);
+    expect(rules('.a {\n  transition: border-color var(--nl-d-fast) var(--nl-ease);\n}')).toEqual(
+      [],
+    );
+  });
+  test('a single bounded element may opt out explicitly', () => {
+    expect(rules('.a {\n  /* design: bounded */\n  transition: width 180ms;\n}')).toEqual([]);
+  });
+});
+
+describe('governance rules: spacing', () => {
+  const rules = (css: string) => checkCss('src/x.css', css).map((finding: Finding) => finding.rule);
+  test('raw pixel spacing is caught, tokens, hairlines and calc pass', () => {
+    expect(rules('.a {\n  padding: 0 10px;\n}')).toEqual(['spacing-px']);
+    expect(rules('.a {\n  gap: 6px;\n}')).toEqual(['spacing-px']);
+    expect(rules('.a {\n  margin-top: -5px;\n}')).toEqual(['spacing-px']);
+    expect(rules('.a {\n  padding: var(--nl-s-2) var(--nl-s-3);\n}')).toEqual([]);
+    expect(rules('.a {\n  margin: -1px;\n  padding: 2px 0;\n}')).toEqual([]);
+    expect(rules('.a {\n  padding-left: calc(var(--depth) * 14px);\n}')).toEqual([]);
+  });
+});

@@ -120,7 +120,7 @@
 }
 .asset-inspector .histogram {
   height: 96px;
-  padding: var(--nl-s-1) 3px 0;
+  padding: var(--nl-s-1) var(--nl-s-1) 0;
   border: 1px solid var(--nl-v-line);
   border-radius: var(--nl-r-xs);
   background: var(--nl-v-stage);
@@ -187,7 +187,7 @@
 }
 .asset-inspector .exposure-summary > div {
   min-width: 0;
-  padding: 0 5px;
+  padding: 0 var(--nl-s-1);
   text-align: center;
 }
 .asset-inspector .exposure-summary > div + div {

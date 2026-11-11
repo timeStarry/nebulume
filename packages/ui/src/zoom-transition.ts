@@ -1,14 +1,13 @@
+import { allowsFlourish } from './motion';
+
 /**
  * The zoom between a grid tile and the in-window viewer. A copy of the tile's
  * decoded image flies between the two rectangles while the real views swap
  * underneath, so the photo appears to grow out of (and shrink back into) its
- * place. Nothing runs when the user prefers reduced motion.
+ * place. Runs only at the full motion level (src/motion.ts).
  */
 const DURATION = 280;
-
-function reducedMotion() {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-}
+const reducedMotion = () => !allowsFlourish();
 
 /** Where a photo of `ratio` (width / height) sits when fitted inside `box`. */
 export function fitRect(box: DOMRect, ratio: number): DOMRect {

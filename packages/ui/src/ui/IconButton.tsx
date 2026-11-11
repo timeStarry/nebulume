@@ -41,9 +41,8 @@ export default function IconButton(
       aria-pressed={own.pressed === undefined ? undefined : own.pressed}
       aria-keyshortcuts={own.shortcut}
       title={own.title}
-      data-tooltip={
-        own.title ? undefined : own.shortcut ? `${own.label}  ${own.shortcut}` : own.label
-      }
+      data-tooltip={own.title ? undefined : own.label}
+      data-kbd={own.title ? undefined : own.shortcut}
       data-tip-side={own.tipSide ?? 'bottom'}
     >
       <Icon name={own.icon} size={ICON_SIZE[size()]} />
