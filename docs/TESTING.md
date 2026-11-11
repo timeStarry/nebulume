@@ -6,7 +6,13 @@
 
 0.2.1（2026-11-11）修复升级兼容与发布验收。本机 Windows 修复验证：Rust workspace 311 项通过、3 项默认显式忽略；fmt、workspace/all-targets Clippy（`-D warnings`）、129 项 UI 单元、设计规则、TypeScript、生产构建与 15 项发布脚本测试通过。8 项新增迁移回归覆盖预览 schema9/10、受影响 schema11、原有记录及导入选项保留、已有修订计数器、未知/未来结构拒绝和 DDL 失败回滚重试；4 项更新签名回归覆盖有效签名、文件/注释篡改、错误公钥与坏编码。
 
-真实日常库的一致性副本从 schema5 升至 schema12，两次启动及列表查询通过，4 个库和 7,380 条资产保留；除测试隔离所需的路径重映射外，原有用户列摘要一致，SQLite 完整性及外键检查通过。隔离数据使用断开的合成来源，不把此结果写成实际 NAS 或凭据恢复验收。
+本机 Edge 全量 141 项通过。[Release 工作流](https://github.com/timeStarry/nebulume/actions/runs/42942977169)成功，[Validate 工作流](https://github.com/timeStarry/nebulume/actions/runs/42942953197)的 Windows、macOS、Linux 作业全部通过；[0.2.1 正式包](https://github.com/timeStarry/nebulume/releases/tag/v0.2.1)已发布。
+
+本机物理用户数据原为 preview.9/schema10，含 11 个图库、23,015 条资产、400 条留用、352 条淘汰及 2 条非零评级。正式 NSIS 安装器退出码为 0，正常用户安装目录的程序及再次启动验证通过。数据库为 schema12，完整性及外键检查通过；首次启动后所有原有资产、图库列及 storage 配置保持不变。浏览后部分派生元数据刷新及旧搜索缓存失效已单列记录，资产身份和用户编辑保持不变。完整物理备份含 35,582 个文件、10,929,939,654 字节；数据库、WAL 和数据文件摘要一致，唯 SQLite 共享内存文件在副本检查时发生易变内容差异；另存的一致性 SQLite 快照完整性检查通过。隔离迁移副本保留全部用户记录；路径、断开的合成连接及不透明的绑定 epoch 为隔离测试有意重映射，不属于用户记录丢失。详见[本机升级记录](WINDOWS-UPGRADE-0.2.1.md)。
+
+先前称作“真实日常库”的 schema5、4 个库和 7,380 条资产，实际来自 MSIX AppData 重定向中的旧 0.1.0 私有副本。其迁移测试仍有效，但不能作为物理用户日常库升级证据；本次以物理路径、未重定向的系统进程观察及实际运行程序交叉确认后更正。
+
+真实 NEF 在实际 Rust 服务中生成 t256（171×256、31,707 字节）及 p2560（1707×2560、2,174,654 字节）JPEG，原生窗口显示 NEF 影像且无载入错误；关于/更新页显示 0.2.1 为最新版本。此前旧私有副本的 NEF 请求在解码前返回 `E_RANGE_HTTP`/404，而已缓存 JPEG 能显示，不能由此推断存在 NEF 格式解码回归。四种已检查扩展名的系统默认关联在升级前后保持不变。
 
 真实 Rust/Edge bridge 使用本次 0.2.1 CLI 和独立端口 Vite，验证实际预览字节、内嵌及独立查看器、评级与裁剪持久化、JPEG 导出、1440/960 布局和原片哈希不变，通过。`smoke.mjs --ui` 自行启动并清理前端服务，拒绝旧版本 CLI；不再要求先启动 `pnpm dev`。发布流水线新增该联调检查，并用与 Tauri updater 相同的公钥算法实际验证安装器签名。打包忽略项逐名核对，不再硬编码数量为 1。
 
@@ -47,7 +53,7 @@ pnpm --filter @nebulume/ui test:browser
 
 未设置浏览器变量时使用 Playwright Chromium；需先安装对应浏览器。Cargo 依赖已缓存时可增加 `--offline`。
 
-Rust/UI bridge 检查先运行 `cargo build -p neb-cli` 和 `pnpm dev`，再运行 `node scripts/smoke.mjs --ui`；可用 `NEB_BROWSER_CHANNEL=msedge` 选择已安装浏览器。
+Rust/UI bridge 检查先运行 `cargo build -p neb-cli`，再运行 `node scripts/smoke.mjs --ui`；脚本自行启动独立端口前端服务，可用 `NEB_BROWSER_CHANNEL=msedge` 选择已安装浏览器。
 
 原生桌面验收使用 release 程序和独立 `NEBULUME_DATA_DIR`。使用 `--data-dir` 隔离 CLI 数据。不要让自动化读取日常图库、真实凭据或无关目标路径。
 
