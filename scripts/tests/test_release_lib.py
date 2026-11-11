@@ -11,6 +11,7 @@ from release_lib import (  # noqa: E402
     changelog_notes,
     compare_release_assets,
     parse_cargo_totals,
+    parse_cargo_ignored,
     parse_playwright_json,
     parse_vitest_json,
     updater_manifest,
@@ -104,6 +105,19 @@ class UpdaterManifestTest(unittest.TestCase):
 
 
 class ReportParsingTest(unittest.TestCase):
+    def test_ignored_tests_require_named_reviewed_exceptions(self) -> None:
+        names = [
+            "credentials::native_test::windows_native_vault_roundtrip_cleans_up_its_entry",
+            "watch::live::platform_events_for_a_new_photo_match_the_canonical_root",
+            "list_pages_on_a_hundred_thousand_photos",
+        ]
+        log = "\n".join(f"test {name} ... ignored" for name in names)
+        self.assertEqual(parse_cargo_ignored(log, 3), sorted(names))
+        for text, count in [(log, 1), (log + "\ntest other ... ignored", 4),
+                            (log + "\ntest " + names[0] + " ... ignored", 4), ("", 1)]:
+            with self.subTest(text=text, count=count), self.assertRaises(ReleaseError):
+                parse_cargo_ignored(text, count)
+
     def test_parse_cargo_totals_sums_all_binaries(self) -> None:
         log = (
             "running 4 tests\n"
@@ -230,10 +244,10 @@ class CollectValidationTest(unittest.TestCase):
 
         (self.dir / "cargo.log").write_text(cargo, encoding="utf-8")
         (self.dir / "vitest.json").write_text(
-            json.dumps({"numPassedTests": 70, "numFailedTests": vitest_failed}), encoding="utf-8"
+            json.dumps({"numPassedTests": 129, "numFailedTests": vitest_failed}), encoding="utf-8"
         )
         (self.dir / "pw.json").write_text(
-            json.dumps({"stats": {"expected": 68, "unexpected": 0, "flaky": 0}}), encoding="utf-8"
+            json.dumps({"stats": {"expected": 141, "unexpected": 0, "flaky": 0}}), encoding="utf-8"
         )
         return argparse.Namespace(
             version="0.2.0", commit="a" * 40, cargo_log=str(self.dir / "cargo.log"),
@@ -245,14 +259,22 @@ class CollectValidationTest(unittest.TestCase):
         import json
 
         validation = self.collect.collect(
-            self.args("test result: ok. 212 passed; 0 failed; 1 ignored; 0 measured\n")
+            self.args("test credentials::native_test::windows_native_vault_roundtrip_cleans_up_its_entry ... ignored, native only\n"
+                      "test watch::live::platform_events_for_a_new_photo_match_the_canonical_root ... ignored\n"
+                      "test list_pages_on_a_hundred_thousand_photos ... ignored\n"
+                      "test result: ok. 299 passed; 0 failed; 3 ignored; 0 measured\n")
         )
         path = self.dir / "validation.json"
         path.write_text(json.dumps(validation), encoding="utf-8")
         package = load_script("package-release.py")
         selected, _ = package.read_validation(path, "0.2.0", "a" * 40)
-        self.assertEqual(selected["checks"]["rust_passed"], 212)
+        self.assertEqual(selected["checks"]["rust_passed"], 299)
+        self.assertEqual(len(selected["checks"]["rust_ignored_tests"]), 3)
         self.assertTrue(selected["unsigned"])
+        validation["checks"]["rust_ignored_tests"].append("unexpected")
+        path.write_text(json.dumps(validation), encoding="utf-8")
+        with self.assertRaises(ReleaseError):
+            package.read_validation(path, "0.2.0", "a" * 40)
 
     def test_failed_counts_refused(self) -> None:
         with self.assertRaises(ReleaseError):

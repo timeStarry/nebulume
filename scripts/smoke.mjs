@@ -1,5 +1,5 @@
 // End-to-end smoke against the actual Rust command service, with optional UI QA.
-// Run `cargo build -p neb-cli`, start `pnpm dev`, then `node scripts/smoke.mjs --ui`.
+// Run `cargo build -p neb-cli`, then `node scripts/smoke.mjs --ui` (starts its own Vite).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
 
 function crc32(buffer) {
   let crc = 0xffffffff;
@@ -55,7 +57,14 @@ const photos = join(root, 'photos'),
 await Promise.all([photos, card, destination].map((p) => mkdir(p)));
 for (let i = 0; i < 6; i++) await writeFile(join(photos, `Light-study-${i + 1}.png`), fixture(i));
 await writeFile(join(card, 'Card-capture.png'), fixture(8, 120, 80));
-const executable = resolve('target/debug', process.platform === 'win32' ? 'neb.exe' : 'neb');
+const repository = fileURLToPath(new URL('..', import.meta.url));
+const executable =
+  process.env.NEB_CLI_PATH ||
+  resolve(
+    process.env.CARGO_TARGET_DIR || join(repository, 'target'),
+    'debug',
+    process.platform === 'win32' ? 'neb.exe' : 'neb',
+  );
 const child = spawn(executable, ['--data-dir', join(root, 'catalog'), 'stdio'], {
   stdio: ['pipe', 'pipe', 'pipe'],
 });
@@ -86,9 +95,52 @@ function rpc(command, params = {}) {
   });
 }
 const checks = [];
-let browser;
+let browser, uiServer;
+async function startUi() {
+  const reservation = createServer();
+  await new Promise((done) => reservation.listen(0, '127.0.0.1', done));
+  const { port } = reservation.address();
+  await new Promise((done) => reservation.close(done));
+  const url = `http://127.0.0.1:${port}`;
+  uiServer = spawn(
+    process.execPath,
+    [
+      join(repository, 'packages/ui/node_modules/vite/bin/vite.js'),
+      '--host',
+      '127.0.0.1',
+      '--port',
+      String(port),
+      '--strictPort',
+    ],
+    { cwd: join(repository, 'packages/ui'), stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let output = '';
+  uiServer.stdout.on('data', (data) => (output += data));
+  uiServer.stderr.on('data', (data) => (output += data));
+  let launchError;
+  uiServer.on('error', (error) => (launchError = error));
+  for (let attempt = 0; attempt < 120; attempt++) {
+    if (launchError || uiServer.exitCode !== null)
+      throw new Error(`Vite failed: ${launchError || output}`);
+    try {
+      if ((await fetch(url, { signal: AbortSignal.timeout(1000) })).ok) return url;
+    } catch {
+      /* Wait for this checkout's server, never reuse another checkout. */
+    }
+    await new Promise((done) => setTimeout(done, 250));
+  }
+  throw new Error(`Vite did not become ready: ${output}`);
+}
 try {
   const info = await rpc('system.info');
+  const expectedVersion = JSON.parse(
+    await readFile(join(repository, 'package.json'), 'utf8'),
+  ).version;
+  assert.equal(
+    info.version,
+    expectedVersion,
+    'Build neb-cli from this checkout before running smoke',
+  );
   assert.equal(info.originals_read_only, true);
   const library = await rpc('library.add', { name: '光影试验 · Smoke', root: photos });
   assert.equal((await rpc('library.scan', { library_id: library.id })).indexed, 6);
@@ -133,6 +185,7 @@ try {
   );
 
   if (process.argv.includes('--ui')) {
+    const uiUrl = await startUi();
     const { chromium } = await import('@playwright/test');
     browser = await chromium.launch({
       headless: true,
@@ -142,13 +195,67 @@ try {
       viewport: { width: 1440, height: 960 },
       deviceScaleFactor: 1,
     });
+    context.setDefaultTimeout(30_000);
     const errors = [];
+    const previewRequests = [];
+    const uiWrites = [];
+    const originalHashes = await Promise.all(
+      assets.map(async ({ path }) =>
+        createHash('sha256')
+          .update(await readFile(path))
+          .digest('hex'),
+      ),
+    );
     context.on('page', (page) => page.on('pageerror', (e) => errors.push(e.message)));
     const exportPath = join(root, 'ui-export.jpg');
+    // Chromium cannot run a Tauri custom protocol. Only its transport is bridged:
+    // every requested tier is rendered by the real CLI/shared Rust service.
+    await context.route('**/__neb_preview/**', async (route) => {
+      const [id, tier, uncropped] = new URL(route.request().url()).pathname
+        .slice('/__neb_preview/'.length)
+        .split('/')
+        .map(decodeURIComponent);
+      assert.ok(['t256', 't512', 't1024', 'p2560'].includes(tier));
+      assert.ok(['0', '1'].includes(uncropped));
+      const out = join(root, `preview-${previewRequests.length}.jpg`);
+      previewRequests.push({ id, tier, uncropped });
+      const args = [
+        '--data-dir',
+        join(root, 'catalog'),
+        'preview',
+        '--id',
+        id,
+        '--tier',
+        tier,
+        '--out',
+        out,
+        ...(uncropped === '1' ? ['--uncropped'] : []),
+      ];
+      try {
+        await new Promise((done, reject) => {
+          const render = spawn(executable, args, {
+            stdio: ['ignore', 'ignore', 'pipe'],
+            timeout: 30_000,
+          });
+          let error = '';
+          render.stderr.on('data', (data) => (error += data));
+          render.on('error', reject);
+          render.on('exit', (code) => (code === 0 ? done() : reject(new Error(error))));
+        });
+        const jpeg = await readFile(out);
+        assert.equal(jpeg.readUInt16BE(0), 0xffd8);
+        await route.fulfill({ contentType: 'image/jpeg', body: jpeg });
+      } catch (error) {
+        errors.push(error.message);
+        await route.fulfill({ status: 500, body: 'Rust preview rendering failed' });
+      }
+    });
     await context.route('**/__neb_rpc', async (route) => {
       const { command, params } = route.request().postDataJSON();
       try {
         const result = await rpc(command, params);
+        if (['asset.rate', 'asset.crop', 'asset.export'].includes(command))
+          uiWrites.push({ command, params });
         await route.fulfill({ json: { result } });
       } catch (e) {
         await route.fulfill({ json: { error: { code: e.code, message: e.message } } });
@@ -158,6 +265,10 @@ try {
       ({ exportPath }) => {
         window.isTauri = true;
         window.__TAURI_INTERNALS__ = {
+          convertFileSrc: (path, protocol) => {
+            if (protocol !== 'neb') throw new Error(`Unexpected protocol ${protocol}`);
+            return `${location.origin}/__neb_preview/${path}`;
+          },
           transformCallback: () => 1,
           unregisterCallback: () => {},
           metadata: {
@@ -196,12 +307,18 @@ try {
       { exportPath },
     );
     const page = await context.newPage();
-    await page.goto('http://127.0.0.1:5173');
+    await page.goto(uiUrl);
     await page.getByRole('button', { name: '打开图片库 光影试验 · Smoke' }).click();
     await page.locator('.thumbnail').first().waitFor();
     await page.locator('.thumbnail img').first().waitFor();
-    const opened = page.waitForEvent('popup');
     await page.locator('.thumbnail').first().dblclick();
+    await page.getByRole('dialog', { name: '沉浸影像查看器' }).waitFor();
+    await page.locator('.main-photo').waitFor();
+    await page.keyboard.press('Escape');
+    await page.getByRole('dialog', { name: '沉浸影像查看器' }).waitFor({ state: 'detached' });
+    const opened = page.waitForEvent('popup');
+    await page.locator('.thumbnail').first().click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '在新窗口中打开', exact: true }).click();
     const viewer = await opened;
     await viewer.locator('.main-photo').waitFor();
     assert.equal(await viewer.locator('.manager-navigation').count(), 0);
@@ -215,7 +332,8 @@ try {
     await viewer.getByLabel(/宽度/).fill('40');
     await viewer.getByRole('button', { name: '保存裁剪', exact: true }).click();
     await viewer.waitForFunction(() => !document.querySelector('.crop-panel'));
-    await viewer.getByRole('button', { name: '导出 JPEG', exact: true }).first().click();
+    await viewer.getByRole('button', { name: '更多', exact: true }).click();
+    await viewer.getByRole('menuitem', { name: '导出为 JPEG…', exact: true }).click();
     await viewer.waitForFunction(() => document.body.textContent.includes('已导出：'));
     await mkdir('artifacts', { recursive: true });
     await viewer.screenshot({ path: 'artifacts/workspace-viewer.png', fullPage: true });
@@ -223,7 +341,7 @@ try {
     await page.bringToFront();
     await page.locator('.photo-grid').waitFor();
     await page.screenshot({ path: 'artifacts/workspace-grid.png', fullPage: true });
-    await page.locator('.breadcrumb-button').click();
+    await page.getByRole('button', { name: /^全部图片库/ }).click();
     await page.screenshot({ path: 'artifacts/workspace-libraries.png', fullPage: true });
     await page.setViewportSize({ width: 960, height: 720 });
     assert.equal(
@@ -232,6 +350,23 @@ try {
     );
     await page.screenshot({ path: 'artifacts/workspace-compact.png', fullPage: true });
     assert.deepEqual(errors, []);
+    assert.ok(previewRequests.some((request) => request.tier === 'p2560'));
+    const cropWrite = uiWrites.find((write) => write.command === 'asset.crop');
+    assert.ok(cropWrite, 'UI must save its crop through the real Rust service');
+    const saved = await rpc('asset.get', { id: cropWrite.params.id });
+    assert.equal(saved.rating, 5);
+    assert.equal(saved.crop.width, 0.4);
+    assert.ok((await readFile(exportPath)).length > 0);
+    assert.deepEqual(
+      await Promise.all(
+        assets.map(async ({ path }) =>
+          createHash('sha256')
+            .update(await readFile(path))
+            .digest('hex'),
+        ),
+      ),
+      originalHashes,
+    );
     checks.push(
       'UI with real Rust bridge: grid/viewer/rating/crop/export; 1440 and 960 px layouts; no uncaught JS errors',
     );
@@ -241,5 +376,6 @@ try {
   console.log(JSON.stringify({ passed: true, checks, temporary_fixture_root: root }, null, 2));
 } finally {
   await browser?.close();
+  uiServer?.kill();
   child.stdin.end();
 }

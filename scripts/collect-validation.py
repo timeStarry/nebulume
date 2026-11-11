@@ -16,6 +16,7 @@ from release_lib import (  # noqa: E402
     ReleaseError,
     is_stable_semver,
     parse_cargo_totals,
+    parse_cargo_ignored,
     parse_playwright_json,
     parse_vitest_json,
 )
@@ -35,9 +36,9 @@ def read_json(path: Path) -> dict:
 def collect(args: argparse.Namespace) -> dict:
     require(is_stable_semver(args.version), "--version must be a stable semantic version")
     require(re.fullmatch(r"[0-9a-f]{40}", args.commit) is not None, "--commit must be a full 40-character SHA")
-    rust_passed, rust_failed, rust_ignored = parse_cargo_totals(
-        Path(args.cargo_log).read_bytes().decode("utf-8", "replace")
-    )
+    cargo_log = Path(args.cargo_log).read_bytes().decode("utf-8", "replace")
+    rust_passed, rust_failed, rust_ignored = parse_cargo_totals(cargo_log)
+    ignored_names = parse_cargo_ignored(cargo_log, rust_ignored)
     ui_passed, ui_failed = parse_vitest_json(read_json(Path(args.vitest_json)))
     edge_passed, edge_failed = parse_playwright_json(read_json(Path(args.playwright_json)))
     failures = {
@@ -53,6 +54,7 @@ def collect(args: argparse.Namespace) -> dict:
         "checks": {
             "rust_passed": rust_passed,
             "rust_ignored": rust_ignored,
+            "rust_ignored_tests": ignored_names,
             "ui_unit": ui_passed,
             "edge_workflows": edge_passed,
             "clippy": True,

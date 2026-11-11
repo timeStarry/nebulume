@@ -68,6 +68,8 @@ jobs:
           New-Item -ItemType Directory -Force artifacts | Out-Null
 
       - run: pnpm install --frozen-lockfile
+      - run: python -m unittest discover -s scripts/tests -v
+      - run: pnpm --filter @nebulume/ui check:design
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: pnpm typecheck
@@ -83,6 +85,15 @@ jobs:
           NEBULUME_BROWSER_CHANNEL: msedge
           PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/artifacts/playwright.json
         run: pnpm --filter @nebulume/ui test:browser --reporter=json
+
+      - name: Real Rust and Edge integration
+        env:
+          NEB_BROWSER_CHANNEL: msedge
+        run: |
+          cargo build -p neb-cli --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/smoke.mjs --ui
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build signed NSIS installer
         working-directory: crates/neb-app
@@ -101,6 +112,14 @@ jobs:
           Write-Output "Authenticode status: $status"
           $unsigned = if ($status -eq 'Valid') { 'false' } else { 'true' }
           "unsigned=$unsigned" >> $env:GITHUB_OUTPUT
+
+      - name: Verify updater signature with the embedded public key
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          $installer = "target/release/bundle/nsis/Nebulume_${env:VERSION}_x64-setup.exe"
+          cargo run --locked -p neb-app --example verify_update -- $installer "$installer.sig" crates/neb-app/tauri.conf.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect validation
         env:

@@ -19,14 +19,14 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from release_lib import ReleaseError, changelog_notes, updater_manifest  # noqa: E402
+from release_lib import ReleaseError, changelog_notes, updater_manifest, checked_ignored_tests  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_PACKAGES = {
     "neb-app", "neb-cli", "neb-core", "neb-ingest", "neb-service", "neb-storage"
 }
-MINIMUM_COUNTS = {"rust_passed": 212, "ui_unit": 62, "edge_workflows": 68}
+MINIMUM_COUNTS = {"rust_passed": 299, "ui_unit": 129, "edge_workflows": 141}
 PASSING_CHECKS = (
     "clippy", "fmt", "tsc", "production_build", "windows_release_and_nsis"
 )
@@ -174,9 +174,8 @@ def read_validation(path: Path, version: str, commit: str) -> tuple[dict, str]:
         actual = provided.get(name)
         require(type(actual) is int and actual >= minimum, f"Validation {name} must be at least {minimum}")
         selected[name] = actual
-    require(
-        type(provided.get("rust_ignored")) is int and provided["rust_ignored"] == 1,
-        "The single explicitly ignored native-credential test must be recorded",
+    selected["rust_ignored_tests"] = checked_ignored_tests(
+        provided.get("rust_ignored"), provided.get("rust_ignored_tests")
     )
     selected["rust_ignored"] = provided["rust_ignored"]
     for name in PASSING_CHECKS:

@@ -82,10 +82,15 @@ pnpm exec tauri build --bundles nsis -- --locked
   "source_commit": "<完整提交SHA>",
   "unsigned": true,
   "checks": {
-    "rust_passed": 212,
-    "rust_ignored": 1,
-    "ui_unit": 62,
-    "edge_workflows": 68,
+    "rust_passed": 299,
+    "rust_ignored": 3,
+    "rust_ignored_tests": [
+      "credentials::native_test::windows_native_vault_roundtrip_cleans_up_its_entry",
+      "watch::live::platform_events_for_a_new_photo_match_the_canonical_root",
+      "list_pages_on_a_hundred_thousand_photos"
+    ],
+    "ui_unit": 129,
+    "edge_workflows": 141,
     "clippy": true,
     "fmt": true,
     "tsc": true,
@@ -95,7 +100,7 @@ pnpm exec tauri build --bundles nsis -- --locked
 }
 ```
 
-以上数量是 0.1.0 的已知基线；发布新版本时填写实际结果，按测试变化更新脚本基线。`source_commit` 必须为当前完整 HEAD，`unsigned` 来自实际签名检查。
+以上数量是修复前 0.2.0 的已知基线；发布时填写实际结果，按测试变化更新脚本基线。忽略测试必须逐项出现在 `scripts/release_lib.py` 的已审查名单中，数量与实际 cargo 日志吻合；新增忽略项会阻止发布，不能只放宽数量。`source_commit` 必须为当前完整 HEAD，`unsigned` 来自实际签名检查。
 
 在仓库根目录执行：
 
