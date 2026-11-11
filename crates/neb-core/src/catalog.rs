@@ -52,9 +52,56 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            version <= 11,
+            (0..=12).contains(&version),
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
+        // The preview branch used 9/10 for import options and search indexes;
+        // the first release used those numbers for fingerprints/list revisions.
+        // An affected release may already have stamped that preview catalog 11.
+        // Recognize that lineage by its additive columns, never by version alone.
+        let has_quick_hash = has_column(&migration, "assets", "quick_hash")?;
+        let preview_lineage = (9..=11).contains(&version)
+            && !has_quick_hash
+            && has_column(&migration, "import_presets", "existing_file_policy")?
+            && has_column(&migration, "import_presets", "options_version")?
+            && has_column(&migration, "import_batches", "existing")?;
+        ensure!(
+            version < 9 || has_quick_hash || preview_lineage,
+            "E_SCHEMA: Unrecognized catalog fingerprint schema; catalog unchanged"
+        );
+        let has_revision = has_column(&migration, "catalog_revision", "value")?;
+        ensure!(
+            version < 10 || has_revision || preview_lineage,
+            "E_SCHEMA: Unrecognized catalog revision schema; catalog unchanged"
+        );
+        if version >= 8 {
+            migration
+                .prepare(&format!("SELECT {ASSET_COLUMNS},path_key,modified_stamp,import_batch_id,sha256 FROM assets LIMIT 0"))
+                .context("E_SCHEMA: Unrecognized catalog asset schema; catalog unchanged")?;
+            migration
+                .prepare(&format!(
+                    "SELECT {LIBRARY_COLUMNS},root_key FROM libraries LIMIT 0"
+                ))
+                .context("E_SCHEMA: Unrecognized catalog library schema; catalog unchanged")?;
+        }
+        if version >= 10 && has_revision {
+            let revision: i64 = migration
+                .query_row("SELECT value FROM catalog_revision WHERE id=1", [], |row| {
+                    row.get(0)
+                })
+                .context("E_SCHEMA: Invalid catalog revision counter; catalog unchanged")?;
+            ensure!(
+                revision >= 0,
+                "E_SCHEMA: Invalid catalog revision counter; catalog unchanged"
+            );
+        }
+        if version >= 11 {
+            ensure!(
+                has_column(&migration, "assets", "trashed_at")?
+                    && has_column(&migration, "assets", "trash_path")?,
+                "E_SCHEMA: Unrecognized catalog trash schema; catalog unchanged"
+            );
+        }
         if version == 0 {
             migration.execute_batch(include_str!("schema.sql"))?;
         }
@@ -226,7 +273,7 @@ impl Core {
                  PRAGMA user_version=8;",
             )?;
         }
-        if version < 9 {
+        if version < 9 || preview_lineage {
             // Partial-content fingerprint for move and rename detection during
             // scans only; import de-duplication keeps using sha256.
             migration.execute_batch(
@@ -235,7 +282,7 @@ impl Core {
                  PRAGMA user_version=9;",
             )?;
         }
-        if version < 10 {
+        if version < 10 || preview_lineage {
             // A counter bumped by every change to assets or libraries, from any process,
             // so list snapshots can be reused until something they depend on changes.
             migration.execute_batch(
@@ -260,6 +307,9 @@ impl Core {
             )?;
         }
 
+        // A distinct version makes the two historical lineages converge. Keep
+        // preview-only data intact: these are additive repairs, not table rebuilds.
+        migration.execute_batch("PRAGMA user_version=12;")?;
         migration.commit()?;
         database.execute(
      "DELETE FROM assets WHERE trashed_at IS NOT NULL AND trashed_at < datetime('now','-30 days')",
@@ -2512,6 +2562,14 @@ struct AssetQuery {
     iso_min: Option<f64>,
     #[serde(default)]
     iso_max: Option<f64>,
+}
+
+fn has_column(db: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+        params![table, column],
+        |row| row.get(0),
+    )?)
 }
 
 /// Positional values for the asset filter's `?1`..`?18`, shared by every query that uses it.

@@ -395,17 +395,20 @@ async function nodesUnchanged(page: Page) {
     );
   });
 }
-test('repeated blur/focus preserves all loaded pages, detail, selection, scroll and thumbnail nodes without image/catalog reads', async ({
-  page,
-}) => {
-  const { calls } = await fixture(page);
-  // Scrolling to the end keeps automatic paging going until every page is loaded.
+async function loadAllPhotos(page: Page, total: number) {
+  // Each append moves the sentinel below the viewport. Follow it through every page.
   await expect
     .poll(async () => {
       await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = el.scrollHeight));
       return page.locator('.collection-status').textContent();
     })
-    .toContain('已载入 410 / ');
+    .toContain(`已载入 ${total} / ${total}`);
+}
+test('repeated blur/focus preserves all loaded pages, detail, selection, scroll and thumbnail nodes without image/catalog reads', async ({
+  page,
+}) => {
+  const { calls } = await fixture(page);
+  await loadAllPhotos(page, 410);
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = 700));
@@ -482,8 +485,7 @@ test('rating sort reconciles the loaded window in the background without remount
   await expect
     .poll(() => calls.filter((c) => c.command === 'asset.list').at(-1)?.params.sort_by)
     .toBe('rating');
-  await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
+  await loadAllPhotos(page, 410);
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = 600));

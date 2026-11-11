@@ -15,6 +15,26 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 CARGO_RESULT = re.compile(
     r"test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored"
 )
+ALLOWED_IGNORED_TESTS = {
+    "credentials::native_test::windows_native_vault_roundtrip_cleans_up_its_entry",
+    "watch::live::platform_events_for_a_new_photo_match_the_canonical_root",
+    "list_pages_on_a_hundred_thousand_photos",
+}
+
+
+def checked_ignored_tests(count: int, names: object) -> list[str]:
+    if (type(count) is not int or count < 0 or not isinstance(names, list)
+            or any(not isinstance(name, str) for name in names)
+            or len(names) != count or len(set(names)) != count
+            or not set(names) <= ALLOWED_IGNORED_TESTS):
+        raise ReleaseError("Ignored Rust tests must match the explicit reviewed allowlist and count")
+    return sorted(names)
+
+
+def parse_cargo_ignored(log: str, count: int) -> list[str]:
+    names = re.findall(r"^test (\S+) \.\.\. ignored(?:,.*)?\r?$",
+                       ANSI_ESCAPE.sub("", log), re.MULTILINE)
+    return checked_ignored_tests(count, names)
 
 
 class ReleaseError(Exception):

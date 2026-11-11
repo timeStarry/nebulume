@@ -8,6 +8,10 @@ license.workspace = true
 name = "nebulume"
 path = "src/main.rs"
 
+[[example]]
+name = "verify_update"
+test = true
+
 [dependencies]
 notify = { version = "=8.2.2", default-features = false, features = ["macos_fsevent"] }
 dunce = "1"
@@ -22,6 +26,8 @@ serde.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+base64 = "=0.22.1"
+minisign-verify = "=0.3.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -4,6 +4,8 @@
 
 ## 图库 / 影像（core）
 
+0.2.1 启动时在同一 SQLite 事务内将已识别的正式目录和预览目录汇合到 schema12。预览版 schema9/10 及曾被 0.2.0 标成 schema11 的同源目录会补齐指纹与列表修订结构，保留用户数据和预览版扩展表；无法识别的结构或更新版本返回 `E_SCHEMA`，不尝试降级。旧程序不能直接打开已升级的数据库，回退须同时恢复升级前备份。
+
 - `location.list {}` → `Location[]`：`{id,kind:'local'|'removable'|'webdav'|'s3',name,endpoint,root,bucket?,region?,tls_certificate_sha256?,implicit,created_at,availability,library_ids}`；含选目录建库产生的隐式本地位置，不含凭据。存储源的增删同步到位置表；被库使用的位置不可删除（`E_IN_USE`），隐式位置随其库移除。`Library.location_id`、`Asset.key`（位置根下含库前缀的 `/` 分隔键）为 v7 新增字段。
 - `library.list {}` → `Library[]`；每项附运行时 `availability`：`unchecked`（本进程尚未访问远端，启动不联网）/ `online` / `offline`（卷未挂载、目录不存在、主机不可达或超时）/ `auth_required`（凭据缺失、401/403、安全存储不可用）/ `trust_required`（证书变化、过期或未信任）/ `error`（其他失败，不猜测为离线）。远端只由实际列举/读取/检查结果更新，本地目录直接检查。`connected` 保留为 `availability=='online'`。`storage.list`、`storage.check` 同样返回 `availability`。本地建库 `library.add {name,root,pair_raw_jpeg?}` 直接登记目录，不创建存储源；远端建库 `library.add {name,storage_id,prefix?,pair_raw_jpeg?}` 绑定已保存连接。两者返回 `Library`，配对默认关闭。显式引用旧本地storage_id的调用继续兼容。
 - `library.update {id,name?,pair_raw_jpeg?,root?,storage_id?,source_prefix?}` → `Library`；省略字段保留原值，空前缀须显式传 `""`。root与storage_id互斥；root指定直接本地目录并解除旧连接绑定。同一真实本地目录解除历史绑定保留资产id、评级与裁剪；实际变更来源或目录时清除该库旧索引/配方，随后需要重新扫描，不移动或修改任何原文件。
