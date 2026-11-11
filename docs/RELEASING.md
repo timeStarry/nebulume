@@ -78,11 +78,11 @@ pnpm exec tauri build --bundles nsis -- --locked
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.1",
   "source_commit": "<完整提交SHA>",
   "unsigned": true,
   "checks": {
-    "rust_passed": 299,
+    "rust_passed": 311,
     "rust_ignored": 3,
     "rust_ignored_tests": [
       "credentials::native_test::windows_native_vault_roundtrip_cleans_up_its_entry",
@@ -100,12 +100,12 @@ pnpm exec tauri build --bundles nsis -- --locked
 }
 ```
 
-以上数量是修复前 0.2.0 的已知基线；发布时填写实际结果，按测试变化更新脚本基线。忽略测试必须逐项出现在 `scripts/release_lib.py` 的已审查名单中，数量与实际 cargo 日志吻合；新增忽略项会阻止发布，不能只放宽数量。`source_commit` 必须为当前完整 HEAD，`unsigned` 来自实际签名检查。
+以上数量是 0.2.1 的已验证基线；发布时填写实际结果，按测试变化更新脚本基线。忽略测试必须逐项出现在 `scripts/release_lib.py` 的已审查名单中，数量与实际 cargo 日志吻合；新增忽略项会阻止发布，不能只放宽数量。`source_commit` 必须为当前完整 HEAD，`unsigned` 来自实际签名检查。
 
 在仓库根目录执行：
 
 ```powershell
-python scripts/package-release.py --version 0.1.0 --target-dir target --output-dir artifacts/releases/v0.1.0 --validation artifacts/release-validation-v0.1.0.json --notes-from CHANGELOG.md
+python scripts/package-release.py --version 0.2.1 --target-dir target --output-dir artifacts/releases/v0.2.1 --validation artifacts/release-validation-v0.2.1.json --notes-from CHANGELOG.md
 ```
 
 验证 JSON 可由 `scripts/collect-validation.py` 根据 cargo 测试日志、Vitest 与 Playwright 的 JSON 报告生成，流水线即使用此方式。
@@ -141,3 +141,13 @@ Release 标题为 `Nebulume <版本>`。说明应概括实际功能及关键限�
 - Release 和下载链接可用。
 
 网络失败时先读取远端状态，再恢复缺失步骤，不重复创建标签或替换已发布资产。保留当前提交的验证和产物校验记录。
+
+## Windows 本机升级核对
+
+升级前退出应用，核对实际运行程序路径、版本、数据目录和数据库结构后再做一致性 SQLite 备份及完整目录备份。备份数据库时同时记录 WAL；`-shm` 是易变共享内存文件，读取或检查副本可能改变它，不能仅凭它的差异宣称业务数据损坏，也不能省略数据库和其他文件的摘要比对。
+
+从 MSIX 打包的工具运行验收时，普通 `%LOCALAPPDATA%` 路径和 `Get-Item` 观察可能落在包的私有副本。应与未受该重定向影响的系统进程观察、实际应用进程路径及物理用户目录交叉核对；可在有权限时使用物理路径的 UNC 视图辅助确认。不要只凭相同的显示路径、旧副本版本或一次文件复制，宣称已升级用户日常安装。本次使用系统 WMI 进程代理完成交叉核对，无提权或系统设置修改。重定向行为的适用范围见 [Microsoft MSIX AppData 文档](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes#appdata-operations-on-windows-10-version-1903-and-later)。
+
+NSIS 内的主程序不一定与便携 ZIP 中的主程序具有相同摘要。Tauri CLI 2.12.2 所用 bundler 将包类型标记由 `__TAURI_BUNDLE_TYPE_VAR_UNK` 改为 `__TAURI_BUNDLE_TYPE_VAR_NSS`，完成打包后恢复未打标的构建输出，见[对应版本的 bundle.rs](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.2/crates/tauri-bundler/src/bundle.rs#L35)。本次已安装程序与便携程序仅有该三字节标记差异，规范化后其余字节相同。对其他版本必须重新定位并核验差异，不得将任意摘要差异归因于打标，也不要修改正式程序来取得摘要相等。
+
+升级后确认实际程序版本、数据库完整性及外键、原有图库/资产/评级/旗标/裁剪/连接配置、真实图片载入和更新页，并复核系统默认文件关联。隔离副本中的路径、测试来源及内部绑定 epoch 重映射需单列，不能和用户数据保留比较混为一谈。发现问题时保存现场，退出进程后按同一时点的程序与数据备份回退；不要让旧版直接打开新版 schema。0.2.1 的实际结果见[本机升级记录](WINDOWS-UPGRADE-0.2.1.md)。
