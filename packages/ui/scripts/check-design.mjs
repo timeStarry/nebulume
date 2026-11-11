@@ -1,11 +1,16 @@
 // Design-rule check for CSS outside the design system.
-// Colours, shadows, weights, pixel font sizes, gradients and blur belong in src/ui/ and tokens.css.
+// Colours, shadows, weights, pixel font sizes, gradients, blur and glass belong in src/ui/ and tokens.css.
+// Layout-property transitions are banned everywhere outside src/ui/ (AGENTS.md, UI rule 6).
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const NAMED_COLORS =
   /^(white|black|red|green|blue|gray|grey|silver|yellow|orange|purple|pink|brown|navy|teal|aqua|lime|maroon|olive|fuchsia)$/i;
+
+// Animating these forces layout on every frame; WebView grids drop frames. Use transform/opacity.
+const LAYOUT_TRANSITION =
+  /(^|[\s,])(all|width|height|min-width|min-height|max-width|max-height|top|left|right|bottom|inset|margin(-[a-z]+)?|padding(-[a-z]+)?|grid-template-[a-z]+|flex-basis)(?=[\s,]|$)/i;
 
 /** Splits a comma-separated value at top level (not inside parentheses). */
 function layers(value) {
@@ -50,6 +55,9 @@ function judge(property, value) {
     found.push('font-size-px');
   if (/(linear|radial|conic)-gradient\s*\(/i.test(v)) found.push('gradient');
   if (/\bblur\s*\(/i.test(v)) found.push('blur');
+  if (/^(-webkit-)?backdrop-filter$/.test(prop) && !/^none$/i.test(v)) found.push('glass');
+  if (/^(transition|transition-property)$/.test(prop) && LAYOUT_TRANSITION.test(v))
+    found.push('layout-transition');
   return found;
 }
 
@@ -61,13 +69,16 @@ const exempt = (path) => {
 /**
  * Returns the broken rules for each declaration, with its line. Comments are stripped first
  * (keeping line numbers). A box-shadow used as a mask is allowed on the line after a
- * `/* design: mask *\/` comment.
+ * `/* design: mask *\/` comment; a layout transition on a single bounded element (a progress
+ * fill, never a grid item) is allowed on the line after `/* design: bounded *\/`.
  */
 export function checkCss(path, text) {
   if (exempt(path)) return [];
   const masked = new Set();
+  const bounded = new Set();
   text.split('\n').forEach((line, index) => {
     if (/\/\*\s*design:\s*mask\s*\*\//.test(line)) masked.add(index + 2);
+    if (/\/\*\s*design:\s*bounded\s*\*\//.test(line)) bounded.add(index + 2);
   });
   const stripped = text.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
   const findings = [];
@@ -85,6 +96,7 @@ export function checkCss(path, text) {
         const at = bodyStart + index;
         for (const rule of judge(match[1], match[2])) {
           if (rule === 'shadow' && masked.has(at)) continue;
+          if (rule === 'layout-transition' && bounded.has(at)) continue;
           findings.push({ line: at, rule, snippet: `${match[1]}: ${match[2].trim()}` });
         }
       }
