@@ -83,7 +83,7 @@
   --nl-v-overlay: rgba(27, 27, 27, 0.82);
   --nl-v-ring: #f5f5f5;
   --nl-v-dim: rgba(27, 27, 27, 0.6);
-  --nl-v-glass: rgba(27, 27, 27, 0.68);
+  --nl-v-glass: rgba(27, 27, 27, 0.84);
   --nl-v-highlight: rgba(255, 255, 255, 0.08);
 }
 
@@ -127,7 +127,7 @@
   --nl-surface-canvas: var(--nl-canvas);
   --nl-surface-sidebar: var(--nl-side);
   --nl-surface-card: var(--nl-raised);
-  --nl-glass: rgba(38, 38, 38, 0.72);
+  --nl-glass: rgba(34, 34, 34, 0.88);
   --nl-border-subtle: var(--nl-line);
   --nl-highlight: rgba(255, 255, 255, 0.06);
   --nl-skeleton: #2c2c2c;
@@ -178,7 +178,7 @@
   --nl-surface-canvas: var(--nl-canvas);
   --nl-surface-sidebar: var(--nl-side);
   --nl-surface-card: var(--nl-raised);
-  --nl-glass: rgba(250, 250, 249, 0.76);
+  --nl-glass: rgba(250, 250, 249, 0.9);
   --nl-border-subtle: var(--nl-line);
   --nl-highlight: rgba(255, 255, 255, 0.7);
   --nl-skeleton: #e6e6e3;

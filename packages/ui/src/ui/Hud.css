@@ -6,6 +6,10 @@
   transform: translateX(-50%);
   pointer-events: none;
 }
+.nl-hud-slot--stacked {
+  position: static;
+  transform: none;
+}
 .nl-hud {
   display: inline-flex;
   align-items: center;

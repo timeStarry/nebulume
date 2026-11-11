@@ -116,8 +116,8 @@ export function FeedbackStack(props: {
         <Show when={f.notice()}>
           <Toast message={f.notice()} onClose={() => f.setNotice('')} closeLabel="关闭完成提示" />
         </Show>
+        <f.hud.Host stacked />
       </div>
-      <f.hud.Host />
     </>
   );
 }

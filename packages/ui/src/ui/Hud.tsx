@@ -20,12 +20,15 @@ export function createHud() {
       if (message() === next) setMessage(undefined);
     }, HUD_MS);
   }
-  function Host(props: { tone?: 'app' | 'viewer' }) {
+  /** `stacked` sits in a toast stack's flow (above its toasts) instead of floating on its own. */
+  function Host(props: { tone?: 'app' | 'viewer'; stacked?: boolean }) {
     onCleanup(() => clearTimeout(timer));
     return (
       <Show when={message()} keyed>
         {(current) => (
-          <div class={`nl-hud-slot nl-hud-slot--${props.tone ?? 'app'}`}>
+          <div
+            class={`nl-hud-slot nl-hud-slot--${props.tone ?? 'app'}${props.stacked ? ' nl-hud-slot--stacked' : ''}`}
+          >
             <span class="nl-hud" data-testid="hud" role="status" aria-live="polite">
               <Show when={current.icon}>{(name) => <Icon name={name()} size={16} />}</Show>
               <span class="nl-hud-text">{current.text}</span>
