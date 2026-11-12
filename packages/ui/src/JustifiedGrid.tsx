@@ -29,6 +29,17 @@ export interface JustifiedGridApi {
 type Tile = { index: number; left: number; width: number };
 type Row = { top: number; height: number; tiles: Tile[] };
 type Section = { key: string; label: string; detail: string; top: number; rows: Row[] };
+type CachedSection = {
+  rawKey: string;
+  start: number;
+  count: number;
+  top: number;
+  nextTop: number;
+  label: string;
+  detail: string;
+  ratiosKey: string;
+  section: Section;
+};
 
 const GAP = 4;
 const HEADER = 46;
@@ -54,34 +65,74 @@ export default function JustifiedGrid<T>(props: {
   const [width, setWidth] = createSignal(0);
   const [viewport, setViewport] = createSignal({ top: 0, height: 0 });
 
+  let prevWidth = 0;
+  let prevTarget = 0;
+  let prevSections: CachedSection[] = [];
+
   const layout = createMemo(() => {
     const available = width();
     const target = props.rowHeight;
     const sections: Section[] = [];
-    if (available <= 0) return { sections, height: 0, rowOf: [] as { row: Row; tile: Tile }[] };
+    if (available <= 0) {
+      prevSections = [];
+      return { sections, height: 0, rowOf: [] as { row: Row; tile: Tile }[] };
+    }
+    const canReuse = available === prevWidth && target === prevTarget;
+    const nextCache: CachedSection[] = [];
     const rowOf: { row: Row; tile: Tile }[] = [];
     let top = 0;
     let start = 0;
+    let sectionIndex = 0;
     const items = props.items;
     while (start < items.length) {
       const key = props.measure(items[start]).group ?? '';
       let end = start;
-      while (end < items.length && (props.measure(items[end]).group ?? '') === key) end++;
+      const groupRatios: number[] = [];
+      while (end < items.length) {
+        const measured = props.measure(items[end]);
+        if ((measured.group ?? '') !== key) break;
+        groupRatios.push(Math.min(4, Math.max(0.25, measured.ratio || 1.5)));
+        end++;
+      }
       const header = key && props.section ? props.section(key, items.slice(start, end)) : undefined;
+      const label = header?.label ?? '';
+      const detail = header?.detail ?? '';
+      const count = end - start;
+      const ratiosKey = groupRatios.join(',');
+      const cached = canReuse ? prevSections[sectionIndex] : undefined;
+      if (
+        cached &&
+        cached.rawKey === key &&
+        cached.start === start &&
+        cached.count === count &&
+        cached.top === top &&
+        cached.label === label &&
+        cached.detail === detail &&
+        cached.ratiosKey === ratiosKey
+      ) {
+        for (const finished of cached.section.rows)
+          for (const tile of finished.tiles) rowOf[tile.index] = { row: finished, tile };
+        sections.push(cached.section);
+        nextCache.push(cached);
+        top = cached.nextTop;
+        start = end;
+        sectionIndex++;
+        continue;
+      }
       const section: Section = {
         key: `${key}:${start}`,
-        label: header?.label ?? '',
-        detail: header?.detail ?? '',
+        label,
+        detail,
         top,
         rows: [],
       };
       let y = top + (header ? HEADER : 0);
-      let row: Tile[] = [];
+      let row: { index: number; ratio: number }[] = [];
       let ratios = 0;
       const close = (height: number) => {
         let x = 0;
         const placed = row.map((tile) => {
-          const w = Math.max(24, props.measure(items[tile.index]).ratio * height);
+          const w = Math.max(24, tile.ratio * height);
           const result = { index: tile.index, left: x, width: w };
           x += w + GAP;
           return result;
@@ -98,19 +149,36 @@ export default function JustifiedGrid<T>(props: {
         row = [];
         ratios = 0;
       };
-      for (let index = start; index < end; index++) {
-        const ratio = Math.min(4, Math.max(0.25, props.measure(items[index]).ratio || 1.5));
-        row.push({ index, left: 0, width: 0 });
+      for (let offsetIndex = 0; offsetIndex < count; offsetIndex++) {
+        const index = start + offsetIndex;
+        const ratio = groupRatios[offsetIndex];
+        row.push({ index, ratio });
         ratios += ratio;
         const height = (available - GAP * (row.length - 1)) / ratios;
         if (height <= target) close(height);
       }
       // A short last row keeps the target height instead of stretching.
       if (row.length) close(target);
+      const nextTop = y - GAP + SECTION_GAP;
       sections.push(section);
-      top = y - GAP + SECTION_GAP;
+      nextCache.push({
+        rawKey: key,
+        start,
+        count,
+        top,
+        nextTop,
+        label,
+        detail,
+        ratiosKey,
+        section,
+      });
+      top = nextTop;
       start = end;
+      sectionIndex++;
     }
+    prevWidth = available;
+    prevTarget = target;
+    prevSections = nextCache;
     return { sections, height: Math.max(0, top - SECTION_GAP), rowOf };
   });
 
@@ -126,19 +194,19 @@ export default function JustifiedGrid<T>(props: {
         if (row.top + row.height >= from && row.top <= to) rows.push(row);
     return rows;
   });
-  // Keyed by the item itself: a re-layout moves tiles instead of remounting them,
-  // so loaded images, focus and selection rings survive rating and sync updates.
+  // Keyed by the item itself for visible rows only: a re-layout moves tiles instead of
+  // remounting them, while avoiding an O(N) map rebuild across off-screen rows.
   const placements = createMemo(() => {
     const map = new Map<T, { left: number; top: number; width: number; height: number }>();
-    for (const section of layout().sections)
-      for (const row of section.rows)
-        for (const tile of row.tiles)
-          map.set(props.items[tile.index], {
-            left: tile.left,
-            top: row.top,
-            width: tile.width,
-            height: row.height,
-          });
+    const items = props.items;
+    for (const row of visibleRows())
+      for (const tile of row.tiles)
+        map.set(items[tile.index], {
+          left: tile.left,
+          top: row.top,
+          width: tile.width,
+          height: row.height,
+        });
     return map;
   });
   const visibleItems = createMemo(() =>

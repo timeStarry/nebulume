@@ -1,0 +1,18 @@
+.batch-dock-count {
+  padding-left: var(--nl-s-1);
+  color: var(--nl-text);
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.batch-dock-sep {
+  flex: none;
+  width: 1px;
+  height: var(--nl-s-4);
+  background: var(--nl-line);
+}
+.batch-dock .library-batch-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}

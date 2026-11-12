@@ -71,6 +71,18 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
           case 'asset.list':
             result = { items: [{ ...photo, library_id: call.params.library_id }], total: 1 };
             break;
+          case 'asset.ids':
+            result = { ids: [photo.id], total: 1 };
+            break;
+          case 'asset.facets':
+            result = { cameras: [], lenses: [], captured: { first: null, last: null } };
+            break;
+          case 'library.folders':
+            result = { total: 1, folders: [] };
+            break;
+          case '$native/watch_libraries':
+            result = null;
+            break;
           case 'import.batches':
             result = [];
             break;
@@ -352,7 +364,11 @@ test('library settings persist pairing, variants replace their representative, a
     .poll(() => calls.find((call) => call.command === 'library.update')?.params)
     .toEqual({ id: local.id, name: '配对照片', pair_raw_jpeg: true });
   await expect(page.locator('.asset-variants').getByRole('button')).toHaveText(['RAW', 'JPEG']);
-  await expect(page.locator('.collection-status')).toContainText('2 / 2 项 · 3 个匹配文件');
+  await expect(page.locator('.collection-status')).toContainText('2 张 · 3 文件');
+  await expect(page.locator('.collection-status')).toHaveAttribute(
+    'title',
+    '已载入 2 / 2 项 · 3 个匹配文件',
+  );
   // Each variant opens in place, in a sequence where it replaces its representative.
   const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
   await page.getByRole('button', { name: '打开 Mountain.nef RAW' }).click();

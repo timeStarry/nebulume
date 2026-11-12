@@ -293,7 +293,10 @@ impl Service {
                     .map_err(CommandError::from)?,
             )
         } else if command.starts_with("asset.")
-            && !matches!(command, "asset.list" | "asset.facets" | "asset.stats")
+            && !matches!(
+                command,
+                "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+            )
         {
             let asset = self
                 .core
@@ -310,7 +313,10 @@ impl Service {
             None
         };
         let _process_catalog = if structural_write
-            || matches!(command, "asset.list" | "asset.facets" | "asset.stats")
+            || matches!(
+                command,
+                "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+            )
         {
             Some(
                 process_catalog_lock(&self.data_dir, structural_write)
@@ -331,7 +337,10 @@ impl Service {
         };
         // Lists need a coherent catalog snapshot. Long asset I/O uses the
         // per-library lease above without occupying this global lock.
-        let _catalog_read = if matches!(command, "asset.list" | "asset.facets" | "asset.stats") {
+        let _catalog_read = if matches!(
+            command,
+            "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+        ) {
             Some(self.catalog_operations.read().map_err(|_| CommandError {
                 code: "E_OPERATION",
                 message: "Catalog operation state is unavailable".into(),
@@ -912,13 +921,21 @@ impl Service {
             return self.core.dispatch(command, params);
         }
         if command.starts_with("asset.")
-            && !matches!(command, "asset.list" | "asset.facets" | "asset.stats")
+            && !matches!(
+                command,
+                "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+            )
         {
             return self.asset_dispatch(command, params);
         }
         if matches!(
             command,
-            "asset.list" | "asset.facets" | "asset.stats" | "file.open" | "file.siblings"
+            "asset.list"
+                | "asset.ids"
+                | "asset.facets"
+                | "asset.stats"
+                | "file.open"
+                | "file.siblings"
         ) {
             return self.core.dispatch(command, params);
         }

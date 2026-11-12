@@ -4,7 +4,7 @@
 
 ## 图库 / 影像（core）
 
-0.2.1 启动时在同一 SQLite 事务内将已识别的正式目录和预览目录汇合到 schema12。预览版 schema9/10 及曾被 0.2.0 标成 schema11 的同源目录会补齐指纹与列表修订结构，保留用户数据和预览版扩展表；无法识别的结构或更新版本返回 `E_SCHEMA`，不尝试降级。旧程序不能直接打开已升级的数据库，回退须同时恢复升级前备份。
+启动时在同一 SQLite 事务内将已识别的目录结构迁移到 schema13（在 schema12 基础上新增 FTS5 `WHEN` 守卫触发器、EXIF 生成列复合索引与 `catalog_revision.structural_value`）。预览版 schema9/10 及曾被 0.2.0 标成 schema11 的同源目录会依次升级并补齐指纹、列表修订与 EXIF 索引结构，保留用户数据和预览版扩展表；无法识别的结构或更新版本返回 `E_SCHEMA`，不尝试降级。旧程序不能直接打开已升级的数据库，回退须同时恢复升级前备份。
 
 - `location.list {}` → `Location[]`：`{id,kind:'local'|'removable'|'webdav'|'s3',name,endpoint,root,bucket?,region?,tls_certificate_sha256?,implicit,created_at,availability,library_ids}`；含选目录建库产生的隐式本地位置，不含凭据。存储源的增删同步到位置表；被库使用的位置不可删除（`E_IN_USE`），隐式位置随其库移除。`Library.location_id`、`Asset.key`（位置根下含库前缀的 `/` 分隔键）为 v7 新增字段。
 - `library.list {}` → `Library[]`；每项附运行时 `availability`：`unchecked`（本进程尚未访问远端，启动不联网）/ `online` / `offline`（卷未挂载、目录不存在、主机不可达或超时）/ `auth_required`（凭据缺失、401/403、安全存储不可用）/ `trust_required`（证书变化、过期或未信任）/ `error`（其他失败，不猜测为离线）。远端只由实际列举/读取/检查结果更新，本地目录直接检查。`connected` 保留为 `availability=='online'`。`storage.list`、`storage.check` 同样返回 `availability`。本地建库 `library.add {name,root,pair_raw_jpeg?}` 直接登记目录，不创建存储源；远端建库 `library.add {name,storage_id,prefix?,pair_raw_jpeg?}` 绑定已保存连接。两者返回 `Library`，配对默认关闭。显式引用旧本地storage_id的调用继续兼容。
@@ -12,6 +12,7 @@
 - `library.remove {id}` → `{id,removed_assets}`；移除库登记和索引/配方，不删除原文件、来源目录或存储源。
 - `library.scan {library_id}` → `{indexed,skipped,moved?,errors:[{path,message}],partial?}`；本地扫描文件，远端递归索引目录属性，尚不下载原图。`moved` 仅本地扫描返回：已识别为移动或改名并保留原资产 id 与标记的照片数（见架构文档）。
 - `asset.list {library_id?,query?,rating?,flag?:'any'|'pick'|'none'|'reject'|'not_reject',format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',import_batch_id?,camera?,lens?,captured_from?,captured_to?,limit?,offset?}` → `{items:Asset[],total,file_total}`；`camera` / `lens` 精确匹配 EXIF 的 `Camera` / `Lens`，`captured_from` / `captured_to` 为含端点的 `YYYY-MM-DD`，按相机当地日期比较，没有拍摄时间的照片不落入任何日期范围，格式不对返回 `E_INVALID`；格式/评级/旗标/搜索与排序字段/方向可任意组合，默认 all / any / captured_at / desc；`not_reject` 隐藏淘汰。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
+- `asset.ids`（与 `asset.list` 相同的筛选/排序参数，忽略 `limit`/`offset`）→ `{ids:string[],total}`：返回当前筛选、RAW/JPEG 配对折叠与排序下的全部显示项 ID 列表（供整库 `⌘A` 全选、文件夹留用批量导出等使用，无需逐页拉取完整 `Asset` 元数据）。
 - `library.fingerprint.status {library_id}` → `{library_id,total,known,pending,pending_bytes,remote,job}`；`library.fingerprint.start {library_id}` / `library.fingerprint.cancel {library_id,job_id}`：显式后台计算未知 SHA-256 写入 `assets.sha256`，语义同拍摄时间索引（协作式停止、同一时间仅一个库、`E_IN_USE`/`E_CONFLICT`）。本地读取原片；远端优先使用当前有效的缓存原图，否则流式完整读取直接计算哈希，不写缓存、不进预览队列。读取期间文件被替换则不记录。扫描发现文件大小或修改标记变化、远端版本变化时清除旧哈希。离线、登录或证书问题会提前停止。
 - `library.capture_index.status {library_id}` → `CaptureIndexStatus`；只读本库的持久计数及当前Service实例的最新作业，不启动读取。
 - `library.capture_index.start {library_id}` → `CaptureIndexStatus`；显式后台处理启动时仍为pending的实体文件。同库已有running/stopping作业时返回该作业；同一Service实例内另一库正在运行时返回`E_IN_USE`。

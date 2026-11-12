@@ -36,7 +36,7 @@ END;
 CREATE TRIGGER IF NOT EXISTS assets_ad AFTER DELETE ON assets BEGIN
     INSERT INTO assets_fts(assets_fts,rowid,filename,metadata_json) VALUES('delete',old.rowid,old.filename,old.metadata_json);
 END;
-CREATE TRIGGER IF NOT EXISTS assets_au AFTER UPDATE ON assets BEGIN
+CREATE TRIGGER IF NOT EXISTS assets_au AFTER UPDATE OF filename,metadata_json ON assets BEGIN
     INSERT INTO assets_fts(assets_fts,rowid,filename,metadata_json) VALUES('delete',old.rowid,old.filename,old.metadata_json);
     INSERT INTO assets_fts(rowid,filename,metadata_json) VALUES(new.rowid,new.filename,new.metadata_json);
 END;

@@ -178,6 +178,19 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       );
       break;
     }
+    case 'asset.ids': {
+      const listed = browserAssetList(
+        [...assets.values()],
+        { ...(params as AssetListOptions), limit: 100000, offset: 0 },
+        browserLibrary.pair_raw_jpeg,
+      );
+      result = {
+        ids: listed.items.map((item) => item.id),
+        total: listed.total,
+        file_total: listed.file_total ?? listed.total,
+      };
+      break;
+    }
     case 'asset.get':
       if (!asset) throw new Error('图片不存在。');
       result = asset;

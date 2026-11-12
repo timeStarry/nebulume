@@ -55,9 +55,11 @@ export function cullKeyAction(event: KeyLike): CullAction | null {
     case 'z':
       return { kind: 'zoom' };
     case 'tab':
+    case 'd':
       return { kind: 'overlay' };
     case 'f':
       return { kind: 'fullscreen' };
+    case ' ':
     case 'escape':
       return { kind: 'escape' };
     default:

@@ -56,16 +56,11 @@
 .library-dates .nl-input {
   width: 140px;
 }
-.library-batch {
-  border-top: 1px solid var(--nl-line);
-  border-bottom: 1px solid var(--nl-line);
-  background: var(--nl-side);
-  color: var(--nl-text);
-}
-.library-batch-group {
+.library-sidebar-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  margin-left: auto;
 }
 .library-empty {
   display: grid;

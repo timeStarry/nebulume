@@ -220,7 +220,15 @@ export function Thumbnail(props: {
           props.onMenu({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
           return;
         }
-        if (event.key === 'Enter') {
+        if (
+          event.key === 'Enter' ||
+          (event.key === ' ' &&
+            !event.repeat &&
+            !event.shiftKey &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.altKey)
+        ) {
           event.preventDefault();
           event.stopPropagation();
           props.onOpen();

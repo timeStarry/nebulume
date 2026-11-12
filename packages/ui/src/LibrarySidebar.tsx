@@ -26,6 +26,7 @@ export default function LibrarySidebar(props: {
   /** The all-libraries overview is open. */
   overviewOpen?: boolean;
   onOverview: () => void;
+  onCollapse?: () => void;
 }) {
   // Folders the user collapsed; everything starts expanded one level down.
   const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set());
@@ -112,7 +113,23 @@ export default function LibrarySidebar(props: {
         <Show when={props.demoLabel}>
           <span class="demo-label">浏览器演示</span>
         </Show>
-        <IconButton size="xs" icon="plus" label="添加图片库" onClick={() => props.onAddLibrary()} />
+        <span class="library-sidebar-actions">
+          <IconButton
+            size="xs"
+            icon="plus"
+            label="添加图片库"
+            onClick={() => props.onAddLibrary()}
+          />
+          <Show when={props.onCollapse}>
+            <IconButton
+              size="xs"
+              icon="chevron-left"
+              label="收起图片库侧栏（⌘B）"
+              shortcut="Meta+B Control+B"
+              onClick={() => props.onCollapse?.()}
+            />
+          </Show>
+        </span>
       </div>
       <ul class="nav-library-list" aria-label="图片库列表">
         <For each={props.libraries}>
@@ -225,6 +242,23 @@ export default function LibrarySidebar(props: {
 }
 
 const SIDEBAR_KEY = 'nebulume.sidebar-width';
+const SIDEBAR_COLLAPSED_KEY = 'nebulume.sidebar-collapsed';
+
+export function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function writeSidebarCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    /* Applies to this session. */
+  }
+}
 const MIN_WIDTH = 180;
 const MAX_WIDTH = 480;
 const clampWidth = (value: number) => Math.round(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value)));

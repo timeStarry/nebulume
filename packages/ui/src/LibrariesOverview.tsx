@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createSignal, type JSX } from 'solid-js';
 import Icon from './Icon';
 import OverflowMenu from './OverflowMenu';
 import { previewUrl } from './preview-url';
@@ -17,6 +17,8 @@ const dayLabel = (day: string) => {
 export default function LibrariesOverview(props: {
   libraries: Library[];
   desktop: boolean;
+  leading?: JSX.Element;
+  extraActions?: JSX.Element;
   onOpen: (library: Library) => void;
   onCreate: () => void;
   libraryMenu: (library: Library) => MenuEntry[];
@@ -25,6 +27,7 @@ export default function LibrariesOverview(props: {
   return (
     <section class="libraries-overview" aria-label="全部图片库">
       <PageHeader
+        leading={props.leading}
         title="全部图片库"
         subtitle={
           props.libraries.length
@@ -32,9 +35,12 @@ export default function LibrariesOverview(props: {
             : undefined
         }
         actions={
-          <Button icon="plus" onClick={() => props.onCreate()}>
-            新建图片库
-          </Button>
+          <>
+            {props.extraActions}
+            <Button icon="plus" onClick={() => props.onCreate()}>
+              新建图片库
+            </Button>
+          </>
         }
       />
       <div class="libraries-page">

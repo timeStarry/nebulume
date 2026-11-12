@@ -1759,6 +1759,10 @@ kbd {
   gap: var(--nl-s-2);
   max-width: min(440px, calc(100% - var(--nl-s-10)));
   pointer-events: none;
+  transition: transform var(--nl-d-fast) var(--nl-ease);
+}
+.has-batch-dock .toast-stack {
+  transform: translate(-50%, -52px);
 }
 .toast {
   display: flex;

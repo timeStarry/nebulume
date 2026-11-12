@@ -697,6 +697,7 @@ export default function Viewer(props: {
     }),
   );
   function cullKeyboard(event: KeyboardEvent): boolean {
+    if (event.key === ' ' && (isControl(document.activeElement) || event.repeat)) return false;
     const action = cullKeyAction(event);
     if (!action) return false;
     event.preventDefault();
@@ -850,12 +851,29 @@ export default function Viewer(props: {
       move(-1);
     } else if (key === 'i') setInfo((value) => !value);
     else if (key === 'c' && !event.shiftKey) beginCrop();
-    else if (key === 'p' && !event.repeat) {
+    else if (key === 'f' && event.shiftKey && !event.repeat) {
       event.preventDefault();
       toggleFocus();
-    } else if (key === 'f') void fullscreen();
-    else if (key === 'd') setOverlayVisible((value) => !value);
-    else if (key === 'escape') {
+    } else if (key === 'f' && !event.shiftKey) void fullscreen();
+    else if (
+      (key === 'p' || key === 'x' || key === 'u') &&
+      !event.shiftKey &&
+      !event.repeat &&
+      !cropMode()
+    ) {
+      event.preventDefault();
+      void flagPhoto(key === 'p' ? 'pick' : key === 'x' ? 'reject' : 'none', true);
+    } else if (key === 'd') setOverlayVisible((value) => !value);
+    else if (
+      event.key === ' ' &&
+      !event.shiftKey &&
+      !event.repeat &&
+      !cropMode() &&
+      !isControl(document.activeElement)
+    ) {
+      event.preventDefault();
+      void escape();
+    } else if (key === 'escape') {
       event.preventDefault();
       void escape();
     } else if (/^[0-5]$/.test(key)) void rate(Number(key), true);
@@ -995,6 +1013,36 @@ export default function Viewer(props: {
           changed(await execute<Asset>('asset.rate', { id: target.id, rating: before }), 'rating'),
       });
   }
+  async function flagPhoto(flag: Flag, fromKeyboard = false) {
+    const target = asset();
+    if (!target || cropMode()) return;
+    const before: Flag = (optimistic.get(target.id)?.flag ?? target.flag ?? 'none') as Flag;
+    if (fromKeyboard) hud.show(markHudText({ flag }), 'flag');
+    if (before === flag) return;
+    const next: Mark = { id: target.id, rating: target.rating, flag };
+    optimistic.set(target.id, next);
+    applyLocal(next);
+    history.push({
+      label: markHudText({ flag }),
+      ids: [target.id],
+      revert: async () => {
+        const updated = await execute<Asset>('asset.flag', { id: target.id, flag: before });
+        applyLocal({ id: target.id, rating: updated.rating, flag: before });
+        await changed(updated, 'flag');
+      },
+    });
+    try {
+      const updated = await execute<Asset>('asset.flag', { id: target.id, flag });
+      if (optimistic.get(target.id) === next) await changed(updated, 'flag');
+    } catch (e) {
+      if (optimistic.get(target.id) === next) {
+        applyLocal({ id: target.id, rating: target.rating, flag: before });
+      }
+      setError(`标记未保存：${errorMessage(e)}`);
+    } finally {
+      if (optimistic.get(target.id) === next) optimistic.delete(target.id);
+    }
+  }
   function beginCrop() {
     if (!asset() || busy()) return;
     setCrop({ ...(asset()!.crop || fullCrop) });
@@ -1112,13 +1160,13 @@ export default function Viewer(props: {
               class={`nl-icon-btn nl-icon-btn--sm focus-toggle ${focusVisible() ? 'active' : ''}`}
               onClick={toggleFocus}
               aria-disabled={!!focusUnavailableReason()}
-              aria-label={mode() === 'cull' ? '显示对焦点（Shift+F）' : '显示对焦点（P）'}
+              aria-label="显示对焦点（Shift+F）"
               aria-pressed={focusVisible()}
-              aria-keyshortcuts={mode() === 'cull' ? 'Shift+F' : 'P'}
+              aria-keyshortcuts="Shift+F"
               aria-describedby={focusHelpId}
               title={
                 focusUnavailableReason() ||
-                `对焦点（${mode() === 'cull' ? 'Shift+F' : 'P'}）· 实线选定，虚线活动`
+                '对焦点（Shift+F）· 实线选定，虚线活动'
               }
             >
               <Icon name="focus-2" size={16} />

@@ -125,7 +125,7 @@ fn v6_catalog_upgrades_to_v7_without_touching_marks_or_files() {
     let version: i64 = database
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
     let asset = core.asset(&id).unwrap();
     assert_eq!((asset.rating, asset.flag.as_str()), (4, "pick"));
     assert_eq!(asset.key.as_deref(), Some("a.png"));

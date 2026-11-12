@@ -129,6 +129,11 @@ export interface AssetListResult {
   total: number;
   file_total?: number;
 }
+export interface AssetIdsResult {
+  ids: string[];
+  total: number;
+  file_total: number;
+}
 export interface FingerprintStatus {
   library_id: string;
   total: number;

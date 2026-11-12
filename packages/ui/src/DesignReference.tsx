@@ -12,6 +12,7 @@ import {
   DataTable,
   EmptyState,
   Field,
+  FloatingDock,
   Group,
   IconButton,
   Kbd,
@@ -498,6 +499,13 @@ export default function DesignReference() {
               </Button>
               <Chip label="相机：X-T5" onRemove={() => undefined} />
             </Toolbar>
+            <FloatingDock inline label="批量操作示例">
+              <span>已选 12 项</span>
+              <Button size="sm" variant="ghost">
+                留用
+              </Button>
+              <Button size="sm">导出…</Button>
+            </FloatingDock>
             <SplitPage
               main={
                 <Group title="主栏">

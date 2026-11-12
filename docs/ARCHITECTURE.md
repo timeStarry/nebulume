@@ -23,13 +23,13 @@ flowchart TD
 
 | 模块          | 职责                                                           |
 | ------------- | -------------------------------------------------------------- |
-| `neb-core`    | SQLite、扫描、查询、元数据、预览、直方图、裁剪、导出与缓存管理 |
+| `neb-core`    | SQLite（`catalog.rs` 协调层 + `catalog/query.rs` 索引查询/统计 + `catalog/scan.rs` 批量本地扫描）、元数据、预览、直方图、裁剪、导出与缓存管理 |
 | `neb-storage` | 连接、凭据、作用域路径、目录列举、完整下载和版本锁定分段读取   |
 | `neb-ingest`  | 冻结导入计划、内容哈希、校验复制、冲突处理和结果记录           |
 | `neb-service` | 统一命令路由、任务编排、资源协调和错误语义                     |
 | `neb-app`     | Tauri 窗口、系统路径、文件对话框、主题及 IPC                   |
 | `neb-cli`     | 命令行及可重复自动化入口                                       |
-| `packages/ui` | 导航、图库、查看器、参数面板、导入和缓存交互                   |
+| `packages/ui` | 纯状态层（`tasks.ts`、`selection.ts`、`culling.ts` 等）、设计原语层（`src/ui/`）与薄视图层 |
 
 核心模块不依赖 Tauri。前端不持有持久存储凭据，也不直接修改原片。
 
@@ -37,7 +37,7 @@ flowchart TD
 
 SQLite 保存图库、来源绑定、资产和编辑配方。图库绑定本地目录或远端来源前缀；一个存储源可提供多个图库。资产用稳定 ID 关联评级和裁剪，远端 `source_key` 保留原始键，与缓存路径分开。
 
-schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v10：v10 新增单行表 `catalog_revision`，由 `assets` 与 `libraries` 上的触发器在任何增删改（包括其他进程，如 CLI）时递增；`asset.list` 把同一筛选与排序下按配对折叠后的有序 ID 列表按该计数缓存（最近 2 组），翻页只读取当页行，计数变化即重新计算。10 万张照片的合成库中，新查询首页约 200ms，之后的翻页约 1ms。此前 v9 新增 `assets.quick_hash`（文件首尾各 64 KiB 加文件大小的 SHA-256，小于 128 KiB 的文件取全文），只用于扫描时识别移动和改名，导入去重仍用完整 `sha256`；升级不读原件，旧资产在下次扫描遇到未变化的文件时补算。此前 v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
+schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v13：v13 为 FTS5 触发器增加 `WHEN` 列变更守卫（仅 `filename`/`path`/`metadata_json` 变化时重建全文索引，高频打星/打旗/裁剪零 FTS5 写放大），新增虚拟生成列 `exif_camera`、`exif_lens`、`exif_focal_mm`、`exif_iso` 及其复合索引（替代每次查询解析 JSON），新增 `catalog_revision.structural_value` 以便纯标记更新在不改变筛选/排序命中集时复用已缓存的有序 ID 列表，并将本地扫描拆分为锁外无 SQL 预检快照 + 每 250 项短事务批量提交。此前 v11/v12 引入 `trashed_at` 废纸篓记录与预览分支表汇合；v10 新增单行表 `catalog_revision`，由 `assets` 与 `libraries` 上的触发器在任何增删改（包括其他进程，如 CLI）时递增；`asset.list` 与 `asset.ids` 把同一筛选与排序下按配对折叠后的有序 ID 列表按修订计数缓存，翻页只读取当页行。此前 v9 新增 `assets.quick_hash`（文件首尾各 64 KiB 加文件大小的 SHA-256，小于 128 KiB 的文件取全文），只用于扫描时识别移动和改名，导入去重仍用完整 `sha256`；升级不读原件，旧资产在下次扫描遇到未变化的文件时补算。此前 v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
 
 文件创建、修改和 EXIF 拍摄时间分别保存。拍摄时间来自 DateTimeOriginal，按相机记录的日期、时间和子秒排序；保留已有时区但不推断缺失时区，不用文件或缓存时间补值。未知值在两个排序方向下均置后。
 
