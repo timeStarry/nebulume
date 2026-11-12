@@ -12,8 +12,10 @@ import {
 import { execute, schedulePreview } from './api';
 import { isQueueAbort, untilAborted } from './concurrency';
 import { loadImage, previewUrl, type PreviewTier } from './preview-url';
+import ClippingOverlay from './ClippingOverlay';
+import { needsFullTier } from './compare-sync';
+import { cropFromPointsWithAspect } from './crop-aspect';
 import {
-  cropFromPoints,
   errorMessage,
   imageRequestKey,
   type Asset,
@@ -301,16 +303,22 @@ export default function PhotoView(props: {
   hasNext: boolean;
   focusEnabled?: boolean;
   focusRegions?: FocusRegion[];
-  /** Each change toggles between fit-to-window and preview-pixel 1:1. */
+  /** Each change toggles between fit-to-window and native 1:1. */
   zoomToggle?: number;
   /** Fill the window edge to edge (standalone viewer); chrome floats over the photo. */
   fill?: boolean;
+  preferRaw?: boolean;
+  onTogglePreferRaw?: () => void;
+  clippingEnabled?: boolean;
+  onToggleClipping?: () => void;
+  cropAspect?: number | null;
   onPreviewStateChange?: (state: {
     key: string;
     loading: boolean;
     failed: boolean;
     mapping?: Preview['coordinate_mapping'];
     asset?: Asset;
+    source?: string;
   }) => void;
 }) {
   let stage!: HTMLDivElement;
@@ -321,22 +329,35 @@ export default function PhotoView(props: {
   const [dragging, setDragging] = createSignal(false);
   const [fetching, setFetching] = createSignal(false);
   const [fetchError, setFetchError] = createSignal('');
+  const [fullLayer, setFullLayer] = createSignal<{ key: string; image: HTMLImageElement } | null>(
+    null,
+  );
+  const [fullLoading, setFullLoading] = createSignal(false);
   let disposed = false;
   let previewController: AbortController | undefined;
+  let fullController: AbortController | undefined;
   onCleanup(() => {
     disposed = true;
     previewController?.abort();
+    fullController?.abort();
   });
   let drag: { x: number; y: number; px: number; py: number; crop: boolean } | undefined;
+  const effectivePreferRaw = () => !props.cropMode && !!props.preferRaw && props.asset.kind === 'raw';
+  const requestKey = createMemo(() =>
+    imageRequestKey(props.asset, props.cropMode, effectivePreferRaw()),
+  );
   const [preview, { refetch }] = createResource(
-    () => imageRequestKey(props.asset, props.cropMode),
+    requestKey,
     async (key) => {
-      const { id, uncropped, revision } = JSON.parse(key) as {
+      const { id, uncropped, revision, preferRaw } = JSON.parse(key) as {
         id: string;
         uncropped: boolean;
         revision: number;
+        preferRaw?: boolean;
       };
       previewController?.abort();
+      fullController?.abort();
+      setFullLoading(false);
       const controller = (previewController = new AbortController());
       const lane = {
         source: props.asset.source_key ? ('remote' as const) : ('local' as const),
@@ -347,13 +368,14 @@ export default function PhotoView(props: {
         // IPC carries metadata and errors (E_DOWNLOAD_REQUIRED); pixels come from the protocol.
         const data = await execute<Preview>(
           'asset.preview',
-          { id, tier: 'p2560', uncropped },
+          { id, tier: 'p2560', uncropped, ...(preferRaw ? { prefer_raw: true } : {}) },
           lane,
         );
         const url = await previewUrl(
           { id, preview_revision: revision },
           data.tier || 'p2560',
           uncropped,
+          !!preferRaw,
         );
         // The element that decodes is the element shown: one request, one decode.
         const image = document.createElement('img');
@@ -365,7 +387,8 @@ export default function PhotoView(props: {
           rejectInFlightOnAbort: true,
         });
         // Coming back to this photo, or leaving it, can show this decode at once.
-        if (!uncropped) rememberDecodedPreview({ id, preview_revision: revision }, url);
+        if (!uncropped && !preferRaw)
+          rememberDecodedPreview({ id, preview_revision: revision }, url);
         return { data, image, error: '' };
       } catch (error) {
         return { data: null, image: null, error: isQueueAbort(error) ? '' : errorMessage(error) };
@@ -378,14 +401,17 @@ export default function PhotoView(props: {
   createEffect(() => {
     const image = preview()?.image;
     if (image) image.alt = props.asset.filename;
+    const hi = fullLayer()?.image;
+    if (hi) hi.alt = props.asset.filename;
   });
   createEffect(() =>
     props.onPreviewStateChange?.({
-      key: imageRequestKey(props.asset, props.cropMode),
+      key: requestKey(),
       loading: preview.loading,
       failed: !!preview()?.error,
       mapping: preview()?.data?.coordinate_mapping,
       asset: preview()?.data?.asset,
+      source: preview()?.data?.source,
     }),
   );
   async function fetchOriginal() {
@@ -401,22 +427,115 @@ export default function PhotoView(props: {
       setFetching(false);
     }
   }
+  const sourceDims = createMemo(() => {
+    const p = preview()?.data;
+    if (!p) return { width: 1, height: 1 };
+    const m = p.coordinate_mapping;
+    if (m) {
+      const cw = props.cropMode ? 1 : m.crop.width;
+      const ch = props.cropMode ? 1 : m.crop.height;
+      return {
+        width: Math.max(p.width, Math.round(m.full_width * cw)),
+        height: Math.max(p.height, Math.round(m.full_height * ch)),
+      };
+    }
+    if (!props.cropMode && props.asset.crop) return { width: p.width, height: p.height };
+    return {
+      width: Math.max(p.width, props.asset.width || p.width),
+      height: Math.max(p.height, props.asset.height || p.height),
+    };
+  });
   const fitScale = createMemo(() => {
     const p = preview()?.data;
     if (!p) return 1;
+    const src = sourceDims();
     return Math.max(
       0.01,
       Math.min(
-        (size().width - (props.fill ? 0 : 96)) / p.width,
-        (size().height - (props.fill ? 0 : 72)) / p.height,
+        (size().width - (props.fill ? 0 : 96)) / src.width,
+        (size().height - (props.fill ? 0 : 72)) / src.height,
         1,
       ),
     );
   });
   const imageSize = createMemo(() => ({
-    width: (preview()?.data?.width || 0) * fitScale() * zoom(),
-    height: (preview()?.data?.height || 0) * fitScale() * zoom(),
+    width: sourceDims().width * fitScale() * zoom(),
+    height: sourceDims().height * fitScale() * zoom(),
   }));
+  // Seamless background upgrade to `full` native pixel tier when zoomed past p2560.
+  createEffect(() => {
+    const base = preview();
+    const key = requestKey();
+    const src = sourceDims();
+    const wantFull =
+      !props.cropMode &&
+      !preview.loading &&
+      !!base?.data &&
+      needsFullTier(
+        imageSize().width,
+        imageSize().height,
+        window.devicePixelRatio || 1,
+        src.width,
+        src.height,
+      );
+    if (!wantFull) {
+      fullController?.abort();
+      setFullLoading(false);
+      if (fullLayer() && fullLayer()!.key !== key) setFullLayer(null);
+      return;
+    }
+    if (fullLayer()?.key === key) return;
+    fullController?.abort();
+    const controller = (fullController = new AbortController());
+    const preferRaw = effectivePreferRaw();
+    const revision = props.asset.preview_revision || 0;
+    const lane = {
+      source: props.asset.source_key ? ('remote' as const) : ('local' as const),
+      priority: 'viewer' as const,
+      signal: controller.signal,
+    };
+    setFullLoading(true);
+    void (async () => {
+      try {
+        await execute<Preview>(
+          'asset.preview',
+          {
+            id: props.asset.id,
+            tier: 'full',
+            uncropped: false,
+            ...(preferRaw ? { prefer_raw: true } : {}),
+          },
+          lane,
+        );
+        const url = await previewUrl(
+          { id: props.asset.id, preview_revision: revision },
+          'full',
+          false,
+          preferRaw,
+        );
+        const image = document.createElement('img');
+        image.className = 'main-photo';
+        image.alt = props.asset.filename;
+        image.draggable = false;
+        await schedulePreview(() => loadImage(url, image), {
+          ...lane,
+          rejectInFlightOnAbort: true,
+        });
+        if (!disposed && !controller.signal.aborted && requestKey() === key) {
+          setFullLayer({ key, image });
+        }
+      } catch {
+        /* Keep sharp p2560 preview on screen if full tier is cancelled or unsupported. */
+      } finally {
+        if (fullController === controller) setFullLoading(false);
+      }
+    })();
+  });
+  const activeImage = createMemo(() => {
+    const key = requestKey();
+    if (!props.cropMode && fullLayer()?.key === key) return fullLayer()!.image;
+    return preview()?.image ?? null;
+  });
   function fit() {
     setZoom(1);
     setPan({ x: 0, y: 0 });
@@ -482,7 +601,16 @@ export default function PhotoView(props: {
   }
   function pointerMove(event: PointerEvent) {
     if (!drag) return;
-    if (drag.crop) props.setCrop(cropFromPoints(drag, point(event)));
+    if (drag.crop)
+      props.setCrop(
+        cropFromPointsWithAspect(
+          drag,
+          point(event),
+          props.cropAspect ?? null,
+          sourceDims().width,
+          sourceDims().height,
+        ),
+      );
     else setPan({ x: drag.px + event.clientX - drag.x, y: drag.py + event.clientY - drag.y });
   }
   function pointerUp() {
@@ -561,7 +689,11 @@ export default function PhotoView(props: {
                   transform: `translate(${pan().x}px, ${pan().y}px)`,
                 }}
               >
-                {preview()?.image}
+                {activeImage()}
+                <ClippingOverlay
+                  image={activeImage()}
+                  enabled={!!props.clippingEnabled && !props.cropMode}
+                />
                 <Show when={props.cropMode}>
                   <div
                     class="crop-overlay editable"
@@ -639,14 +771,12 @@ export default function PhotoView(props: {
             适合窗口
           </button>
           <button
-            title="预览像素 1:1（大图预览最长边 2560 px）"
-            onClick={() => {
-              setZoom(1 / fitScale());
-              setPan({ x: 0, y: 0 });
-            }}
+            class={Math.abs(fitScale() * zoom() - 1) < 0.02 && zoom() > 1.02 ? 'active' : ''}
+            title="原生像素 1:1 查焦（Z）· 自动升级高清原生预览"
+            onClick={() => toggleActual()}
             disabled={props.cropMode}
           >
-            1:1
+            {fullLoading() ? '1:1…' : fullLayer()?.key === requestKey() ? '1:1 原生' : '1:1'}
           </button>
           <span class="divider" />
           <button
@@ -660,12 +790,35 @@ export default function PhotoView(props: {
           <span>{Math.round(fitScale() * zoom() * 100)}%</span>
           <button
             class="icon-button"
-            onClick={() => setZoom((z) => Math.min(8, z * 1.25))}
+            onClick={() => setZoom((z) => Math.min(8 / fitScale(), z * 1.25))}
             disabled={props.cropMode}
             aria-label="放大"
           >
             <Icon name="plus" size={15} />
           </button>
+          <Show when={props.onToggleClipping && !props.cropMode}>
+            <span class="divider" />
+            <button
+              class={props.clippingEnabled ? 'active' : ''}
+              aria-pressed={!!props.clippingEnabled}
+              aria-keyshortcuts="J"
+              onClick={props.onToggleClipping}
+              title="高光/暗部溢出警告（J）· 红色高光过曝，蓝色暗部死黑"
+            >
+              溢出警告
+            </button>
+          </Show>
+          <Show when={props.asset.kind === 'raw' && props.onTogglePreferRaw && !props.cropMode}>
+            <button
+              class={props.preferRaw ? 'active' : ''}
+              aria-pressed={!!props.preferRaw}
+              aria-keyshortcuts="R"
+              onClick={props.onTogglePreferRaw}
+              title="切换相机内嵌预览与 RAW 传感器显影（R）"
+            >
+              {props.preferRaw ? 'RAW 显影' : '相机预览'}
+            </button>
+          </Show>
         </div>
       </div>
     </div>

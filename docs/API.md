@@ -23,7 +23,7 @@
 - `asset.fetch_original {id}` → `Asset`；显式获取缺失原图，已有当前缓存时复用；允许手动预览策略下下载。
 - `asset.offline.set {id,pinned:boolean}` → `{asset_id,pinned,stats}`；固定前先取得完整原图，固定当前快照并计入总限额。远端重扫发现更新后不自动替换该快照；`asset.get` 附 `cache_update_available=true`，由用户执行 refresh 更新。解除固定允许作用于已移除库留下的孤立固定项。
 - `file.open {path}` → `Asset`；只索引指定文件，独立查看不隐式扫描同目录或新增可见图片库。
-- `asset.preview {id,tier?:'t256'|'t512'|'t1024'|'p2560',uncropped?,max_size?}` → `{width,height,source,tier,coordinate_mapping?,asset?}`，只返回元数据，不含像素（旧 `data_url` 已移除）；像素经下文 `neb` 协议获取。默认 `p2560`，应用配方；编辑裁剪时以 uncropped=true 请求方向校正后的全图。未知 tier 返回 `E_INVALID`。`max_size`（32–4096）已弃用，保留一个版本：未给 tier 时映射为最长边不小于它的最小档，大于 1024 映射为 `p2560`；同时给出时以 tier 为准。桌面响应的 `coordinate_mapping={orientation,full_width,full_height,crop}` 记录实际渲染采用的EXIF方向、裁剪前方向校正后的帧尺寸及实际像素取整后的归一化裁剪；用于可靠的画面叠加，不修改图像。
+- `asset.preview {id,tier?:'t256'|'t512'|'t1024'|'p2560'|'full',uncropped?,prefer_raw?,max_size?}` → `{width,height,source,tier,coordinate_mapping?,asset?}`，只返回元数据，不含像素（旧 `data_url` 已移除）；像素经下文 `neb` 协议获取。默认 `p2560`，应用配方；查焦放大超过 `p2560` 时按需请求 `full`（最长边 9600px）；编辑裁剪时以 `uncropped=true` 请求方向校正后的全图。RAW 在各档位默认优先使用相机内嵌全尺寸 JPEG（`prefer_raw` 缺省或 `false`），传 `prefer_raw=true` 时强制使用 RAW 传感器显影（若该 RAW 仅含远小于传感器分辨率的缩略图，`p2560`/`full` 也会自动回退传感器显影）。未知 tier 返回 `E_INVALID`。`max_size`（32–4096）已弃用，保留一个版本：未给 tier 时映射为最长边不小于它的最小档，大于 1024 映射为 `p2560`；同时给出时以 tier 为准。桌面响应的 `coordinate_mapping={orientation,full_width,full_height,crop,preview_width,preview_height}` 记录实际渲染采用的 EXIF 方向、裁剪前方向校正后的帧尺寸及实际像素取整后的归一化裁剪；用于可靠的画面叠加与 1:1 比例换算，不修改图像。
 - 远端预览因获取策略需要手动下载，或内嵌预览实际超出分段读取预算时，返回 `E_DOWNLOAD_REQUIRED`；前端可调用 `asset.fetch_original` 后重新预览。预算耗尽不自动升级为完整下载，即使当前为自动获取策略。
 - `asset.focus {id}` → `FocusInfo`；独立读取相机对焦元数据；远端优先有界分段读取，缺少可靠Range能力时返回不可用，不为自动能力检测下载整份原图。与RAW传感器解码是否成功无关。查看器在当前 `asset.get` 成功后自动检测可用性，不预取其他照片；显示开关只控制覆盖层。
 - `asset.histogram {id}` → `{red:number[],green:number[],blue:number[],luminance:number[],pixels:number,source:string,asset?}` (256 bins, display-rendered values)
@@ -78,7 +78,7 @@ type CaptureIndexStatus = {
 
 外层为当前本库全部实体文件的实时计数，不受网格筛选、分页或RAW/JPEG合并影响：total=known+missing+pending。job.total是启动时的pending候选数；processed为已处理候选数（包括错误及因已被其他操作更新而跳过的项），found/missing只计本次成功写入的有效/无有效时间结果，failed为读取失败数，因此processed不保证等于found+missing+failed。error为首个单项错误或使任务提前停止的作业错误，正常无错时为null。无候选时立即返回completed且job.total=0；候选处理结束但有失败项时为failed，网络/认证失败可提前停止。错误项不标为missing，仍保留pending供再次start重试。
 
-只读取JPEG APP1 EXIF或经典TIFF主IFD0→ExifIFD中的DateTimeOriginal/SubSecTimeOriginal/OffsetTimeOriginal；适用于采用该结构的部分RAW，不保证所有RAW，不解析MakerNote、BigTIFF或缩略图/子图的拍摄时间。单项解析累计读取上限128KiB，单目录512/总计1024条目、单字段256字节、JPEG最多256段。越界、结构损坏、传输或预算耗尽返回错误并保留pending；已确认不支持的容器或无效日期记为missing。已存在当前版本原图缓存时可复用租约读取；否则远端优先使用版本锁定Range。Range不可用且允许安全回退时，仅从单个GET响应逐64KiB读取最多1MiB前缀并重试解析，不拼接不同响应，不发布或增加原图缓存。128KiB是解析读取预算，底层Range传输仍受256KiB块、16MiB/128请求等边界约束，不等同于网络字节总量。
+只读取 JPEG APP1 EXIF、经典 TIFF 主 IFD0→ExifIFD、Canon CR3 ISO-BMFF `moov/uuid(CMT1/CMT2)` 或 HEIC/HEIF/AVIF ISO-BMFF `meta/iinf(Exif)` 中的 DateTimeOriginal/SubSecTimeOriginal/OffsetTimeOriginal；适用于采用上述结构的格式与 RAW，不解析 MakerNote、BigTIFF 或缩略图/子图的拍摄时间。单项解析累计读取上限128KiB，单目录512/总计1024条目、单字段256字节、JPEG最多256段。越界、结构损坏、传输或预算耗尽返回错误并保留pending；已确认不支持的容器或无效日期记为missing。已存在当前版本原图缓存时可复用租约读取；否则远端优先使用版本锁定Range。Range不可用且允许安全回退时，仅从单个GET响应逐64KiB读取最多1MiB前缀并重试解析，不拼接不同响应，不发布或增加原图缓存。128KiB是解析读取预算，底层Range传输仍受256KiB块、16MiB/128请求等边界约束，不等同于网络字节总量。
 
 后台不持全局catalog锁、不进入预览/下载队列，不解码图片像素；当前项使用库与资产租约，核对库绑定及登记版本后仅写入拍摄字段，不改评级、裁剪、尺寸和其他元数据。cancel是协作式停止：当前读取可完成并保留结果，发起下一项前停止，随后转cancelled；切换页面不取消。已完成索引持久化，但job仅保存在当前Service实例内存，重启不续跑；重启后status的job为null，再次显式start处理剩余pending。单次CLI进程不提供跨调用持久后台作业，持续任务应由常驻Service承载。
 
@@ -90,7 +90,7 @@ Metadata uses human-readable keys (Camera, Lens, ISO etc); absent data remains a
 
 远端 `asset.get` 的额外字段为 `cache_pinned?:boolean` 与 `cache_update_available?:boolean`；固定快照的只读尺寸/EXIF/大小及拍摄时间字段来自快照，评级与裁剪始终使用当前记录。旧快照缺少拍摄索引字段时，仅从该快照的有效EXIF Original推导available；无有效值保持pending，不冒充已检查。预览/直方图可附带 `asset` 补齐冷图元数据，前端应核对id后接收。
 
-`asset.list.rating` 表示最低星级，`asset.rate.rating` 为 0–5 整数。预览档位固定为 `t256`/`t512`/`t1024`/`p2560`（最长边 256/512/1024/2560px）；网格按滑块尺寸与 devicePixelRatio 选档，最高 `t1024`；查看器请求 `p2560`。直方图基于已应用裁剪的渲染图，不能作为传感器 RAW 直方图。导出为 JPEG，剥离源 EXIF/ICC。
+`asset.list.rating` 表示最低星级，`asset.rate.rating` 为 0–5 整数。预览档位为五档：`t256`/`t512`/`t1024`/`p2560`/`full`（最长边 256/512/1024/2560/9600px）；网格按滑块尺寸与 devicePixelRatio 选档，最高 `t1024`；查看器默认请求 `p2560`，放大超过 `p2560` 分辨率时后台无缝升级到 `full`。直方图基于已应用裁剪的渲染图，不能作为传感器 RAW 直方图。预览与 JPEG 导出保留源文件内嵌 ICC 配置（如 Display P3 / Adobe RGB），若相机内嵌 JPEG 或源文件未附 ICC 但 EXIF 标注 `ColorSpace=2` / `InteropIndex=R03` 则自动合成标准 `Adobe RGB (1998)` ICC v2.1 配置；导出剥离源 EXIF，永不修改原文件。
 
 `FocusInfo={status:'available'|'missing'|'unsupported',reason?:string,source:'nikon_afinfo2'|null,coordinate_space:'oriented_full_image',orientation:number,image_width?:number,image_height?:number,regions:[{x,y,width,height,kind:'selected'|'active'}]}`。区域为按主EXIF方向校正后的完整图像归一化矩形，未应用用户裁剪；宽高是对应方向下AF坐标帧尺寸。当前只解析标准JPEG EXIF/TIFF中的Nikon Type3 MakerNote（2.10/2.11）AFInfo2 0300/0301显式坐标，不推断纯点位bitmask、不读取其他私有字段、不返回MakerNote原文。记录缺失与格式/版本不支持明确区分，损坏或越界数据不猜测为中心点。
 
@@ -160,7 +160,7 @@ HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须�
 
 ## 预览协议（app）
 
-桌面 webview 通过自定义协议读取预览 JPEG，不经 IPC 传 base64：`neb://localhost/<id>/<tier>/<crop>/<rev>`（Windows 为 `http://neb.localhost/...`）。前端用 `convertFileSrc(path,'neb')` 构造，整段可被百分号编码为单段，服务端先解码再解析。`id` 为 1–64 个 ASCII 字母数字或 `-`；`tier` 为上述四档之一；`crop` 为 `0`（应用裁剪）或 `1`（uncropped）；`rev` 为数字，仅用于前端区分版本，不参与服务端缓存键。路径不合法时在任何文件查找前返回 400。
+桌面 webview 通过自定义协议读取预览 JPEG，不经 IPC 传 base64：`neb://localhost/<id>/<tier>/<crop>/<rev>[/raw]`（Windows 为 `http://neb.localhost/...`）。前端用 `convertFileSrc(path,'neb')` 构造，整段可被百分号编码为单段，服务端先解码再解析。`id` 为 1–64 个 ASCII 字母数字或 `-`；`tier` 为上述五档之一（`t256`/`t512`/`t1024`/`p2560`/`full`）；`crop` 为 `0`（应用裁剪）或 `1`（uncropped）；`rev` 为数字，仅用于前端区分版本，不参与服务端缓存键；可选第 5 段 `raw` 表示 `prefer_raw=true`（强制 RAW 传感器显影，参与服务端缓存键区分）。路径不合法时在任何文件查找前返回 400。
 
 - 200：`Content-Type: image/jpeg`，`Cache-Control: no-cache`，`ETag`，以及 `X-Neb-Width`/`X-Neb-Height`/`X-Neb-Source`。
 - 304：`If-None-Match` 与当前 ETag 相同（或为 `*`）时返回，不解码像素、不访问远端。ETag 为完整 `preview-v3:` 缓存键的小写十六进制 SHA-256（带引号）；原文件变化后键随之改变，不会返回过期 304。
@@ -168,7 +168,7 @@ HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须�
 - 仅对 `tauri://localhost`、`http://tauri.localhost` 来源回写 `Access-Control-Allow-Origin` 与 `Vary: Origin`。
 - CSP `img-src 'self' blob: neb: http://neb.localhost`，`img-src` 不再允许 `data:`（`font-src` 保留）。协议无需新增窗口权限。
 
-CLI `neb preview --id ID --tier TIER [--uncropped] --out FILE` 调用同一 `Service::preview_image`，把与协议相同的 JPEG 字节写入文件；失败按单次调用格式向 stderr 输出 `{code,message}` 并返回非零退出码。`scripts/bench-preview.mjs` 用它测量冷/热预览耗时。
+CLI `neb preview --id ID --tier TIER [--uncropped] [--prefer-raw] --out FILE` 调用同一 `Service::preview_image`，把与协议相同的 JPEG 字节写入文件；失败按单次调用格式向 stderr 输出 `{code,message}` 并返回非零退出码。`scripts/bench-preview.mjs` 用它测量冷/热预览耗时。
 
 ## 原生窗口接口
 

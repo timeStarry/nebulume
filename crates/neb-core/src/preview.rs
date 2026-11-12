@@ -20,10 +20,17 @@ pub enum PreviewTier {
     T512,
     T1024,
     P2560,
+    Full,
 }
 
 impl PreviewTier {
-    pub const ALL: [Self; 4] = [Self::T256, Self::T512, Self::T1024, Self::P2560];
+    pub const ALL: [Self; 5] = [
+        Self::T256,
+        Self::T512,
+        Self::T1024,
+        Self::P2560,
+        Self::Full,
+    ];
 
     pub fn pixels(self) -> u32 {
         match self {
@@ -31,6 +38,7 @@ impl PreviewTier {
             Self::T512 => 512,
             Self::T1024 => 1024,
             Self::P2560 => 2560,
+            Self::Full => 9600,
         }
     }
 
@@ -40,24 +48,32 @@ impl PreviewTier {
             Self::T512 => "t512",
             Self::T1024 => "t1024",
             Self::P2560 => "p2560",
+            Self::Full => "full",
         }
+    }
+
+    pub fn is_grid(self) -> bool {
+        matches!(self, Self::T256 | Self::T512 | Self::T1024)
     }
 
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|tier| tier.as_str() == name)
     }
 
-    /// Smallest tier whose long side covers `max_size`; larger requests use `P2560`.
+    /// Smallest standard tier whose long side covers `max_size`; larger legacy
+    /// `max_size` requests cap at `P2560` (`Full` is requested explicitly).
     pub fn for_max_size(max_size: u32) -> Self {
-        Self::ALL
+        [Self::T256, Self::T512, Self::T1024, Self::P2560]
             .into_iter()
             .find(|tier| tier.pixels() >= max_size)
             .unwrap_or(Self::P2560)
     }
 
-    /// Grid tiers read a RAW file's embedded camera JPEG before sensor decoding.
+    /// All preview tiers default to reading a RAW file's embedded camera JPEG
+    /// when its resolution is sufficient, avoiding slow CPU demosaicing unless
+    /// explicit RAW sensor development (`prefer_raw`) is requested.
     pub fn prefers_embedded(self) -> bool {
-        self != Self::P2560
+        true
     }
 }
 
@@ -232,6 +248,7 @@ mod tests {
             (PreviewTier::T512, "t512", 512),
             (PreviewTier::T1024, "t1024", 1024),
             (PreviewTier::P2560, "p2560", 2560),
+            (PreviewTier::Full, "full", 9600),
         ] {
             assert_eq!(tier.as_str(), name);
             assert_eq!(PreviewTier::parse(tier.as_str()), Some(tier));
@@ -239,8 +256,12 @@ mod tests {
             assert_eq!(serde_json::to_value(tier).unwrap(), json!(name));
         }
         assert_eq!(PreviewTier::parse("t9999"), None);
+        assert!(PreviewTier::T1024.is_grid());
+        assert!(!PreviewTier::P2560.is_grid());
+        assert!(!PreviewTier::Full.is_grid());
         assert!(PreviewTier::T1024.prefers_embedded());
-        assert!(!PreviewTier::P2560.prefers_embedded());
+        assert!(PreviewTier::P2560.prefers_embedded());
+        assert!(PreviewTier::Full.prefers_embedded());
     }
 
     #[test]

@@ -21,6 +21,7 @@ import {
   type Histogram,
 } from './model';
 import { displayDate } from './workspace';
+import { ASPECT_PRESETS, type AspectPreset } from './crop-aspect';
 import Icon from './Icon';
 import {
   diagnosticLabels,
@@ -38,6 +39,9 @@ export default function AssetInspector(props: {
   cropMode?: boolean;
   crop?: Crop;
   setCrop?: (crop: Crop) => void;
+  cropAspectPreset?: AspectPreset;
+  cropAspectSwapped?: boolean;
+  onSelectCropAspect?: (preset: AspectPreset, swapped: boolean) => void;
   onSaveCrop?: () => void;
   onResetCrop: () => void;
   onRate: (rating: number) => void;
@@ -226,7 +230,48 @@ export default function AssetInspector(props: {
           <div class="section-title">
             <h3>裁剪选区</h3>
           </div>
-          <p class="muted">拖动选区或输入百分比，保存为配方，原图不变。</p>
+          <p class="muted">拖动选区或选择摄影画幅比例，保存为无损配方，原图不变。</p>
+          <Show when={props.onSelectCropAspect}>
+            <div class="crop-aspect-bar" role="group" aria-label="裁剪画幅比例">
+              <For each={ASPECT_PRESETS}>
+                {(item) => (
+                  <button
+                    type="button"
+                    class="crop-aspect-pill"
+                    classList={{ active: (props.cropAspectPreset || 'free') === item.id }}
+                    aria-pressed={(props.cropAspectPreset || 'free') === item.id}
+                    disabled={props.busy}
+                    onClick={() =>
+                      props.onSelectCropAspect!(item.id, !!props.cropAspectSwapped)
+                    }
+                  >
+                    {item.label}
+                  </button>
+                )}
+              </For>
+              <button
+                type="button"
+                class="crop-aspect-pill swap"
+                classList={{ active: !!props.cropAspectSwapped }}
+                aria-pressed={!!props.cropAspectSwapped}
+                disabled={
+                  props.busy ||
+                  !props.cropAspectPreset ||
+                  props.cropAspectPreset === 'free' ||
+                  props.cropAspectPreset === '1:1'
+                }
+                onClick={() =>
+                  props.onSelectCropAspect!(
+                    props.cropAspectPreset || 'free',
+                    !props.cropAspectSwapped,
+                  )
+                }
+                title="切换横向 / 纵向画幅方向"
+              >
+                横竖 ↔
+              </button>
+            </div>
+          </Show>
           <div class="crop-inputs">
             <For each={['x', 'y', 'width', 'height'] as const}>
               {(key) => (

@@ -72,6 +72,16 @@
   pointer-events: none;
   user-select: none;
 }
+.clipping-overlay {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
 .crop-overlay {
   position: absolute;
   border: 1px solid var(--nl-v-text);
@@ -297,6 +307,12 @@
 }
 .zoom-controls button:not(.icon-button):hover:not(:disabled) {
   background: var(--nl-hover);
+}
+.zoom-controls button:not(.icon-button).active,
+.zoom-controls button:not(.icon-button)[aria-pressed='true'] {
+  background: var(--nl-v-pressed);
+  color: var(--nl-v-text);
+  box-shadow: inset 0 0 0 1px var(--nl-v-ring);
 }
 .zoom-controls .divider {
   height: 16px;

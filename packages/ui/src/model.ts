@@ -170,12 +170,13 @@ export interface CaptureIndexStatus {
     error?: string;
   };
 }
-export type PreviewTier = 't256' | 't512' | 't1024' | 'p2560';
+export type PreviewTier = 't256' | 't512' | 't1024' | 'p2560' | 'full';
 export const TIER_PIXELS: Record<PreviewTier, number> = {
   t256: 256,
   t512: 512,
   t1024: 1024,
   p2560: 2560,
+  full: 9600,
 };
 /** Metadata only: pixels are served by the `neb` protocol at `previewUrl(asset, tier)`. */
 export interface Preview {
@@ -411,12 +412,14 @@ export function cropFromPoints(
 export function imageRequestKey(
   asset: Pick<Asset, 'id' | 'crop' | 'preview_revision'>,
   uncropped = false,
+  preferRaw = false,
 ): string {
   return JSON.stringify({
     id: asset.id,
     crop: uncropped ? null : asset.crop || null,
     uncropped,
     revision: asset.preview_revision || 0,
+    ...(preferRaw ? { preferRaw: true } : {}),
   });
 }
 export function histogramFromPixels(data: ArrayLike<number>): Omit<Histogram, 'source'> {

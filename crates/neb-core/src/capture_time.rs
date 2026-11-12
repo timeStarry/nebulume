@@ -393,7 +393,8 @@ impl<R: Read + Seek> MetadataReader<'_, R> {
     }
 }
 
-/// Reads JPEG APP1 or classic TIFF EXIF independently of previews/decoders.
+/// Reads JPEG APP1, classic TIFF, Canon CR3 (`CMT1`/`CMT2`), or ISO-BMFF
+/// (`HEIC`/`HEIF`/`AVIF` `Exif` item) capture metadata independently of pixels.
 /// The caller supplies the actual accessible length. Out-of-range pointers,
 /// transport failures and exhausted limits are errors, not a missing tag.
 pub fn read<R: Read + Seek>(input: &mut R, length: u64) -> Result<CaptureTime> {
@@ -402,11 +403,47 @@ pub fn read<R: Read + Seek>(input: &mut R, length: u64) -> Result<CaptureTime> {
         input,
         read_bytes: 0,
     };
-    let signature = reader.read(source.part(0, length.min(4))?)?;
+    if length == 0 {
+        return Ok(result(CaptureStatus::Unsupported, BTreeMap::new()));
+    }
+    let signature = reader.read(source.part(0, length.min(12))?)?;
     if signature.starts_with(&[0xff, 0xd8]) {
         reader.jpeg(source)
     } else if signature.starts_with(b"II") || signature.starts_with(b"MM") {
         reader.tiff(source)
+    } else if signature.len() >= 12 && &signature[4..8] == b"ftyp" {
+        if &signature[8..12] == b"crx " {
+            let Some(merged) = crate::cr3::merged_exif_tiff(reader.input, length)? else {
+                return Ok(result(CaptureStatus::Missing, BTreeMap::new()));
+            };
+            let merged_len = u64::try_from(merged.len())?;
+            let mut cursor = std::io::Cursor::new(merged);
+            let mut sub = MetadataReader {
+                input: &mut cursor,
+                read_bytes: 0,
+            };
+            sub.tiff(Span {
+                start: 0,
+                length: merged_len,
+            })
+        } else if crate::cr3::is_heif_or_avif_brand([
+            signature[8],
+            signature[9],
+            signature[10],
+            signature[11],
+        ]) {
+            let Some(span) =
+                crate::cr3::find_heif_exif_tiff_span(reader.input, length, MAX_READ_BYTES)?
+            else {
+                return Ok(result(CaptureStatus::Missing, BTreeMap::new()));
+            };
+            reader.tiff(Span {
+                start: span.offset,
+                length: span.length,
+            })
+        } else {
+            Ok(result(CaptureStatus::Unsupported, BTreeMap::new()))
+        }
     } else {
         Ok(result(CaptureStatus::Unsupported, BTreeMap::new()))
     }

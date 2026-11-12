@@ -230,7 +230,7 @@ impl Service {
         }))
     }
 
-    /// `preview-v3:<id>:<stamp>:<size>:<crop json>:<tier>`. Local stamps come
+    /// `preview-v3:<id>:<stamp>:<size>:<crop json>:<tier>[:raw]`. Local stamps come
     /// from the file itself, so an on-disk change alters the key (and ETag)
     /// before any refresh. Remote stamps are catalog/snapshot fields; no I/O
     /// beyond SQLite and a local stat is performed.
@@ -240,9 +240,20 @@ impl Service {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<String> {
+        self.preview_key_with_mode(asset, tier, uncropped, false)
+    }
+
+    pub(super) fn preview_key_with_mode(
+        &self,
+        asset: &Asset,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<String> {
+        let mode_suffix = if prefer_raw { ":raw" } else { "" };
         if asset.source_key.is_none() {
             return Ok(format!(
-                "preview-v3:{}:{}",
+                "preview-v3:{}:{}{mode_suffix}",
                 self.core.preview_fingerprint(&asset.id, uncropped)?,
                 tier.as_str()
             ));
@@ -264,7 +275,7 @@ impl Service {
             .and_then(|s| s["size"].as_u64())
             .unwrap_or(asset.size);
         Ok(format!(
-            "preview-v3:{}:{}:{}:{}:{}",
+            "preview-v3:{}:{}:{}:{}:{}{mode_suffix}",
             asset.id,
             fingerprint,
             size,
@@ -278,8 +289,9 @@ impl Service {
         asset: &Asset,
         tier: PreviewTier,
         uncropped: bool,
+        prefer_raw: bool,
     ) -> Result<String> {
-        let key = self.preview_key(asset, tier, uncropped)?;
+        let key = self.preview_key_with_mode(asset, tier, uncropped, prefer_raw)?;
         Ok(format!(
             "\"{}\"",
             hex::encode(Sha256::digest(key.as_bytes()))
@@ -371,12 +383,24 @@ impl Service {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<Arc<PreviewImage>> {
-        let key = self.preview_key(asset, tier, uncropped)?;
+        self.render_preview_with_mode(asset, tier, uncropped, false)
+    }
+
+    pub(super) fn render_preview_with_mode(
+        &self,
+        asset: &Asset,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<Arc<PreviewImage>> {
+        let key = self.preview_key_with_mode(asset, tier, uncropped, prefer_raw)?;
         if asset.source_key.is_none() {
             if let Some(image) = self.stored_preview(&key, true)? {
                 return Ok(image);
             }
-            let image = self.core.preview_image(&asset.id, tier, uncropped)?;
+            let image = self
+                .core
+                .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?;
             self.previews.put(key.clone(), Arc::clone(&image));
             self.persist_local_preview(key, &image);
             return Ok(image);
@@ -390,13 +414,19 @@ impl Service {
             self.core.refresh_asset(&asset.id)?;
             self.core.bind_original_revision(&asset.id)?;
         }
-        let image = if lease.is_none() {
+        let image = if lease.is_none() && prefer_raw {
+            self.require_automatic_download()?;
+            let _lease = self.original(asset, false)?;
+            self.core
+                .preview_image_with_mode(&asset.id, tier, uncropped, true)?
+        } else if lease.is_none() {
             match self.range_preview(asset, if uncropped { None } else { asset.crop }, tier) {
                 Ok(image) => Arc::new(image),
                 Err(error) if Self::may_fallback(&error) => {
                     self.require_automatic_download()?;
                     let _lease = self.original(asset, false)?;
-                    self.core.preview_image(&asset.id, tier, uncropped)?
+                    self.core
+                        .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?
                 }
                 Err(error)
                     if matches!(
@@ -411,7 +441,8 @@ impl Service {
                 Err(error) => return Err(error),
             }
         } else {
-            self.core.preview_image(&asset.id, tier, uncropped)?
+            self.core
+                .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?
         };
         if let Some(inspection) = image.extras.get("inspection") {
             self.core.record_remote_inspection(&asset.id, inspection)?;
@@ -419,7 +450,7 @@ impl Service {
         // Preview publication uses the current refreshed fingerprint. Callers
         // overlay live metadata, so ratings/crops/pins never come from the cache.
         let fresh = self.core.asset(&asset.id)?;
-        let key = self.preview_key(&fresh, tier, uncropped)?;
+        let key = self.preview_key_with_mode(&fresh, tier, uncropped, prefer_raw)?;
         if let Err(error) = self.cache.preview_put(&key, &image.to_envelope()) {
             if !Self::optional_preview_cache_error(&error) {
                 return Err(error);
@@ -431,8 +462,8 @@ impl Service {
 
     /// IPC shape: preview metadata, its tier and live asset metadata; no pixels.
     fn preview_value(&self, asset: &Asset, params: &Value) -> Result<Value> {
-        let (tier, uncropped) = preview_request(params)?;
-        let image = self.render_preview(asset, tier, uncropped)?;
+        let (tier, uncropped, prefer_raw) = preview_request_with_mode(params)?;
+        let image = self.render_preview_with_mode(asset, tier, uncropped, prefer_raw)?;
         let mut value = image.meta();
         value["tier"] = json!(tier.as_str());
         value["asset"] = self.asset_value(&self.core.asset(&asset.id)?)?;
@@ -764,6 +795,11 @@ impl Service {
 
 /// `tier` wins; legacy `max_size` maps to the smallest covering tier.
 fn preview_request(params: &Value) -> Result<(PreviewTier, bool)> {
+    let (tier, uncropped, _) = preview_request_with_mode(params)?;
+    Ok((tier, uncropped))
+}
+
+fn preview_request_with_mode(params: &Value) -> Result<(PreviewTier, bool, bool)> {
     let tier = match (params.get("tier"), params.get("max_size")) {
         (Some(tier), _) => tier
             .as_str()
@@ -786,7 +822,12 @@ fn preview_request(params: &Value) -> Result<(PreviewTier, bool)> {
         .map(|v| v.as_bool().context("E_INVALID: uncropped must be boolean"))
         .transpose()?
         .unwrap_or(false);
-    Ok((tier, uncropped))
+    let prefer_raw = params
+        .get("prefer_raw")
+        .map(|v| v.as_bool().context("E_INVALID: prefer_raw must be boolean"))
+        .transpose()?
+        .unwrap_or(false);
+    Ok((tier, uncropped, prefer_raw))
 }
 
 #[cfg(test)]

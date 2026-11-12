@@ -289,42 +289,125 @@ fn jpeg_reader(bytes: &[u8]) -> ImageReader<Cursor<&[u8]>> {
     reader
 }
 
-pub(crate) fn read(path: &Path) -> Result<DynamicImage> {
-    read_with_orientation(path).map(|(image, _)| image)
+pub(crate) struct EmbeddedPreview {
+    pub image: DynamicImage,
+    pub orientation: u8,
+    pub icc: Option<Vec<u8>>,
 }
 
-pub(crate) fn read_with_orientation(path: &Path) -> Result<(DynamicImage, u8)> {
+pub(crate) fn read_embedded(path: &Path) -> Result<EmbeddedPreview> {
     let file = File::open(path)?;
     let info = file.metadata()?;
     ensure!(
         info.is_file() && info.len() <= super::imaging::MAX_FILE_BYTES,
         "E_LIMIT: Invalid or oversized RAW preview source"
     );
-    read_from(file, info.len())
+    read_embedded_from(file, info.len())
 }
 
-pub(crate) fn read_from<R: Read + Seek>(input: R, length: u64) -> Result<(DynamicImage, u8)> {
+pub(crate) fn read_embedded_from<R: Read + Seek>(
+    mut input: R,
+    length: u64,
+) -> Result<EmbeddedPreview> {
     ensure!(
         length <= super::imaging::MAX_FILE_BYTES,
         "E_LIMIT: Oversized RAW preview source"
     );
-    decode_with_orientation(TiffReader {
-        input,
-        length,
-        little: true,
-        read_bytes: 0,
-        metadata_bytes: 0,
-    })
+    if crate::cr3::is_cr3(&mut input, length)? {
+        return decode_cr3_embedded(&mut input, length);
+    }
+    input.seek(SeekFrom::Start(0))?;
+    decode_with_orientation(
+        TiffReader {
+            input,
+            length,
+            little: true,
+            read_bytes: 0,
+            metadata_bytes: 0,
+        },
+        false,
+    )
 }
 
 #[cfg(test)]
 fn decode<R: Read + Seek>(reader: TiffReader<R>) -> Result<DynamicImage> {
-    decode_with_orientation(reader).map(|(image, _)| image)
+    decode_with_orientation(reader, false).map(|preview| preview.image)
+}
+
+fn decode_cr3_embedded<R: Read + Seek>(input: &mut R, length: u64) -> Result<EmbeddedPreview> {
+    let container = crate::cr3::parse_cr3(input, length)?;
+    ensure!(
+        !container.jpeg_candidates.is_empty(),
+        "E_UNSUPPORTED_CODEC: Canon CR3 container has no embedded JPEG preview"
+    );
+    let container_exif = crate::cr3::merged_exif_tiff(input, length)?
+        .and_then(|tiff| {
+            exif::Reader::new()
+                .continue_on_error(true)
+                .read_raw(tiff)
+                .or_else(|e| e.distill_partial_result(|_| {}))
+                .ok()
+        });
+    let fallback_orientation = container_exif
+        .as_ref()
+        .and_then(|ex| {
+            ex.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
+        })
+        .filter(|v| (1..=8).contains(v))
+        .map(|v| v as u16);
+    let container_adobe_rgb = container_exif
+        .as_ref()
+        .is_some_and(crate::icc::is_adobe_rgb_exif);
+
+    let mut read_bytes = 0_u64;
+    let mut candidates = Vec::new();
+    for span in container.jpeg_candidates.into_iter().take(MAX_CANDIDATES) {
+        if span.length == 0 || span.length > MAX_JPEG_BYTES {
+            continue;
+        }
+        read_bytes = read_bytes
+            .checked_add(span.length)
+            .context("E_LIMIT: CR3 embedded preview read overflow")?;
+        ensure!(
+            read_bytes <= MAX_TOTAL_READ_BYTES,
+            "E_LIMIT: Embedded preview total read limit exceeded"
+        );
+        let mut bytes = vec![0_u8; usize::try_from(span.length)?];
+        input.seek(SeekFrom::Start(span.offset))?;
+        input
+            .read_exact(&mut bytes)
+            .context("E_DECODE: Truncated CR3 embedded preview")?;
+        if !bytes.starts_with(&[0xff, 0xd8]) {
+            continue;
+        }
+        let Ok(decoder) = jpeg_reader(&bytes).into_decoder() else {
+            continue;
+        };
+        let (width, height) = decoder.dimensions();
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels == 0 || pixels > super::imaging::MAX_PIXELS {
+            continue;
+        }
+        drop(decoder);
+        candidates.push((
+            pixels,
+            Candidate {
+                offset: span.offset,
+                length: span.length,
+                orientation: fallback_orientation,
+                inherited_orientation: None,
+            },
+            bytes,
+        ));
+    }
+    select_largest_jpeg(candidates, container_adobe_rgb)
 }
 
 fn decode_with_orientation<R: Read + Seek>(
     mut reader: TiffReader<R>,
-) -> Result<(DynamicImage, u8)> {
+    container_adobe_rgb: bool,
+) -> Result<EmbeddedPreview> {
     let mut images = Vec::new();
     for candidate in reader.candidates()? {
         let bytes = reader.read_at(candidate.offset, candidate.length, false)?;
@@ -342,6 +425,13 @@ fn decode_with_orientation<R: Read + Seek>(
         drop(decoder);
         images.push((pixels, candidate, bytes));
     }
+    select_largest_jpeg(images, container_adobe_rgb)
+}
+
+fn select_largest_jpeg(
+    mut images: Vec<(u64, Candidate, Vec<u8>)>,
+    container_adobe_rgb: bool,
+) -> Result<EmbeddedPreview> {
     images.sort_by_key(|(pixels, _, _)| std::cmp::Reverse(*pixels));
     let mut decoded_pixels = 0_u64;
     for (pixels, candidate, bytes) in images {
@@ -351,16 +441,31 @@ fn decode_with_orientation<R: Read + Seek>(
             "E_LIMIT: Embedded JPEG decode pixel budget exceeded"
         );
         let mut decoder = jpeg_reader(&bytes).into_decoder()?;
-        let jpeg_orientation = decoder
-            .exif_metadata()
-            .ok()
-            .flatten()
-            .and_then(|data| exif::Reader::new().read_raw(data).ok())
+        let icc = decoder.icc_profile().ok().flatten();
+        let raw_exif = decoder.exif_metadata().ok().flatten();
+        let parsed_exif = raw_exif
+            .as_deref()
+            .and_then(|data| {
+                let tiff = data.strip_prefix(b"Exif\0\0").unwrap_or(data);
+                exif::Reader::new()
+                    .continue_on_error(true)
+                    .read_raw(tiff.to_vec())
+                    .or_else(|e| e.distill_partial_result(|_| {}))
+                    .ok()
+            });
+        let jpeg_orientation = parsed_exif
+            .as_ref()
             .and_then(|exif| {
                 exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
                     .and_then(|field| field.value.get_uint(0))
             })
             .filter(|orientation| (1..=8).contains(orientation));
+        let jpeg_adobe_rgb = parsed_exif
+            .as_ref()
+            .is_some_and(crate::icc::is_adobe_rgb_exif);
+        let final_icc = icc.or_else(|| {
+            (jpeg_adobe_rgb || container_adobe_rgb).then(crate::icc::adobe_rgb_1998_icc)
+        });
         let orientation = jpeg_orientation
             .or(candidate.orientation.map(u32::from))
             .or(candidate.inherited_orientation.map(u32::from))
@@ -369,7 +474,11 @@ fn decode_with_orientation<R: Read + Seek>(
             image.apply_orientation(
                 Orientation::from_exif(orientation as u8).unwrap_or(Orientation::NoTransforms),
             );
-            return Ok((image, orientation as u8));
+            return Ok(EmbeddedPreview {
+                image,
+                orientation: orientation as u8,
+                icc: final_icc,
+            });
         }
     }
     bail!("E_UNSUPPORTED_CODEC: No decodable standard TIFF embedded JPEG preview")
@@ -538,13 +647,20 @@ mod tests {
         bytes.extend(payload);
         bytes.extend(&original[2..]);
         let file = tiff(true, &[bytes], 6, false);
-        let (image, effective_orientation) = decode_with_orientation(TiffReader {
-            length: file.len() as u64,
-            input: Cursor::new(file),
-            little: true,
-            read_bytes: 0,
-            metadata_bytes: 0,
-        })
+        let EmbeddedPreview {
+            image,
+            orientation: effective_orientation,
+            ..
+        } = decode_with_orientation(
+            TiffReader {
+                length: file.len() as u64,
+                input: Cursor::new(file),
+                little: true,
+                read_bytes: 0,
+                metadata_bytes: 0,
+            },
+            false,
+        )
         .unwrap();
         assert_eq!((image.width(), image.height()), (8, 5));
         assert_eq!(effective_orientation, 1);

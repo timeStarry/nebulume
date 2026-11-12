@@ -359,8 +359,18 @@ impl Service {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<Arc<PreviewImage>, CommandError> {
+        self.preview_image_with_mode(id, tier, uncropped, false)
+    }
+
+    pub fn preview_image_with_mode(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<Arc<PreviewImage>, CommandError> {
         self.preview_entry(id, || {
-            self.render_preview(&self.preview_asset(id)?, tier, uncropped)
+            self.render_preview_with_mode(&self.preview_asset(id)?, tier, uncropped, prefer_raw)
         })
     }
 
@@ -372,9 +382,19 @@ impl Service {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<String, CommandError> {
+        self.preview_etag_with_mode(id, tier, uncropped, false)
+    }
+
+    pub fn preview_etag_with_mode(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<String, CommandError> {
         // No local re-inspection: the key's file stamp already tracks changes.
         self.preview_entry(id, || {
-            self.preview_etag_for(&self.core.asset(id)?, tier, uncropped)
+            self.preview_etag_for(&self.core.asset(id)?, tier, uncropped, prefer_raw)
         })
     }
 

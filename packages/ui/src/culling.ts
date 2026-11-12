@@ -7,6 +7,8 @@ export type CullAction =
   | { kind: 'move'; delta: 1 | -1 }
   | { kind: 'view'; value: 'single' | 'compare' }
   | { kind: 'zoom' }
+  | { kind: 'clipping' }
+  | { kind: 'raw_mode' }
   | { kind: 'undo' }
   | { kind: 'overlay' }
   | { kind: 'mode' }
@@ -54,6 +56,10 @@ export function cullKeyAction(event: KeyLike): CullAction | null {
       return { kind: 'view', value: 'compare' };
     case 'z':
       return { kind: 'zoom' };
+    case 'j':
+      return { kind: 'clipping' };
+    case 'r':
+      return { kind: 'raw_mode' };
     case 'tab':
     case 'd':
       return { kind: 'overlay' };

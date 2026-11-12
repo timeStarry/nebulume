@@ -227,9 +227,20 @@ fn compact_tiff(mut primary: Vec<Field>, exif: Vec<Field>, little: bool) -> Vec<
     bytes
 }
 
-/// Reads at most two bounded directory tables and bounded known field values.
-/// Never follows image payloads, the next/thumbnail IFD, GPS or MakerNotes.
+/// Reads at most two bounded directory tables and bounded known field values
+/// (or Canon CR3 `CMT1` + `CMT2` boxes). Never follows image payloads, the
+/// next/thumbnail IFD, GPS or MakerNotes.
 pub(crate) fn read<R: Read + Seek>(input: &mut R, length: u64) -> Result<Option<Exif>> {
+    if crate::cr3::is_cr3(input, length)? {
+        let Some(data) = crate::cr3::merged_exif_tiff(input, length)? else {
+            return Ok(None);
+        };
+        return Ok(exif::Reader::new()
+            .continue_on_error(true)
+            .read_raw(data)
+            .or_else(|error| error.distill_partial_result(|_| {}))
+            .ok());
+    }
     let mut reader = Reader {
         input,
         length,

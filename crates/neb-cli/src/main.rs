@@ -33,7 +33,7 @@ enum Action {
     /// Keep one local command session over newline-delimited JSON stdin/stdout.
     /// Each input is {"id":...,"command":"...","params":{...}}. No network listener.
     Stdio,
-    /// Write one preview tier (t256, t512, t1024, p2560) as JPEG, the same
+    /// Write one preview tier (t256, t512, t1024, p2560, full) as JPEG, the same
     /// bytes the desktop `neb` protocol serves.
     Preview {
         #[arg(long)]

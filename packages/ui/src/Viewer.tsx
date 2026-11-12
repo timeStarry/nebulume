@@ -1,5 +1,4 @@
 import {
-  For,
   Show,
   createEffect,
   createMemo,
@@ -15,7 +14,9 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { chooseSave, desktop, execute, schedulePreview, viewerContext } from './api';
 import { loadImage, previewUrl } from './preview-url';
 import AssetInspector from './AssetInspector';
-import PhotoView, { Thumbnail, decodedThumbnail, rememberDecodedPreview } from './PhotoView';
+import CompareStage from './CompareStage';
+import { fitCropToAspect, resolveAspectRatio, type AspectPreset } from './crop-aspect';
+import PhotoView, { decodedThumbnail, rememberDecodedPreview } from './PhotoView';
 import Icon from './Icon';
 import {
   errorMessage,
@@ -111,7 +112,13 @@ export default function Viewer(props: {
   const [refreshing, setRefreshing] = createSignal(false);
   const [mode, setMode] = createSignal<ViewerMode>(props.initialMode || 'view');
   const [cullView, setCullView] = createSignal<'single' | 'compare'>('single');
-  const [compareCount] = createSignal(2);
+  const [compareCount, setCompareCount] = createSignal<2 | 4>(2);
+  const [compareAnchor, setCompareAnchor] = createSignal(0);
+  const [compareSync, setCompareSync] = createSignal(true);
+  const [clippingEnabled, setClippingEnabled] = createSignal(false);
+  const [preferRaw, setPreferRaw] = createSignal(false);
+  const [cropPreset, setCropPreset] = createSignal<AspectPreset>('free');
+  const [cropSwapped, setCropSwapped] = createSignal(false);
   const [overlayVisible, setOverlayVisible] = createSignal(true);
   const [editingOverlay, setEditingOverlay] = createSignal(false);
   const [autoAdvance, setAutoAdvance] = createSignal(readAutoAdvance());
@@ -238,7 +245,9 @@ export default function Viewer(props: {
   });
   const currentPreviewKey = createMemo(() => {
     const current = asset();
-    return current?.id === id() && current ? imageRequestKey(current, cropMode()) : false;
+    return current?.id === id() && current
+      ? imageRequestKey(current, cropMode(), !cropMode() && preferRaw() && current.kind === 'raw')
+      : false;
   });
   createEffect(
     on(focusKey, (key) => {
@@ -294,7 +303,9 @@ export default function Viewer(props: {
   function isControl(target: EventTarget | null) {
     return (
       target instanceof HTMLElement &&
-      !!target.closest('.viewer-chrome, .viewer-controls, .viewer-nav, .asset-inspector')
+      !!target.closest(
+        '.viewer-chrome, .viewer-controls, .compare-bar, .viewer-nav, .asset-inspector',
+      )
     );
   }
   function recoverFocus(preferred?: HTMLElement | null) {
@@ -328,6 +339,8 @@ export default function Viewer(props: {
       );
     setAsset(undefined);
     setCropMode(false);
+    setCropPreset('free');
+    setCropSwapped(false);
     try {
       const browser = folder();
       if (browser && FolderBrowser.isPlaceholder(nextId)) {
@@ -609,7 +622,11 @@ export default function Viewer(props: {
     const unchanged = next.rating === before.rating && next.flag === before.flag;
     applyLocal(next);
     const position = ids().indexOf(targetId);
-    const step = nextAfterMark(position, ids().length, autoAdvance());
+    const step = nextAfterMark(
+      position,
+      ids().length,
+      cullView() === 'compare' ? false : autoAdvance(),
+    );
     setPulse({ kind, value: String(value), key: Date.now() });
     if (fromKeyboard)
       hud.show(
@@ -681,9 +698,21 @@ export default function Viewer(props: {
     setAutoAdvance(next);
     writeAutoAdvance(next);
   }
+  createEffect(
+    on(
+      [mode, cullView, id, ids, compareCount],
+      ([now, view, currentId, list, count]) => {
+        if (now !== 'cull' || view !== 'compare' || !currentId) return;
+        const currentWindow = compareWindow(list, compareAnchor(), count);
+        if (!currentWindow.includes(currentId)) {
+          setCompareAnchor(Math.max(0, list.indexOf(currentId)));
+        }
+      },
+    ),
+  );
   const compareIds = createMemo(() =>
     mode() === 'cull' && cullView() === 'compare'
-      ? compareWindow(ids(), Math.max(0, index()), compareCount())
+      ? compareWindow(ids(), compareAnchor(), compareCount())
       : [],
   );
   createEffect(
@@ -696,6 +725,31 @@ export default function Viewer(props: {
       }
     }),
   );
+  function toggleClipping(fromKeyboard = false) {
+    const next = !clippingEnabled();
+    setClippingEnabled(next);
+    if (fromKeyboard) hud.show(next ? '高光/暗部溢出警告：开启' : '高光/暗部溢出警告：关闭', 'info');
+    activity();
+  }
+  function rawUnavailable(target: Asset | undefined) {
+    return !!target?.metadata['Decode Status']?.includes('不可用');
+  }
+  function toggleRawMode(fromKeyboard = false) {
+    const target = asset();
+    if (!target || cropMode()) return;
+    if (target.kind !== 'raw') {
+      if (fromKeyboard) hud.show('当前为光栅图像，已使用原图解码', 'photo');
+      return;
+    }
+    if (rawUnavailable(target)) {
+      if (fromKeyboard) hud.show('此 RAW 暂不支持传感器显影，已使用相机预览', 'photo');
+      return;
+    }
+    const next = !preferRaw();
+    setPreferRaw(next);
+    if (fromKeyboard) hud.show(next ? 'RAW 传感器显影' : '相机内嵌预览', 'photo');
+    activity();
+  }
   function cullKeyboard(event: KeyboardEvent): boolean {
     if (event.key === ' ' && (isControl(document.activeElement) || event.repeat)) return false;
     const action = cullKeyAction(event);
@@ -704,9 +758,15 @@ export default function Viewer(props: {
     if (action.kind === 'rate' || action.kind === 'flag') {
       if (!event.repeat) void mark(action.kind, action.value, true);
     } else if (action.kind === 'move') move(action.delta);
-    else if (action.kind === 'view') setCullView(action.value);
-    else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
-    else if (action.kind === 'undo') void undoLatest();
+    else if (action.kind === 'view') {
+      if (action.value === 'compare') setCompareAnchor(Math.max(0, index()));
+      setCullView(action.value);
+    } else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
+    else if (action.kind === 'clipping') {
+      if (!event.repeat) toggleClipping(true);
+    } else if (action.kind === 'raw_mode') {
+      if (!event.repeat) toggleRawMode(true);
+    } else if (action.kind === 'undo') void undoLatest();
     else if (action.kind === 'overlay') setOverlayVisible((value) => !value);
     else if (action.kind === 'mode') toggleMode();
     else if (action.kind === 'focus') toggleFocus();
@@ -864,7 +924,16 @@ export default function Viewer(props: {
       event.preventDefault();
       void flagPhoto(key === 'p' ? 'pick' : key === 'x' ? 'reject' : 'none', true);
     } else if (key === 'd') setOverlayVisible((value) => !value);
-    else if (
+    else if (key === 'z' && !event.shiftKey && !cropMode()) {
+      event.preventDefault();
+      setZoomToggle((value) => value + 1);
+    } else if (key === 'j' && !event.shiftKey && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      toggleClipping(true);
+    } else if (key === 'r' && !event.shiftKey && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      toggleRawMode(true);
+    } else if (
       event.key === ' ' &&
       !event.shiftKey &&
       !event.repeat &&
@@ -1043,9 +1112,31 @@ export default function Viewer(props: {
       if (optimistic.get(target.id) === next) optimistic.delete(target.id);
     }
   }
+  const cropFrameDims = () => {
+    const current = asset();
+    const m = previewMapping();
+    return {
+      width: m?.full_width || current?.width || 1,
+      height: m?.full_height || current?.height || 1,
+    };
+  };
+  const cropAspect = createMemo(() => {
+    const dims = cropFrameDims();
+    return resolveAspectRatio(cropPreset(), cropSwapped(), dims.width, dims.height);
+  });
+  function selectCropAspect(preset: AspectPreset, swapped: boolean) {
+    setCropPreset(preset);
+    setCropSwapped(swapped);
+    if (preset === 'free') return;
+    const dims = cropFrameDims();
+    const ratio = resolveAspectRatio(preset, swapped, dims.width, dims.height);
+    if (ratio) setCrop((prev) => fitCropToAspect(prev, ratio, dims.width, dims.height));
+  }
   function beginCrop() {
     if (!asset() || busy()) return;
     setCrop({ ...(asset()!.crop || fullCrop) });
+    setCropPreset('free');
+    setCropSwapped(false);
     setCropMode(true);
     setInfo(true);
     activity();
@@ -1144,6 +1235,21 @@ export default function Viewer(props: {
               ]}
             />
             <Show when={mode() === 'cull'}>
+              <Show when={ids().length > 1}>
+                <Segmented
+                  size="sm"
+                  label="选片视图"
+                  value={cullView()}
+                  onChange={(next) => {
+                    if (next === 'compare') setCompareAnchor(Math.max(0, index()));
+                    setCullView(next as 'single' | 'compare');
+                  }}
+                  options={[
+                    { value: 'single', label: '单张', shortcut: 'G' },
+                    { value: 'compare', label: '对比', shortcut: 'C' },
+                  ]}
+                />
+              </Show>
               <Toggle pressed={autoAdvance()} onChange={() => toggleAutoAdvance()}>
                 自动下一张
               </Toggle>
@@ -1281,126 +1387,121 @@ export default function Viewer(props: {
         </Show>
         <hud.Host tone="viewer" />
         <Show when={compareIds().length}>
-          <div
-            class={`cull-compare count-${compareIds().length}`}
-            role="listbox"
-            aria-label="对比视图"
-          >
-            <For each={compareIds()}>
-              {(compareId) => (
-                <Show
-                  when={compareAssets()[compareId]}
-                  fallback={<div class="cull-compare-placeholder">载入中…</div>}
-                >
-                  {(item) => (
-                    <div
-                      class={`cull-compare-item ${compareId === id() ? 'focused' : ''}`}
-                      role="option"
-                      aria-selected={compareId === id()}
-                    >
-                      <Thumbnail
-                        asset={item()}
-                        tier="t1024"
-                        selected={compareId === id()}
-                        onSelect={() => setId(compareId)}
-                        onOpen={() => {
-                          setId(compareId);
-                          setCullView('single');
-                        }}
-                      />
-                    </div>
-                  )}
-                </Show>
-              )}
-            </For>
-          </div>
+          <CompareStage
+            ids={compareIds()}
+            assets={compareAssets()}
+            activeId={id()}
+            count={compareCount()}
+            onCountChange={setCompareCount}
+            syncLocked={compareSync()}
+            onToggleSync={() => setCompareSync((value) => !value)}
+            preferRaw={preferRaw()}
+            clippingEnabled={clippingEnabled()}
+            onToggleClipping={() => toggleClipping(false)}
+            zoomToggle={zoomToggle()}
+            onSelect={(nextId) => {
+              if (pulse()) finishPulse();
+              setId(nextId);
+              container.focus({ preventScroll: true });
+            }}
+            onExitCompare={() => setCullView('single')}
+          />
         </Show>
-        <Show
-          when={compareIds().length ? undefined : asset()}
-          fallback={
-            <div class="viewer-loading" role="status" aria-live="polite">
-              {loading() ? (
-                <>
-                  <Show
-                    when={stagePlaceholder()}
-                    fallback={
-                      <Show when={previousFrame()}>
-                        {(src) => (
-                          <img
-                            class="photo-placeholder previous-frame"
-                            src={src()}
-                            alt=""
-                            aria-hidden="true"
-                          />
-                        )}
-                      </Show>
-                    }
-                  >
-                    {(src) => (
-                      <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />
-                    )}
-                  </Show>
-                  <span class="viewer-message over-placeholder">
-                    <span class="spinner" />
-                    <span>正在读取影像…</span>
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Icon name="photo" size={36} />
-                  <span>暂时无法读取此影像</span>
-                  <button class="button" onClick={() => id() && loadAsset(id()!)}>
-                    重试
-                  </button>
-                </>
-              )}
-            </div>
-          }
-        >
-          {(current) => (
-            <PhotoView
-              asset={current()}
-              cropMode={cropMode()}
-              crop={crop()}
-              setCrop={setCrop}
-              onPrevious={() => move(-1)}
-              onNext={() => move(1)}
-              hasPrevious={!busy() && !cropMode() && index() > 0}
-              hasNext={!busy() && !cropMode() && index() < ids().length - 1}
-              focusEnabled={focusVisible()}
-              focusRegions={focus().regions}
-              zoomToggle={zoomToggle()}
-              fill={!props.onClose && mode() === 'view' && !info()}
-              onPreviewStateChange={(state) => {
-                if (current().id !== id() || state.key !== currentPreviewKey()) return;
-                setPreviewKey(state.key);
-                setPreviewPending(state.loading);
-                setPreviewFailed(state.failed);
-                setPreviewMapping(state.loading || state.failed ? undefined : state.mapping);
-                if (
-                  !state.loading &&
-                  !state.failed &&
-                  state.asset?.id === current().id &&
-                  (state.asset.metadata !== current().metadata ||
-                    state.asset.width !== current().width ||
-                    state.asset.height !== current().height)
-                ) {
-                  const inspected = state.asset;
-                  setAsset(
-                    (previous) =>
-                      previous && {
-                        ...previous,
-                        width: inspected.width,
-                        height: inspected.height,
-                        metadata: inspected.metadata,
-                        availability: inspected.availability,
-                        cache_pinned: inspected.cache_pinned,
-                      },
-                  );
+        <Show when={!compareIds().length}>
+          <Show
+            when={asset()}
+            fallback={
+              <div class="viewer-loading" role="status" aria-live="polite">
+                {loading() ? (
+                  <>
+                    <Show
+                      when={stagePlaceholder()}
+                      fallback={
+                        <Show when={previousFrame()}>
+                          {(src) => (
+                            <img
+                              class="photo-placeholder previous-frame"
+                              src={src()}
+                              alt=""
+                              aria-hidden="true"
+                            />
+                          )}
+                        </Show>
+                      }
+                    >
+                      {(src) => (
+                        <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />
+                      )}
+                    </Show>
+                    <span class="viewer-message over-placeholder">
+                      <span class="spinner" />
+                      <span>正在读取影像…</span>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Icon name="photo" size={36} />
+                    <span>暂时无法读取此影像</span>
+                    <button class="button" onClick={() => id() && loadAsset(id()!)}>
+                      重试
+                    </button>
+                  </>
+                )}
+              </div>
+            }
+          >
+            {(current) => (
+              <PhotoView
+                asset={current()}
+                cropMode={cropMode()}
+                crop={crop()}
+                setCrop={setCrop}
+                onPrevious={() => move(-1)}
+                onNext={() => move(1)}
+                hasPrevious={!busy() && !cropMode() && index() > 0}
+                hasNext={!busy() && !cropMode() && index() < ids().length - 1}
+                focusEnabled={focusVisible()}
+                focusRegions={focus().regions}
+                zoomToggle={zoomToggle()}
+                fill={!props.onClose && mode() === 'view' && !info()}
+                preferRaw={preferRaw()}
+                onTogglePreferRaw={
+                  rawUnavailable(current()) ? undefined : () => toggleRawMode(false)
                 }
-              }}
-            />
-          )}
+                clippingEnabled={clippingEnabled()}
+                onToggleClipping={() => toggleClipping(false)}
+                cropAspect={cropAspect()}
+                onPreviewStateChange={(state) => {
+                  if (current().id !== id() || state.key !== currentPreviewKey()) return;
+                  setPreviewKey(state.key);
+                  setPreviewPending(state.loading);
+                  setPreviewFailed(state.failed);
+                  setPreviewMapping(state.loading || state.failed ? undefined : state.mapping);
+                  if (
+                    !state.loading &&
+                    !state.failed &&
+                    state.asset?.id === current().id &&
+                    (state.asset.metadata !== current().metadata ||
+                      state.asset.width !== current().width ||
+                      state.asset.height !== current().height)
+                  ) {
+                    const inspected = state.asset;
+                    setAsset(
+                      (previous) =>
+                        previous && {
+                          ...previous,
+                          width: inspected.width,
+                          height: inspected.height,
+                          metadata: inspected.metadata,
+                          availability: inspected.availability,
+                          cache_pinned: inspected.cache_pinned,
+                        },
+                    );
+                  }
+                }}
+              />
+            )}
+          </Show>
         </Show>
         <Show when={mode() === 'cull' && info() && asset()}>
           {(current) => (
@@ -1478,6 +1579,9 @@ export default function Viewer(props: {
           cropMode={cropMode()}
           crop={crop()}
           setCrop={setCrop}
+          cropAspectPreset={cropPreset()}
+          cropAspectSwapped={cropSwapped()}
+          onSelectCropAspect={selectCropAspect}
           onSaveCrop={saveCrop}
           onResetCrop={resetCrop}
           onRate={rate}

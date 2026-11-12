@@ -15,11 +15,11 @@ const jpegBase64 =
   'EBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/dyiiigD/9k=';
 export const jpegBytes = Buffer.from(jpegBase64, 'base64');
 
-/** Parses a `neb.localhost` path back into its id / tier / crop / revision segments. */
+/** Parses a `neb.localhost` path back into its id / tier / crop / revision / raw segments. */
 export function parseNebUrl(raw: string) {
   const path = decodeURIComponent(new URL(raw).pathname).replace(/^\//, '');
-  const [id, tier, crop, revision] = path.split('/');
-  return { id, tier, crop, revision };
+  const [id, tier, crop, revision, mode] = path.split('/');
+  return { id, tier, crop, revision, preferRaw: mode === 'raw' };
 }
 
 export type ImageGate = (path: {
@@ -64,8 +64,9 @@ export async function servePreviewImages(
           status: 200,
           contentType: 'image/jpeg',
           headers: {
+            'access-control-allow-origin': '*',
             'cache-control': 'no-cache',
-            etag: `"fixture-${parsed.id}-${parsed.revision}"`,
+            etag: `"fixture-${parsed.id}-${parsed.revision}${parsed.preferRaw ? '-raw' : ''}"`,
           },
           body: jpegBytes,
         });

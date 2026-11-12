@@ -23,7 +23,7 @@ flowchart TD
 
 | 模块          | 职责                                                           |
 | ------------- | -------------------------------------------------------------- |
-| `neb-core`    | SQLite（`catalog.rs` 协调层 + `catalog/query.rs` 索引查询/统计 + `catalog/scan.rs` 批量本地扫描）、元数据、预览、直方图、裁剪、导出与缓存管理 |
+| `neb-core`    | SQLite（`catalog.rs` 协调层 + `catalog/query.rs` 索引查询/统计 + `catalog/scan.rs` 批量本地扫描）、元数据、Canon CR3 解析（`cr3.rs`）、广色域 ICC 透传与 AdobeRGB 合成（`icc.rs`）、macOS 原生 `ImageIO` 解码（`macos_imageio.rs`）、预览、直方图、裁剪、导出与缓存管理 |
 | `neb-storage` | 连接、凭据、作用域路径、目录列举、完整下载和版本锁定分段读取   |
 | `neb-ingest`  | 冻结导入计划、内容哈希、校验复制、冲突处理和结果记录           |
 | `neb-service` | 统一命令路由、任务编排、资源协调和错误语义                     |
@@ -52,13 +52,13 @@ schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并�
 5. 预览缓存按资产版本、尺寸和配方区分。仅补拍摄元数据不改变像素版本，避免重复解码。
 6. JPEG 导出写入新文件，不覆盖源文件。RAW 导出要求传感器解码成功，不能使用内嵌预览代替。
 
-预览固定为四档：网格 `t256`/`t512`/`t1024`，查看器 `p2560`（最长边 2560px）。网格档读取 RAW 时优先使用相机内嵌 JPEG，失败再做传感器解码；查看器档保持传感器优先，内嵌 JPEG 仅作回退。
+预览分为五档：网格 `t256`/`t512`/`t1024`，查看器默认 `p2560`（最长边 2560px），查焦放大超过 `p2560` 时后台按需请求 `full`（最长边 9600px，不闪烁替换）。读取 RAW 时各档默认优先使用相机内嵌全尺寸 JPEG 以获得即时响应与相机直出影调；若内嵌预览远小于传感器分辨率则自动回退传感器显影，用户也可在查看器中按 `R` 手动切换 `prefer_raw` 传感器显影。
 
-像素与元数据分路：`asset.preview` 经 IPC 只返回尺寸、来源、坐标映射和资产元数据；JPEG 字节由 `neb-app` 的 `neb` 自定义协议从 `Service::preview_image` 直接返回，以 ETag/304 复验，不再经 JSON 传 base64。CLI `neb preview` 走同一路径。
+像素与元数据分路：`asset.preview` 经 IPC 只返回尺寸、来源、坐标映射和资产元数据；JPEG 字节由 `neb-app` 的 `neb` 自定义协议从 `Service::preview_image` 直接返回（路径支持可选 `/raw` 段区分传感器显影），以 ETag/304 复验，不再经 JSON 传 base64。CLI `neb preview` 走同一路径。
 
-持久预览缓存键为 `preview-v3:`（资产、文件版本、尺寸、裁剪配方与档位）。v3 起预览与导出的 JPEG 内嵌源文件的 ICC 色彩配置（RAW 传感器解码与相机内嵌预览按 sRGB 处理，不附加配置），由 WebView 做色彩管理，广色域照片不再发灰；旧 `preview-v1:`、`preview-v2:` 条目不转换，由常规回收淘汰。磁盘条目为二进制信封：`NPV2`、小端 `u32` 元数据长度、UTF-8 元数据 JSON、JPEG 字节；格式不符即报 `E_CACHE: Invalid preview cache`。Service 内另有本地/远端共享的内存 LRU，最多 256 项、128 MiB JPEG 字节，命中直接共享 `Arc<PreviewImage>`，不复制字节。
+持久预览缓存键为 `preview-v3:`（资产、文件版本、尺寸、裁剪配方、档位与可选 `:raw` 模式）。v3 起预览与导出的 JPEG 内嵌源文件的 ICC 色彩配置（含栅格图、macOS `ImageIO` 解码的 `HEIC/HEIF/AVIF` Display P3，以及相机内嵌 JPEG 自带 ICC；若源文件/相机内嵌预览未带 ICC 但 EXIF 标注 `ColorSpace=2` / `InteropIndex=R03` 则合成标准 `Adobe RGB (1998)` ICC v2.1），由 WebView 做色彩管理，广色域照片不再偏色发灰；RAW 传感器显影仍按 sRGB 输出。旧 `preview-v1:`、`preview-v2:` 条目不转换，由常规回收淘汰。磁盘条目为二进制信封：`NPV2`、小端 `u32` 元数据长度、UTF-8 元数据 JSON、JPEG 字节；格式不符即报 `E_CACHE: Invalid preview cache`。Service 内另有本地/远端共享的内存 LRU，最多 256 项、128 MiB JPEG 字节，命中直接共享 `Arc<PreviewImage>`，不复制字节。
 
-直方图基于渲染图；当前没有完整分辨率瓦片或专业 ICC 工作流。解码、容器和相机支持边界见[实施状态](STATUS.md)。
+直方图基于渲染图；选片模式提供 2 张 / 4 张同步缩放与平移查焦台（`CompareStage`）及高光/暗部溢出警告叠加层（`ClippingOverlay`）。解码、容器和相机支持边界见[实施状态](STATUS.md)。
 
 ## 存储与凭据
 

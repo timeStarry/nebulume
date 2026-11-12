@@ -97,7 +97,7 @@
         "rank": "Alternate"
       },
       {
-        "ext": ["cr2"],
+        "ext": ["cr2", "cr3"],
         "name": "Canon RAW",
         "mimeType": "image/x-canon-cr2",
         "role": "Viewer",

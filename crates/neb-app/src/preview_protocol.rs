@@ -15,10 +15,11 @@ pub struct PreviewRequest {
     pub id: String,
     pub tier: PreviewTier,
     pub uncropped: bool,
+    pub prefer_raw: bool,
 }
 
-/// Accepts the request URI path with the four segments either raw or
-/// percent-encoded as one segment (`convertFileSrc` encodes `/` as `%2F`).
+/// Accepts `<id>/<tier>/<crop>/<rev>` (or `<id>/<tier>/<crop>/<rev>/raw`), either
+/// raw or percent-encoded as one segment (`convertFileSrc` encodes `/` as `%2F`).
 pub fn parse_request(path: &str) -> Result<PreviewRequest, &'static str> {
     let decoded = percent_decode_str(path)
         .decode_utf8()
@@ -27,8 +28,10 @@ pub fn parse_request(path: &str) -> Result<PreviewRequest, &'static str> {
         .strip_prefix('/')
         .ok_or("Preview path must start with /")?;
     let parts: Vec<&str> = rest.split('/').collect();
-    let [id, tier, crop, rev] = parts.as_slice() else {
-        return Err("Preview path must be <id>/<tier>/<crop>/<rev>");
+    let (id, tier, crop, rev, prefer_raw) = match parts.as_slice() {
+        [id, tier, crop, rev] => (*id, *tier, *crop, *rev, false),
+        [id, tier, crop, rev, "raw"] => (*id, *tier, *crop, *rev, true),
+        _ => return Err("Preview path must be <id>/<tier>/<crop>/<rev>[/raw]"),
     };
     if id.is_empty()
         || id.len() > MAX_ID_LEN
@@ -37,7 +40,7 @@ pub fn parse_request(path: &str) -> Result<PreviewRequest, &'static str> {
         return Err("Invalid asset id");
     }
     let tier = PreviewTier::parse(tier).ok_or("Unknown preview tier")?;
-    let uncropped = match *crop {
+    let uncropped = match crop {
         "0" => false,
         "1" => true,
         _ => return Err("Crop flag must be 0 or 1"),
@@ -46,9 +49,10 @@ pub fn parse_request(path: &str) -> Result<PreviewRequest, &'static str> {
         return Err("Revision must be digits");
     }
     Ok(PreviewRequest {
-        id: (*id).to_owned(),
+        id: id.to_owned(),
         tier,
         uncropped,
+        prefer_raw,
     })
 }
 
@@ -92,7 +96,12 @@ pub fn respond(
     if_none_match: Option<&str>,
     service: &Service,
 ) -> Response<Vec<u8>> {
-    let etag = match service.preview_etag(&request.id, request.tier, request.uncropped) {
+    let etag = match service.preview_etag_with_mode(
+        &request.id,
+        request.tier,
+        request.uncropped,
+        request.prefer_raw,
+    ) {
         Ok(etag) => etag,
         Err(error) => return command_error(&error),
     };
@@ -110,7 +119,12 @@ pub fn respond(
                 )
             });
     }
-    let image = match service.preview_image(&request.id, request.tier, request.uncropped) {
+    let image = match service.preview_image_with_mode(
+        &request.id,
+        request.tier,
+        request.uncropped,
+        request.prefer_raw,
+    ) {
         Ok(image) => image,
         Err(error) => return command_error(&error),
     };
@@ -133,7 +147,10 @@ pub fn respond(
 }
 
 fn allowed_origin(origin: Option<&str>) -> Option<&str> {
-    origin.filter(|origin| APP_ORIGINS.contains(origin))
+    origin.filter(|origin| {
+        APP_ORIGINS.contains(origin)
+            || (cfg!(debug_assertions) && *origin == "http://localhost:5173")
+    })
 }
 
 fn handle(request: &Request<Vec<u8>>, service: Option<&Service>) -> Response<Vec<u8>> {
@@ -214,12 +231,14 @@ mod tests {
             id: "0f8c-ab".into(),
             tier: PreviewTier::T512,
             uncropped: false,
+            prefer_raw: false,
         };
         assert_eq!(parse_request("/0f8c-ab/t512/0/17"), Ok(expected));
         let expected = PreviewRequest {
             id: "0f8c-ab".into(),
             tier: PreviewTier::T512,
             uncropped: false,
+            prefer_raw: false,
         };
         assert_eq!(parse_request("/0f8c-ab%2Ft512%2F0%2F17"), Ok(expected));
         assert_eq!(
@@ -228,6 +247,16 @@ mod tests {
                 id: "x".into(),
                 tier: PreviewTier::P2560,
                 uncropped: true,
+                prefer_raw: false,
+            })
+        );
+        assert_eq!(
+            parse_request("/x/full/0/2/raw"),
+            Ok(PreviewRequest {
+                id: "x".into(),
+                tier: PreviewTier::Full,
+                uncropped: false,
+                prefer_raw: true,
             })
         );
     }
@@ -293,6 +322,7 @@ mod tests {
             id: asset["id"].as_str().unwrap().into(),
             tier: PreviewTier::T512,
             uncropped: false,
+            prefer_raw: false,
         };
 
         let ok = respond(&request, None, &service);
@@ -318,6 +348,7 @@ mod tests {
             id: "0000-missing".into(),
             tier: PreviewTier::T512,
             uncropped: false,
+            prefer_raw: false,
         };
         let missing = respond(&missing, None, &service);
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);

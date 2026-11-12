@@ -600,10 +600,14 @@ impl Core {
                     max_size: Option<u32>,
                     #[serde(default)]
                     uncropped: bool,
+                    #[serde(default)]
+                    prefer_raw: bool,
                 }
                 let args: Preview = parse(params)?;
                 let tier = preview_tier(args.tier.as_deref(), args.max_size)?;
-                Ok(self.preview_image(&args.id, tier, args.uncropped)?.meta())
+                Ok(self
+                    .preview_image_with_mode(&args.id, tier, args.uncropped, args.prefer_raw)?
+                    .meta())
             }
             "asset.histogram" => {
                 let asset = self.asset(&id(&params)?)?;
@@ -1826,10 +1830,21 @@ impl Core {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<Arc<PreviewImage>> {
+        self.preview_image_with_mode(id, tier, uncropped, false)
+    }
+
+    pub fn preview_image_with_mode(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<Arc<PreviewImage>> {
         let asset = self.asset(id)?;
         let path = self.checked_asset_path(&asset)?;
+        let suffix = if prefer_raw { ":raw" } else { "" };
         let key = format!(
-            "{}:{}",
+            "{}:{}{suffix}",
             self.fingerprint(&asset, &path, uncropped)?,
             tier.as_str()
         );
@@ -1837,7 +1852,7 @@ impl Core {
             return Ok(image);
         }
         let crop = if uncropped { None } else { asset.crop };
-        let image = Arc::new(imaging::preview(&path, crop, tier)?);
+        let image = Arc::new(imaging::preview_with_options(&path, crop, tier, prefer_raw)?);
         self.previews.put(key, Arc::clone(&image));
         Ok(image)
     }

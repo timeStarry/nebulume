@@ -303,6 +303,35 @@
   color: var(--nl-text-2);
   font-size: var(--nl-t-13);
 }
+.asset-inspector .crop-aspect-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nl-s-1);
+  margin-top: var(--nl-s-3);
+}
+.asset-inspector .crop-aspect-pill {
+  min-height: var(--nl-h-xs);
+  padding: 2px var(--nl-s-2);
+  border: 1px solid var(--nl-line-strong);
+  border-radius: var(--nl-r-pill);
+  background: var(--nl-side);
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-12);
+  font-variant-numeric: tabular-nums;
+}
+.asset-inspector .crop-aspect-pill:hover:not(:disabled) {
+  background: var(--nl-hover);
+  color: var(--nl-text);
+}
+.asset-inspector .crop-aspect-pill.active {
+  background: var(--nl-raised);
+  border-color: var(--nl-ring);
+  color: var(--nl-text);
+  font-weight: 500;
+}
+.asset-inspector .crop-aspect-pill:disabled {
+  opacity: 0.4;
+}
 .asset-inspector .crop-inputs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

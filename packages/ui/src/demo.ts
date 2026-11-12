@@ -290,7 +290,17 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
         width: rendered.width,
         height: rendered.height,
         tier,
-        source: crop ? '浏览器真实文件 · 已应用裁剪' : '浏览器真实文件解码',
+        source: params.prefer_raw
+          ? 'raw_demosaic'
+          : crop
+            ? '浏览器真实文件 · 已应用裁剪'
+            : '浏览器真实文件解码',
+        coordinate_mapping: {
+          orientation: 1,
+          full_width: asset.width || rendered.width,
+          full_height: asset.height || rendered.height,
+          crop: crop || { x: 0, y: 0, width: 1, height: 1 },
+        },
       } satisfies Preview;
       break;
     }
@@ -329,11 +339,12 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
   return result as T;
 }
 
+const demoAutoTiers: PreviewTier[] = ['t256', 't512', 't1024', 'p2560'];
 function demoTier(params: Record<string, unknown>): PreviewTier {
   if (typeof params.tier === 'string' && params.tier in TIER_PIXELS)
     return params.tier as PreviewTier;
   const max = Number(params.max_size || 2560);
-  return (Object.keys(TIER_PIXELS) as PreviewTier[]).find((t) => TIER_PIXELS[t] >= max) ?? 'p2560';
+  return demoAutoTiers.find((t) => TIER_PIXELS[t] >= max) ?? 'p2560';
 }
 function demoPreviewSize(asset: Asset, tier: PreviewTier, uncropped: boolean) {
   const crop = uncropped ? null : asset.crop;
@@ -356,9 +367,15 @@ function clearDemoPreviews() {
   for (const entry of previewCache.values()) retireDemoPreview(entry);
   previewCache.clear();
 }
-function renderDemoPreview(id: string, tier: PreviewTier, uncropped: boolean, revision: number) {
+function renderDemoPreview(
+  id: string,
+  tier: PreviewTier,
+  uncropped: boolean,
+  revision: number,
+  preferRaw = false,
+) {
   const crop = uncropped ? null : assets.get(id)?.crop;
-  const key = JSON.stringify([id, tier, uncropped, revision, crop || null]);
+  const key = JSON.stringify([id, tier, uncropped, revision, crop || null, preferRaw]);
   let entry = previewCache.get(key);
   if (entry) {
     // Least-recently handed out goes first.
@@ -400,8 +417,9 @@ export async function demoPreviewUrl(
   tier: PreviewTier,
   uncropped = false,
   revision = 0,
+  preferRaw = false,
 ): Promise<string> {
-  return (await renderDemoPreview(id, tier, uncropped, revision)).url;
+  return (await renderDemoPreview(id, tier, uncropped, revision, preferRaw)).url;
 }
 
 /** Camera-style local wall time, `YYYY-MM-DDTHH:mm:ss`, as the catalog stores it. */

@@ -35,7 +35,7 @@ pub fn pregenerate_previews(
     tier: String,
 ) -> Result<(), CommandError> {
     let tier = PreviewTier::parse(&tier)
-        .filter(|tier| *tier != PreviewTier::P2560)
+        .filter(|tier| tier.is_grid())
         .ok_or_else(|| viewer::error("E_INVALID", "Pregeneration renders grid tiers only"))?;
     let cancel = Arc::new(AtomicBool::new(false));
     state.replace(Some(Arc::clone(&cancel)));
