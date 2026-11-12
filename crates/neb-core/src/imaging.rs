@@ -781,12 +781,73 @@ fn downsample(image: DynamicImage, max_side: u32) -> DynamicImage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportColorSpace {
+    #[default]
+    Preserve,
+    Srgb,
+    DisplayP3,
+    AdobeRgb,
+}
+
+impl ExportColorSpace {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Preserve => "preserve",
+            Self::Srgb => "srgb",
+            Self::DisplayP3 => "display_p3",
+            Self::AdobeRgb => "adobe_rgb",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExportOptions {
+    pub max_edge: Option<u32>,
+    pub quality: u8,
+    pub color_space: ExportColorSpace,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            max_edge: None,
+            quality: 95,
+            color_space: ExportColorSpace::Preserve,
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Value> {
+    export_with_options(path, crop, destination, ExportOptions::default())
+}
+
+pub fn export_with_options(
+    path: &Path,
+    crop: Option<Crop>,
+    destination: &Path,
+    options: ExportOptions,
+) -> Result<Value> {
     ensure!(
         matches!(extension(destination).as_str(), "jpg" | "jpeg"),
         "E_INVALID: Export destination must end in .jpg or .jpeg"
     );
-    ensure!(!destination.exists(), "E_EXISTS: Export destination already exists; originals and previous exports are never overwritten");
+    ensure!(
+        (30..=100).contains(&options.quality),
+        "E_INVALID: Export JPEG quality must be between 30 and 100"
+    );
+    if let Some(edge) = options.max_edge {
+        ensure!(
+            (256..=16_384).contains(&edge),
+            "E_INVALID: Export max_edge must be between 256 and 16384"
+        );
+    }
+    ensure!(
+        !destination.exists(),
+        "E_EXISTS: Export destination already exists; originals and previous exports are never overwritten"
+    );
     let parent = destination
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -796,12 +857,41 @@ pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Val
         "E_NOT_FOUND: Export destination folder does not exist"
     );
     let frame = render_frame(path, crop, None, false, false)?;
+    let resized = match options.max_edge {
+        Some(edge) if frame.image.width() > edge || frame.image.height() > edge => frame
+            .image
+            .resize(edge, edge, image::imageops::FilterType::Lanczos3),
+        _ => frame.image,
+    };
+    let mut rgb = resized.to_rgb8();
+    let out_icc = match options.color_space {
+        ExportColorSpace::Preserve => frame.icc,
+        target => {
+            let target_gamut = match target {
+                ExportColorSpace::Srgb => crate::icc::KnownGamut::Srgb,
+                ExportColorSpace::DisplayP3 => crate::icc::KnownGamut::DisplayP3,
+                ExportColorSpace::AdobeRgb => crate::icc::KnownGamut::AdobeRgb,
+                ExportColorSpace::Preserve => unreachable!(),
+            };
+            if let Some(source_gamut) = crate::icc::detect_gamut(frame.icc.as_deref()) {
+                crate::icc::convert_rgb_image(&mut rgb, source_gamut, target_gamut);
+            }
+            Some(match target_gamut {
+                crate::icc::KnownGamut::Srgb => crate::icc::srgb_icc(),
+                crate::icc::KnownGamut::DisplayP3 => crate::icc::display_p3_icc(),
+                crate::icc::KnownGamut::AdobeRgb => crate::icc::adobe_rgb_1998_icc(),
+            })
+        }
+    };
+
+    let width = rgb.width();
+    let height = rgb.height();
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    let mut encoder = JpegEncoder::new_with_quality(temp.as_file_mut(), 95);
-    if let Some(icc) = frame.icc {
+    let mut encoder = JpegEncoder::new_with_quality(temp.as_file_mut(), options.quality);
+    if let Some(icc) = out_icc {
         encoder.set_icc_profile(icc)?;
     }
-    encoder.encode_image(&frame.image.to_rgb8())?;
+    encoder.encode_image(&rgb)?;
     temp.as_file().sync_all()?;
     // This atomic no-clobber commit also closes the check-then-write race above.
     temp.persist_noclobber(destination).map_err(|e| {
@@ -810,7 +900,13 @@ pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Val
             e.error
         )
     })?;
-    Ok(json!({"path": dunce::canonicalize(destination)?.to_string_lossy()}))
+    Ok(json!({
+        "path": dunce::canonicalize(destination)?.to_string_lossy(),
+        "width": width,
+        "height": height,
+        "quality": options.quality,
+        "color_space": options.color_space.as_str(),
+    }))
 }
 
 #[cfg(test)]

@@ -23,13 +23,13 @@ flowchart TD
 
 | 模块          | 职责                                                           |
 | ------------- | -------------------------------------------------------------- |
-| `neb-core`    | SQLite（`catalog.rs` 协调层 + `catalog/query.rs` 索引查询/统计 + `catalog/scan.rs` 批量本地扫描）、元数据、Canon CR3 解析（`cr3.rs`）、广色域 ICC 透传与 AdobeRGB 合成（`icc.rs`）、macOS 原生 `ImageIO` 解码（`macos_imageio.rs`）、预览、直方图、裁剪、导出与缓存管理 |
+| `neb-core`    | SQLite（`catalog.rs` 协调层 + `catalog/query.rs` 索引查询/统计 + `catalog/scan.rs` 批量本地扫描 + `catalog/xmp_sync.rs` 伴随同步）、非破坏 `.xmp` 合并解析（`xmp.rs`）、元数据、Canon CR3 解析（`cr3.rs`）、广色域 ICC 透传/AdobeRGB 合成与线性光色域变换（`icc.rs`）、macOS 原生 `ImageIO` 解码（`macos_imageio.rs`）、预览、直方图、裁剪、预设化导出与缓存管理 |
 | `neb-storage` | 连接、凭据、作用域路径、目录列举、完整下载和版本锁定分段读取   |
-| `neb-ingest`  | 冻结导入计划、内容哈希、校验复制、冲突处理和结果记录           |
-| `neb-service` | 统一命令路由、任务编排、资源协调和错误语义                     |
-| `neb-app`     | Tauri 窗口、系统路径、文件对话框、主题及 IPC                   |
+| `neb-ingest`  | 冻结导入计划、伴随组同号重命名、子集勾选、双盘同步校验复制、协作取消与结果记录 |
+| `neb-service` | 统一命令路由、任务编排、无锁导入进度跟踪、资源协调和错误语义   |
+| `neb-app`     | Tauri 窗口、访达定位/外部软件交接/安全退卡（`shell.rs`）、文件对话框、主题及 IPC |
 | `neb-cli`     | 命令行及可重复自动化入口                                       |
-| `packages/ui` | 纯状态层（`tasks.ts`、`selection.ts`、`culling.ts` 等）、设计原语层（`src/ui/`）与薄视图层 |
+| `packages/ui` | 纯状态层（`tasks.ts`、`selection.ts`、`culling.ts`、`export-presets.ts` 等）、设计原语层（`src/ui/`）与薄视图层 |
 
 核心模块不依赖 Tauri。前端不持有持久存储凭据，也不直接修改原片。
 

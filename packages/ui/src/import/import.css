@@ -223,3 +223,60 @@
 .import-history-item > p.history-failure {
   color: var(--nl-reject);
 }
+.import-inline-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nl-s-2);
+}
+.import-selection-bar {
+  display: grid;
+  gap: var(--nl-s-2);
+  padding: var(--nl-s-3);
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-lg);
+  background: var(--nl-side);
+}
+.import-selection-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nl-s-2);
+}
+.import-selection-summary {
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-13);
+}
+.import-selection-summary b {
+  color: var(--nl-text);
+  font-weight: 500;
+}
+.import-day-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nl-s-1);
+}
+.import-live-progress {
+  display: grid;
+  gap: var(--nl-s-2);
+}
+.import-live-meta {
+  display: grid;
+  gap: 2px;
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-12);
+}
+.import-live-meta code {
+  overflow: hidden;
+  color: var(--nl-text-3);
+  font-family: var(--nl-mono);
+  font-size: var(--nl-t-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.import-post-actions {
+  display: grid;
+  justify-items: center;
+  gap: var(--nl-s-2);
+}

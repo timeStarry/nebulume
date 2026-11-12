@@ -1,12 +1,14 @@
-import { createSignal, For, Show } from 'solid-js';
+import { createSignal, For, onMount, Show } from 'solid-js';
 import {
   desktop,
+  execute,
   readPregenerate,
   writePregenerate,
   readWatchLibraries,
   watchLibraries,
   writeWatchLibraries,
 } from './api';
+import type { XmpPolicy } from './model';
 import {
   Button,
   DataTable,
@@ -33,6 +35,12 @@ function CullingSettings() {
   const [pregenerate, setPregenerate] = createSignal(readPregenerate());
   const [watching, setWatching] = createSignal(readWatchLibraries());
   const [fades, setFades] = createSignal(readOverlayFades(localStorage));
+  const [xmpAutoWrite, setXmpAutoWrite] = createSignal(false);
+  onMount(() => {
+    void execute<XmpPolicy>('xmp.policy.get')
+      .then((res) => setXmpAutoWrite(!!res?.auto_write))
+      .catch(() => undefined);
+  });
   return (
     <Group title="浏览与选片">
       <ListRow
@@ -59,6 +67,22 @@ function CullingSettings() {
             onChange={(value) => {
               setFades(value);
               writeOverlayFades(localStorage, value);
+            }}
+          />
+        }
+      />
+      <ListRow
+        title="自动同步 .xmp 伴随文件"
+        description="修改本地照片的星级、旗标或裁剪时自动无损更新同名 .xmp（完整保留 Lightroom / Camera Raw 原有显影参数，绝不改动原片）。"
+        control={
+          <Switch
+            label="自动同步 .xmp 伴随文件"
+            checked={xmpAutoWrite()}
+            onChange={(value) => {
+              setXmpAutoWrite(value);
+              void execute('xmp.policy.set', { auto_write: value }).catch(() =>
+                setXmpAutoWrite(!value),
+              );
             }}
           />
         }

@@ -20,6 +20,7 @@ use crate::{
 
 mod query;
 mod scan;
+mod xmp_sync;
 
 use query::ListMemo;
 
@@ -401,6 +402,12 @@ impl Core {
                  PRAGMA user_version=13;",
             )?;
         }
+        migration.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_settings(
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            );",
+        )?;
         migration.commit()?;
         database.execute(
      "DELETE FROM assets WHERE trashed_at IS NOT NULL AND trashed_at < datetime('now','-30 days')",
@@ -524,6 +531,7 @@ impl Core {
                         params![args.rating, member],
                     )?;
                 }
+                self.sync_xmp_if_enabled(&members);
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.flag" => {
@@ -546,6 +554,7 @@ impl Core {
                     )?;
                 }
                 ensure!(changed >= 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(&members);
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.trash" | "asset.restore" => {
@@ -582,6 +591,7 @@ impl Core {
                     params![serde_json::to_string(&args.crop)?, args.id],
                 )?;
                 ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(std::slice::from_ref(&args.id));
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.reset_crop" => {
@@ -590,6 +600,7 @@ impl Core {
                     .db()?
                     .execute("UPDATE assets SET crop_json=NULL WHERE id=?1", [&id])?;
                 ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(std::slice::from_ref(&id));
                 Ok(serde_json::to_value(self.asset(&id)?)?)
             }
             "asset.preview" => {
@@ -624,12 +635,36 @@ impl Core {
                 struct Export {
                     id: String,
                     destination: String,
+                    max_edge: Option<u32>,
+                    quality: Option<u8>,
+                    #[serde(default)]
+                    color_space: imaging::ExportColorSpace,
                 }
                 let args: Export = parse(params)?;
                 let asset = self.asset(&args.id)?;
                 let path = self.checked_asset_path(&asset)?;
-                imaging::export(&path, asset.crop, Path::new(&args.destination))
+                imaging::export_with_options(
+                    &path,
+                    asset.crop,
+                    Path::new(&args.destination),
+                    imaging::ExportOptions {
+                        max_edge: args.max_edge,
+                        quality: args.quality.unwrap_or(95),
+                        color_space: args.color_space,
+                    },
+                )
             }
+            "xmp.policy.get" => Ok(json!({"auto_write": self.xmp_auto_write()?})),
+            "xmp.policy.set" => {
+                #[derive(Deserialize)]
+                struct Policy {
+                    auto_write: bool,
+                }
+                let args: Policy = parse(params)?;
+                Ok(json!({"auto_write": self.set_xmp_auto_write(args.auto_write)?}))
+            }
+            "asset.xmp.write" => self.write_xmp_sidecars(parse(params)?),
+            "asset.xmp.read" => self.read_xmp_sidecars(parse(params)?),
             _ => bail!("E_NOT_FOUND: Unknown core command {command}"),
         }
     }
@@ -866,6 +901,7 @@ impl Core {
         if let Some(pair) = pair_raw_jpeg {
             library.pair_raw_jpeg = pair;
         }
+        let previous_prefix = library.source_prefix.clone();
         let mut changed_binding = false;
         if let Some((root, source, prefix)) = binding {
             ensure!(
@@ -905,6 +941,22 @@ impl Core {
         }
         if changed_binding {
             transaction.execute("DELETE FROM assets WHERE library_id=?1", [id])?;
+        } else if previous_prefix != library.source_prefix && library.storage_id.is_none() {
+            let rows: Vec<(String, String)> = {
+                let mut stmt = transaction.prepare(
+                    "SELECT id,path FROM assets WHERE library_id=?1 AND source_key IS NULL",
+                )?;
+                let mapped = stmt.query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                mapped.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let mut upd = transaction.prepare("UPDATE assets SET key=?1 WHERE id=?2")?;
+            let lib_root = Path::new(&library.root);
+            for (asset_id, asset_path) in rows {
+                upd.execute(params![
+                    location_key(&library.source_prefix, lib_root, Path::new(&asset_path)),
+                    asset_id
+                ])?;
+            }
         }
         transaction.execute("UPDATE libraries SET name=?1,pair_raw_jpeg=?2,root=?3,root_key=?4,storage_id=?5,source_prefix=?6,location_id=?7 WHERE id=?8", params![library.name,library.pair_raw_jpeg,library.root,path_key(&library.root),library.storage_id,library.source_prefix,library.location_id,id])?;
         if library.storage_id.is_none() {
@@ -1615,6 +1667,8 @@ impl Core {
             updated += changed;
         }
         transaction.commit()?;
+        drop(db);
+        self.sync_xmp_if_enabled(&ids);
         Ok(updated)
     }
 

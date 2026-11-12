@@ -11,7 +11,19 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { chooseSave, desktop, execute, schedulePreview, viewerContext } from './api';
+import {
+  chooseDirectory,
+  chooseExternalApp,
+  chooseSave,
+  desktop,
+  execute,
+  openExternal,
+  revealInFolder,
+  schedulePreview,
+  viewerContext,
+} from './api';
+import ExportDialog from './ExportDialog';
+import type { ExportRecipe } from './export-presets';
 import { loadImage, previewUrl } from './preview-url';
 import AssetInspector from './AssetInspector';
 import CompareStage from './CompareStage';
@@ -31,6 +43,7 @@ import {
   type Flag,
   type FocusInfo,
   type Preview,
+  type XmpSyncReport,
 } from './model';
 import { viewerIds } from './workspace';
 import { focusPresentation } from './viewer-focus';
@@ -59,7 +72,6 @@ import {
   trashPhotos,
   trashSummary,
 } from './photo-actions';
-import { chooseDirectory } from './api';
 import { FolderBrowser, listFolder } from './folder-browser';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import type { Library } from './model';
@@ -130,6 +142,7 @@ export default function Viewer(props: {
   const [folder, setFolder] = createSignal<FolderBrowser>();
   const [outside, setOutside] = createSignal(false);
   const [menu, setMenu] = createSignal<ContextMenuState>();
+  const [exportTargets, setExportTargets] = createSignal<string[] | null>(null);
   // Culling: the queue's photos for the strip and counts, those already looked at, and the review.
   const [items, setItems] = createSignal<Record<string, Asset>>({});
   const [seen, setSeen] = createSignal(new Set<string>());
@@ -420,6 +433,60 @@ export default function Viewer(props: {
           disabled: !target || !!busy() || cropMode(),
           onSelect: () => void exportImage(),
         },
+        {
+          label: '按预设导出…',
+          icon: 'download',
+          shortcut: '⌘⇧E',
+          disabled: !target || !!busy() || cropMode(),
+          onSelect: () => target && setExportTargets([target.id]),
+        },
+        ...(desktop && local
+          ? [
+              {
+                label: '在文件夹中显示',
+                icon: 'folder-open' as const,
+                disabled: !target?.path,
+                onSelect: () =>
+                  void revealInFolder(target!.path).catch((e) => setError(errorMessage(e))),
+              },
+              {
+                label: '用默认应用打开',
+                icon: 'external-link' as const,
+                disabled: !target?.path,
+                onSelect: () =>
+                  void openExternal({ id: target!.id, path: target!.path }).catch((e) =>
+                    setError(errorMessage(e)),
+                  ),
+              },
+              {
+                label: '选择外部精修软件打开…',
+                icon: 'app-window' as const,
+                disabled: !target?.path,
+                onSelect: () =>
+                  void chooseExternalApp()
+                    .then((app) => {
+                      if (app) return openExternal({ id: target!.id, path: target!.path, appPath: app });
+                    })
+                    .catch((e) => setError(errorMessage(e))),
+              },
+            ]
+          : []),
+        ...(local
+          ? [
+              {
+                label: '写入 .xmp 伴随文件',
+                icon: 'file' as const,
+                disabled: !!busy(),
+                onSelect: () => void syncViewerXmp('write'),
+              },
+              {
+                label: '从 .xmp 重新读取标记',
+                icon: 'refresh' as const,
+                disabled: !!busy(),
+                onSelect: () => void syncViewerXmp('read'),
+              },
+            ]
+          : []),
         ...(desktop
           ? [
               {
@@ -823,8 +890,19 @@ export default function Viewer(props: {
     }
   }
   function keyboard(event: KeyboardEvent) {
+    if (exportTargets()) return;
     recoverFocus();
     if (!container.contains(document.activeElement)) return;
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.shiftKey &&
+      event.key.toLowerCase() === 'e' &&
+      !isTextEntry(event.target)
+    ) {
+      event.preventDefault();
+      if (asset() && !cropMode() && !busy()) setExportTargets([asset()!.id]);
+      return;
+    }
     if (editingOverlay()) {
       if (event.key === 'Escape' && !event.defaultPrevented) {
         event.preventDefault();
@@ -1169,6 +1247,41 @@ export default function Viewer(props: {
         destination,
       });
       setNotice(desktop ? `已导出：${result.path}` : `已生成 ${result.path}，并交给浏览器下载。`);
+    });
+  }
+  async function exportWithPreset(targets: string[], recipe: ExportRecipe, directory: string) {
+    await action(`正在按预设导出 ${targets.length} 张…`, async () => {
+      const known = new Map<string, Asset>(Object.entries(items()));
+      if (asset()) known.set(asset()!.id, asset()!);
+      const result = await exportPhotos(
+        targets,
+        directory,
+        known,
+        (done, count) => setBusy(`正在导出 ${done} / ${count}…`),
+        recipe,
+      );
+      setExportTargets(null);
+      const summary = exportSummary(result, directory, desktop);
+      if (summary.error) setError(summary.error);
+      else setNotice(summary.notice!);
+    });
+  }
+  async function syncViewerXmp(mode: 'write' | 'read') {
+    const target = asset();
+    if (!target || target.source_key) return;
+    await action(mode === 'write' ? '正在写入 .xmp 伴随文件…' : '正在读取 .xmp 伴随文件…', async () => {
+      const report = await execute<XmpSyncReport>(
+        mode === 'write' ? 'asset.xmp.write' : 'asset.xmp.read',
+        { ids: [target.id] },
+      );
+      if (mode === 'read') {
+        const refreshed = await execute<Asset>('asset.get', { id: target.id });
+        await changed({ ...refreshed, preview_revision: Date.now() }, 'crop');
+        setNotice(report.updated ? '已从 .xmp 同步标记与裁剪。' : '未检测到新的 .xmp 伴随变更。');
+      } else {
+        setNotice(`已写入 .xmp 伴随文件。`);
+      }
+      if (report.errors.length) setError(report.errors[0].message);
     });
   }
   async function refreshOriginal() {
@@ -1593,6 +1706,20 @@ export default function Viewer(props: {
             setCropMode(false);
           }}
         />
+      </Show>
+      <Show when={exportTargets()}>
+        {(targets) => (
+          <ExportDialog
+            count={targets().length}
+            sample={asset()}
+            busy={!!busy()}
+            onClose={() => {
+              setExportTargets(null);
+              container.focus({ preventScroll: true });
+            }}
+            onConfirm={(recipe, dir) => void exportWithPreset(targets(), recipe, dir)}
+          />
+        )}
       </Show>
     </div>
   );

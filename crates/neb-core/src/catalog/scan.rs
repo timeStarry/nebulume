@@ -50,6 +50,7 @@ struct InspectedFile {
 
 struct PreparedLocalUpsert {
     id: String,
+    is_new: bool,
     library_id: String,
     path_string: String,
     path_key: String,
@@ -63,6 +64,9 @@ struct PreparedLocalUpsert {
     created_at: String,
     location_key: Option<String>,
     quick_hash: Option<String>,
+    initial_rating: Option<u8>,
+    initial_flag: Option<String>,
+    initial_crop_json: Option<String>,
 }
 
 enum PendingPatch {
@@ -347,6 +351,9 @@ impl Core {
             }
             if !upserts.is_empty() {
                 let mut upsert_stmt = tx.prepare_cached(LOCAL_UPSERT_SQL)?;
+                let mut sidecar_stmt = tx.prepare_cached(
+                    "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),crop_json=COALESCE(?3,crop_json) WHERE id=?4",
+                )?;
                 for item in upserts.drain(..) {
                     upsert_stmt.execute(params![
                         item.id,
@@ -369,6 +376,18 @@ impl Core {
                         item.location_key,
                         item.quick_hash,
                     ])?;
+                    if item.is_new
+                        && (item.initial_rating.is_some()
+                            || item.initial_flag.is_some()
+                            || item.initial_crop_json.is_some())
+                    {
+                        sidecar_stmt.execute(params![
+                            item.initial_rating,
+                            item.initial_flag,
+                            item.initial_crop_json,
+                            item.id,
+                        ])?;
+                    }
                     report.indexed += 1;
                     if let Some(message) = item.inspected.error {
                         report.errors.push(ScanError {
@@ -472,6 +491,7 @@ impl Core {
                 return Ok((false, None));
             }
         }
+        let is_new = old.is_none();
         let id = old
             .map(|row| row.0)
             .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -534,6 +554,20 @@ impl Core {
                 quick_hash(&path, info.len()),
             ],
         )?;
+        if is_new {
+            if let Ok(Some(sidecar)) = crate::xmp::read_sidecar_for_image(&path) {
+                let crop_json = sidecar
+                    .crop
+                    .and_then(|c| c)
+                    .and_then(|c| serde_json::to_string(&c).ok());
+                if sidecar.rating.is_some() || sidecar.flag.is_some() || crop_json.is_some() {
+                    self.db()?.execute(
+                        "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),crop_json=COALESCE(?3,crop_json) WHERE id=?4",
+                        params![sidecar.rating, sidecar.flag, crop_json, id],
+                    )?;
+                }
+            }
+        }
         Ok((true, inspected.error))
     }
 }
@@ -568,11 +602,27 @@ fn prepare_local_upsert(
         .context("E_INVALID: Image path is not valid Unicode")?
         .to_owned();
     let key = path_key(&path_string);
+    let is_new = !known_local.contains_key(&key);
     let id = known_local
         .get(&key)
         .map(|known| known.id.clone())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let inspected = inspect_file_metadata(&path, info.len())?;
+    let (initial_rating, initial_flag, initial_crop_json) = if is_new {
+        match crate::xmp::read_sidecar_for_image(&path).ok().flatten() {
+            Some(sidecar) => (
+                sidecar.rating,
+                sidecar.flag,
+                sidecar
+                    .crop
+                    .and_then(|c| c)
+                    .and_then(|c| serde_json::to_string(&c).ok()),
+            ),
+            None => (None, None, None),
+        }
+    } else {
+        (None, None, None)
+    };
     let filename = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -581,6 +631,7 @@ fn prepare_local_upsert(
     let modified_at: DateTime<Utc> = modified.into();
     Ok(PreparedLocalUpsert {
         id,
+        is_new,
         library_id: library.id.clone(),
         path_string,
         path_key: key,
@@ -592,8 +643,11 @@ fn prepare_local_upsert(
         stamp,
         inspected,
         created_at: file_created_at(&info),
-        location_key: location_key(&library.source_prefix, Path::new(&library.root), &path),
+        location_key: location_key(&library.source_prefix, canonical_root, &path),
         quick_hash: quick_hash(&path, info.len()),
+        initial_rating,
+        initial_flag,
+        initial_crop_json,
     })
 }
 

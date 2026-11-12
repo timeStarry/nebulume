@@ -16,15 +16,20 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import {
   chooseDirectory,
+  chooseExternalApp,
   chooseImage,
   desktop,
   execute,
+  openExternal,
   openViewerWindow,
   pregeneratePreviews,
+  revealInFolder,
   watchLibraries,
 } from './api';
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
+import ExportDialog from './ExportDialog';
+import type { ExportRecipe } from './export-presets';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, {
   readSidebarCollapsed,
@@ -95,6 +100,7 @@ import {
   type ScanResult,
   type StorageConfig,
   type TrashResult,
+  type XmpSyncReport,
 } from './model';
 import {
   availabilityPresentation,
@@ -201,6 +207,7 @@ export default function ManagementApp() {
   const feedback = createFeedback();
   const { busy, setBusy, setError, setNotice, setSyncError, action } = feedback;
   const [dialog, setDialog] = createSignal<Dialog>(null);
+  const [exportDialogIds, setExportDialogIds] = createSignal<string[] | null>(null);
   const [editingSource, setEditingSource] = createSignal<StorageConfig>();
   const [editingLibrary, setEditingLibrary] = createSignal<Library>();
   const [removing, setRemoving] = createSignal<
@@ -636,6 +643,82 @@ export default function ManagementApp() {
       setError(errorMessage(e));
     }
   }
+  async function exportWithRecipe(ids: string[], recipe: ExportRecipe, directory: string) {
+    if (!ids.length || tasks.isRunning('export')) return;
+    setError('');
+    setNotice('');
+    try {
+      const result = await tasks.run(
+        {
+          kind: 'export',
+          title: `按预设导出 ${ids.length} 张照片`,
+          processed: 0,
+          total: ids.length,
+        },
+        ({ progress }) =>
+          exportPhotos(
+            ids,
+            directory,
+            new Map(assets().map((item) => [item.id, item])),
+            (done, count) => progress({ processed: done, total: count, detail: `${done} / ${count}` }),
+            recipe,
+          ),
+        (res) =>
+          `已导出 ${res.exported} 张${res.failures.length ? `，${res.failures.length} 张失败` : ''}`,
+      );
+      setExportDialogIds(null);
+      const summary = exportSummary(result, directory, desktop);
+      if (summary.error) setError(summary.error);
+      else setNotice(summary.notice!);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function syncXmp(
+    mode: 'write' | 'read',
+    target: { ids?: string[]; libraryId?: string; label?: string },
+  ) {
+    if (busy()) return;
+    const payload = target.libraryId ? { library_id: target.libraryId } : { ids: target.ids ?? [] };
+    await action(mode === 'write' ? '正在写入 .xmp 伴随文件…' : '正在读取 .xmp 伴随文件…', async () => {
+      const report = await execute<XmpSyncReport>(
+        mode === 'write' ? 'asset.xmp.write' : 'asset.xmp.read',
+        payload,
+      );
+      if (mode === 'read') {
+        const now = Date.now();
+        if (target.ids?.length) {
+          for (const id of target.ids) {
+            revisions.set(id, now);
+            recentUpdates.delete(id);
+          }
+        } else {
+          recentUpdates.clear();
+        }
+        if (!target.libraryId || target.libraryId === libraryId()) {
+          await loadAssets(false, true);
+          if (selectedId()) void refetchDetail();
+        }
+        setNotice(
+          report.updated
+            ? `已从 .xmp 同步 ${report.updated} 张照片的标记与裁剪。`
+            : '未检测到新的 .xmp 伴随变更。',
+        );
+      } else {
+        setNotice(
+          `已写入 ${report.written ?? 0} 个 .xmp 伴随文件${target.label ? `（${target.label}）` : ''}。`,
+        );
+      }
+      if (report.errors.length) {
+        setError(
+          report.errors
+            .slice(0, 3)
+            .map((item) => `${item.path}：${item.message}`)
+            .join('\n'),
+        );
+      }
+    });
+  }
   /** Moves the selected photos to the system Trash; the toast offers to put them back. */
   async function trashSelection(ids = selectedIds()) {
     if (!ids.length || busy()) return;
@@ -1036,8 +1119,26 @@ export default function ManagementApp() {
       }
       return;
     }
-    if (dialog() || removing() || overlay() || isTextEntry(event.target) || event.defaultPrevented)
+    if (
+      dialog() ||
+      exportDialogIds() ||
+      removing() ||
+      overlay() ||
+      isTextEntry(event.target) ||
+      event.defaultPrevented
+    )
       return;
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.shiftKey &&
+      event.key.toLowerCase() === 'e' &&
+      section() === 'libraries' &&
+      selectedIds().length
+    ) {
+      event.preventDefault();
+      setExportDialogIds([...selectedIds()]);
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && libraryId()) {
       event.preventDefault();
       searchInput?.focus();
@@ -1209,6 +1310,54 @@ export default function ManagementApp() {
           disabled: tasks.isRunning('export'),
           onSelect: () => void exportSelection(),
         },
+        {
+          label: count > 1 ? `按预设导出所选 ${count} 张…` : '按预设导出…',
+          shortcut: '⌘⇧E',
+          disabled: tasks.isRunning('export'),
+          onSelect: () => setExportDialogIds([...selectedIds()]),
+        },
+        ...(desktop && !asset.source_key
+          ? [
+              {
+                label: '在文件夹中显示',
+                disabled: count > 1 || !asset.path,
+                onSelect: () =>
+                  void revealInFolder(asset.path).catch((e) => setError(errorMessage(e))),
+              },
+              {
+                label: '用默认应用打开',
+                disabled: count > 1 || !asset.path,
+                onSelect: () =>
+                  void openExternal({ id: asset.id, path: asset.path }).catch((e) =>
+                    setError(errorMessage(e)),
+                  ),
+              },
+              {
+                label: '选择外部精修软件打开…',
+                disabled: count > 1 || !asset.path,
+                onSelect: () =>
+                  void chooseExternalApp()
+                    .then((app) => {
+                      if (app) return openExternal({ id: asset.id, path: asset.path, appPath: app });
+                    })
+                    .catch((e) => setError(errorMessage(e))),
+              },
+            ]
+          : []),
+        ...(!asset.source_key
+          ? [
+              {
+                label: '写入 .xmp 伴随文件',
+                disabled: !!busy(),
+                onSelect: () => void syncXmp('write', { ids: [...selectedIds()] }),
+              },
+              {
+                label: '从 .xmp 重新读取标记',
+                disabled: !!busy(),
+                onSelect: () => void syncXmp('read', { ids: [...selectedIds()] }),
+              },
+            ]
+          : []),
         ...(currentLibrary()?.source_kind === 'local'
           ? [
               {
@@ -1397,6 +1546,24 @@ export default function ManagementApp() {
               icon: 'shield-check',
               disabled: scanningThis || !!busy(),
               onSelect: () => editLibrary(library),
+            },
+          ] as MenuEntry[])
+        : []),
+      ...(!library.source_kind || library.source_kind === 'local'
+        ? ([
+            {
+              label: '导出整库 .xmp 伴随文件',
+              icon: 'file',
+              disabled: scanningThis || blocked || !!busy(),
+              title: reason,
+              onSelect: () => void syncXmp('write', { libraryId: library.id, label: library.name }),
+            },
+            {
+              label: '从 .xmp 同步外部修改',
+              icon: 'refresh',
+              disabled: scanningThis || blocked || !!busy(),
+              title: reason,
+              onSelect: () => void syncXmp('read', { libraryId: library.id, label: library.name }),
             },
           ] as MenuEntry[])
         : []),
@@ -2204,7 +2371,7 @@ export default function ManagementApp() {
                         onRate={rate}
                         onResetCrop={resetCrop}
                         onCrop={() => openAsset(selected()!)}
-                        onExport={() => openAsset(selected()!)}
+                        onExport={() => selected() && setExportDialogIds([selected()!.id])}
                         onRefresh={desktop ? refreshOriginal : undefined}
                       />
                     </>
@@ -2216,6 +2383,7 @@ export default function ManagementApp() {
                     trashBusy={!!busy()}
                     onMark={(mark) => void markSelection(mark)}
                     onExport={() => void exportSelection()}
+                    onExportPreset={() => setExportDialogIds([...selectedIds()])}
                     onTrash={() => void trashSelection()}
                     onClear={clearPicked}
                   />
@@ -2325,6 +2493,17 @@ export default function ManagementApp() {
             setNotice(`已保存 ${source.name}。请测试连接或浏览目录验证访问。`);
           }}
         />
+      </Show>
+      <Show when={exportDialogIds()}>
+        {(ids) => (
+          <ExportDialog
+            count={ids().length}
+            sample={assets().find((item) => item.id === ids()[0])}
+            busy={tasks.isRunning('export')}
+            onClose={() => setExportDialogIds(null)}
+            onConfirm={(recipe, dir) => void exportWithRecipe(ids(), recipe, dir)}
+          />
+        )}
       </Show>
       <Show when={overlay()}>
         {(context) => (

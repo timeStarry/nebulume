@@ -1,14 +1,35 @@
 import { execute } from './api';
+import {
+  DEFAULT_EXPORT_RECIPE,
+  clampExportRecipe,
+  formatExportFilename,
+  type ExportRecipe,
+} from './export-presets';
 import { errorMessage, type Asset, type TrashResult } from './model';
 
-/** Exports one photo as `<stem>-edited.jpg`, numbering the name until it is free. */
-export async function exportUnique(id: string, directory: string, stem: string) {
+/** Exports one photo according to `recipe`, numbering the name until it is free. */
+export async function exportUnique(
+  id: string,
+  directory: string,
+  stemOrFilename: string,
+  recipe: ExportRecipe = DEFAULT_EXPORT_RECIPE,
+  seq = 1,
+  capturedAt?: string,
+) {
+  const clean = clampExportRecipe(recipe);
   const separator = directory.includes('\\') && !directory.includes('/') ? '\\' : '/';
+  const filename = /\.[a-z0-9]+$/i.test(stemOrFilename) ? stemOrFilename : `${stemOrFilename}.jpg`;
   for (let attempt = 1; attempt <= 50; attempt++) {
-    const name = `${stem}-edited${attempt > 1 ? `-${attempt}` : ''}.jpg`;
+    const name = formatExportFilename(clean, { filename, captured_at: capturedAt }, seq, attempt);
     const destination = directory ? `${directory.replace(/[\\/]+$/, '')}${separator}${name}` : name;
     try {
-      return await execute<{ path: string }>('asset.export', { id, destination });
+      return await execute<{ path: string }>('asset.export', {
+        id,
+        destination,
+        quality: clean.quality,
+        color_space: clean.colorSpace,
+        ...(clean.maxEdge ? { max_edge: clean.maxEdge } : {}),
+      });
     } catch (e) {
       // Export never overwrites: a taken name is reported as E_EXISTS, so try the next one.
       if (!errorMessage(e).includes('E_EXISTS')) throw e;
@@ -17,21 +38,28 @@ export async function exportUnique(id: string, directory: string, stem: string) 
   throw new Error('E_EXISTS: 同名导出文件过多');
 }
 
-/** Renders photos with their crops to a folder one at a time; failures do not stop the rest. */
+/** Renders photos with their crops and export recipe to a folder one at a time; failures do not stop the rest. */
 export async function exportPhotos(
   ids: string[],
   directory: string,
-  known: Map<string, Pick<Asset, 'filename'>>,
+  known: Map<string, Pick<Asset, 'filename'> & { captured_at?: string }>,
   progress: (done: number, total: number) => void,
+  recipe: ExportRecipe = DEFAULT_EXPORT_RECIPE,
 ) {
   const failures: string[] = [];
   let exported = 0;
   for (const [index, id] of ids.entries()) {
     progress(index + 1, ids.length);
-    let filename = known.get(id)?.filename;
+    const cached = known.get(id);
+    let filename = cached?.filename;
+    let capturedAt = cached?.captured_at;
     try {
-      filename ??= (await execute<Asset>('asset.get', { id })).filename;
-      await exportUnique(id, directory, filename.replace(/\.[^.]+$/, ''));
+      if (!filename) {
+        const loaded = await execute<Asset>('asset.get', { id });
+        filename = loaded.filename;
+        capturedAt = loaded.captured_at;
+      }
+      await exportUnique(id, directory, filename, recipe, index + 1, capturedAt);
       exported++;
     } catch (e) {
       failures.push(`${filename ?? id}：${errorMessage(e)}`);

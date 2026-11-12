@@ -18,12 +18,13 @@ mod model;
 pub mod preview;
 pub mod recycle;
 mod remote_exif;
+pub mod xmp;
 
 pub use cache::{CacheLease, CacheManager, Reservation};
 pub use catalog::Core;
 pub use focus_points::read_from as remote_focus;
 pub use focus_points::{FocusInfo, FocusRegion};
-pub use imaging::{histogram_from_jpeg, remote_preview};
+pub use imaging::{histogram_from_jpeg, remote_preview, ExportColorSpace, ExportOptions};
 pub use ingest_records::{Card, CardIdentity, ImportBatch, ImportPreset};
 pub use model::{Asset, Crop, Library, Location};
 pub use preview::{PreviewImage, PreviewMemory, PreviewTier};
@@ -77,8 +78,14 @@ pub fn capabilities() -> serde_json::Value {
             "mode": "explicit recorded area coordinates, normalized to oriented full image",
             "limitations": "JPEG/classic TIFF only; selected area does not confirm achieved focus. Other vendors/versions and point-grid-only records are unsupported. No inferred positions or private MakerNote fields are returned."
         },
-        "editing": ["normalized_non_destructive_crop", "reset_crop", "jpeg_export_no_overwrite"],
-        "color_management": "ICC profile passthrough + EXIF Adobe RGB (1998) ICC synthesis / sRGB RAW development",
+        "editing": ["normalized_non_destructive_crop", "reset_crop", "jpeg_export_no_overwrite", "xmp_sidecar_sync"],
+        "export": {
+            "formats": ["jpeg"],
+            "color_spaces": ["preserve", "srgb", "display_p3", "adobe_rgb"],
+            "quality_range": [30, 100],
+            "max_edge_range": [256, 16384]
+        },
+        "color_management": "ICC profile passthrough + EXIF Adobe RGB (1998) ICC synthesis + linear-light sRGB / Display P3 / Adobe RGB export conversion",
         "max_file_bytes": imaging::MAX_FILE_BYTES,
         "max_pixels": imaging::MAX_PIXELS
     })

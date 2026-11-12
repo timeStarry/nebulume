@@ -215,6 +215,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       )
         throw new Error('评级必须是 0 至 5 的整数。');
       asset.rating = Number(params.rating);
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     case 'asset.flag':
@@ -222,6 +223,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       if (!['none', 'pick', 'reject'].includes(String(params.flag)))
         throw new Error('旗标必须是 none、pick 或 reject。');
       asset.flag = params.flag as Flag;
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     case 'asset.mark_batch': {
@@ -231,6 +233,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       for (const target of targets) {
         if (params.rating !== undefined) target!.rating = Number(params.rating);
         if (params.flag !== undefined) target!.flag = params.flag as Flag;
+        autoSyncDemoSidecar(target!);
       }
       result = { updated: ids.length };
       break;
@@ -272,12 +275,14 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       };
       if (!validCrop(crop)) throw new Error('裁剪区域超出图像。');
       asset.crop = crop;
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     }
     case 'asset.reset_crop':
       if (!asset) throw new Error('图片不存在。');
       asset.crop = null;
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     case 'asset.preview': {
@@ -316,21 +321,95 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
     }
     case 'asset.export': {
       if (!asset) throw new Error('图片不存在。');
-      const output = applyCrop(await canvasFor(asset.id), asset.crop);
+      const cropped = applyCrop(await canvasFor(asset.id), asset.crop);
+      let output = cropped;
+      const maxEdge = typeof params.max_edge === 'number' ? params.max_edge : 0;
+      if (maxEdge > 0 && Math.max(cropped.width, cropped.height) > maxEdge) {
+        const scale = maxEdge / Math.max(cropped.width, cropped.height);
+        output = document.createElement('canvas');
+        output.width = Math.max(1, Math.round(cropped.width * scale));
+        output.height = Math.max(1, Math.round(cropped.height * scale));
+        output.getContext('2d')!.drawImage(cropped, 0, 0, output.width, output.height);
+      }
+      const quality =
+        typeof params.quality === 'number' ? Math.min(1, Math.max(0.3, params.quality / 100)) : 0.95;
       const blob = await new Promise<Blob>((resolve, reject) =>
         output.toBlob(
           (b) => (b ? resolve(b) : reject(new Error('JPEG 编码失败'))),
           'image/jpeg',
-          0.95,
+          quality,
         ),
       );
+      const requestedName =
+        typeof params.destination === 'string' && params.destination.trim()
+          ? params.destination.split(/[\\/]/).pop()!
+          : asset.filename.replace(/\.[^.]+$/, '') + '-edited.jpg';
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = asset.filename.replace(/\.[^.]+$/, '') + '-edited.jpg';
+      link.download = requestedName;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-      result = { path: link.download };
+      result = {
+        path: link.download,
+        width: output.width,
+        height: output.height,
+        quality: Math.round(quality * 100),
+        color_space: typeof params.color_space === 'string' ? params.color_space : 'preserve',
+      };
+      break;
+    }
+    case 'xmp.policy.get':
+      result = { auto_write: demoXmpAutoWrite };
+      break;
+    case 'xmp.policy.set':
+      demoXmpAutoWrite = Boolean(params.auto_write);
+      result = { auto_write: demoXmpAutoWrite };
+      break;
+    case 'asset.xmp.write': {
+      const targets = resolveDemoTargets(params);
+      let written = 0;
+      let skipped = 0;
+      for (const item of targets) {
+        if (!item.rating && (!item.flag || item.flag === 'none') && !item.crop && !demoSidecars.has(item.id)) {
+          skipped++;
+        } else {
+          demoSidecars.set(item.id, {
+            rating: item.rating,
+            flag: item.flag || 'none',
+            crop: item.crop ? { ...item.crop } : null,
+          });
+          written++;
+        }
+      }
+      result = { written, skipped, errors: [] };
+      break;
+    }
+    case 'asset.xmp.read': {
+      const targets = resolveDemoTargets(params);
+      let updated = 0;
+      let unchanged = 0;
+      let missing_sidecar = 0;
+      for (const item of targets) {
+        const sidecar = demoSidecars.get(item.id);
+        if (!sidecar) {
+          missing_sidecar++;
+          continue;
+        }
+        const changed =
+          item.rating !== sidecar.rating ||
+          (item.flag || 'none') !== sidecar.flag ||
+          JSON.stringify(item.crop || null) !== JSON.stringify(sidecar.crop || null);
+        if (changed) {
+          item.rating = sidecar.rating;
+          item.flag = sidecar.flag;
+          item.crop = sidecar.crop ? { ...sidecar.crop } : null;
+          updated++;
+        } else {
+          unchanged++;
+        }
+      }
+      result = { updated, unchanged, missing_sidecar, errors: [] };
       break;
     }
     default:
@@ -475,3 +554,29 @@ function browserStats(items: Asset[]) {
 }
 
 const browserTrash = new Map<string, Asset>();
+let demoXmpAutoWrite = false;
+const demoSidecars = new Map<
+  string,
+  { rating: number; flag: Flag; crop: Asset['crop'] }
+>();
+function autoSyncDemoSidecar(item: Asset) {
+  if (!demoXmpAutoWrite) return;
+  if (!item.rating && (!item.flag || item.flag === 'none') && !item.crop && !demoSidecars.has(item.id))
+    return;
+  demoSidecars.set(item.id, {
+    rating: item.rating,
+    flag: item.flag || 'none',
+    crop: item.crop ? { ...item.crop } : null,
+  });
+}
+function resolveDemoTargets(params: Record<string, unknown>): Asset[] {
+  if (Array.isArray(params.ids)) {
+    return (params.ids as string[])
+      .map((id) => assets.get(id))
+      .filter((item): item is Asset => !!item);
+  }
+  if (typeof params.library_id === 'string') {
+    return [...assets.values()].filter((item) => item.library_id === params.library_id);
+  }
+  return [];
+}

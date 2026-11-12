@@ -14,6 +14,7 @@ export default function BatchDock(props: {
   trashBusy?: boolean;
   onMark: (mark: { rating?: number; flag?: Flag }) => void;
   onExport: () => void;
+  onExportPreset?: () => void;
   onTrash: () => void;
   onClear: () => void;
 }) {
@@ -65,6 +66,16 @@ export default function BatchDock(props: {
         >
           导出 JPEG…
         </Button>
+        <Show when={props.onExportPreset}>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={props.exportBusy}
+            onClick={() => props.onExportPreset!()}
+          >
+            按预设导出…
+          </Button>
+        </Show>
         <Show when={props.canTrash}>
           <Button
             size="sm"

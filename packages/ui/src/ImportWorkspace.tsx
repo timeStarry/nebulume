@@ -24,9 +24,19 @@ import {
   isRemoteLibrary,
   libraryLocation,
   organizeExample,
+  renamePrefixError,
   sourceKind,
   subfolderError,
 } from './workspace';
+import {
+  companionGroupKey,
+  DualBackupSection,
+  ImportLiveProgress,
+  ImportPostActions,
+  ImportSelectionBar,
+  isSelectableImportItem,
+  RenameRuleSection,
+} from './import/ImportExtras';
 import Icon from './Icon';
 import {
   Badge,
@@ -42,7 +52,6 @@ import {
   IconButton,
   ListRow,
   PageHeader,
-  Progress,
   Segmented,
   Select,
   SplitPage,
@@ -93,6 +102,9 @@ export default function ImportWorkspace(props: {
     writeRules(next);
   };
   const [deduplicate, setDeduplicate] = createSignal(true);
+  const [backupEnabled, setBackupEnabled] = createSignal(false);
+  const [backupPath, setBackupPath] = createSignal('');
+  const [selectedSources, setSelectedSources] = createSignal<Set<string>>(new Set());
   const [cards, setCards] = createSignal<Card[]>([]);
   const [presets, setPresets] = createSignal<ImportPreset[]>([]);
   const [presetId, setPresetId] = createSignal('');
@@ -272,10 +284,16 @@ export default function ImportWorkspace(props: {
       const next = await execute<ImportPlan>('import.plan', {
         source: source().trim(),
         ...(isRemoteLibrary(target) ? { library_id: target.id } : { destination: target.root }),
+        ...(backupEnabled() && backupPath().trim()
+          ? { backup_destination: backupPath().trim() }
+          : {}),
         rules: rules(),
         deduplicate: deduplicate(),
       });
       setIncludeLikely(false);
+      setSelectedSources(
+        new Set(next.items.filter((item) => item.status === 'pending').map((item) => item.source)),
+      );
       setPlannedTarget({ ...target });
       setPlan(next);
     } catch (e) {
@@ -289,15 +307,25 @@ export default function ImportWorkspace(props: {
     setBusy('正在复制并校验…');
     setError('');
     try {
+      const selectable = (plan()!.items || []).filter((item) =>
+        isSelectableImportItem(item, includeLikely()),
+      );
+      const subset =
+        selectedSources().size < selectable.length ? [...selectedSources()] : undefined;
       const completed = await execute<ImportResult>('import.execute', {
         plan_id: plan()!.id,
         library_id: plannedTarget()!.id,
         ...(knownCard() ? { card_id: knownCard()!.id } : {}),
         ...(includeLikely() ? { include_likely_duplicates: true } : {}),
+        ...(subset ? { selected_sources: subset } : {}),
       });
       if (completed.batch_error) setError(`导入批次未记录：${completed.batch_error}`);
       setResult(completed);
-      if (completed.status === 'completed' || completed.status === 'partial') {
+      if (
+        completed.status === 'completed' ||
+        completed.status === 'partial' ||
+        (completed.status === 'cancelled' && completed.copied > 0)
+      ) {
         setBusy('正在更新目标图片库索引…');
         try {
           if (completed.indexing_error) throw new Error(completed.indexing_error);
@@ -342,10 +370,12 @@ export default function ImportWorkspace(props: {
         pending: '待复制',
         duplicate: '重复跳过',
         likely_duplicate: '疑似重复',
+        skipped: '未勾选跳过',
         copied: '已复制',
         failed: '失败',
         completed: '已完成',
         partial: '部分完成',
+        cancelled: '已取消',
         interrupted: '已中断',
       }) as Record<string, string>
     )[status] || status;
@@ -417,12 +447,46 @@ export default function ImportWorkspace(props: {
   const step = () => (result() ? 3 : plan() ? 2 : 1);
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const canPlan = () =>
-    !busy() && desktop && !!targetId() && !!source().trim() && !subfolderError(rules().subfolder);
+    !busy() &&
+    desktop &&
+    !!targetId() &&
+    !!source().trim() &&
+    !subfolderError(rules().subfolder) &&
+    !renamePrefixError(rules().rename_prefix) &&
+    (!backupEnabled() || !!backupPath().trim());
   const canRun = () =>
     !busy() &&
     reviewed() &&
-    (!!counts().pending || (includeLikely() && !!counts().likely)) &&
+    selectedSources().size > 0 &&
     !writeBlocked();
+  function toggleSourceItem(sourcePath: string, checked: boolean) {
+    const group = companionGroupKey(sourcePath);
+    const next = new Set(selectedSources());
+    for (const item of plan()?.items || []) {
+      if (!isSelectableImportItem(item, includeLikely())) continue;
+      if (companionGroupKey(item.source) !== group) continue;
+      if (checked) next.add(item.source);
+      else next.delete(item.source);
+    }
+    setSelectedSources(next);
+  }
+  function updateIncludeLikely(checked: boolean) {
+    setIncludeLikely(checked);
+    const next = new Set(selectedSources());
+    for (const item of plan()?.items || []) {
+      if (item.status !== 'likely_duplicate') continue;
+      if (checked) next.add(item.source);
+      else next.delete(item.source);
+    }
+    setSelectedSources(next);
+  }
+  const removableVolumePath = () => {
+    const raw = (plan()?.source || source()).trim();
+    if (!raw) return undefined;
+    return volumes().find(
+      (v) => v.removable && (raw === v.path || raw.startsWith(`${v.path}/`)),
+    )?.path;
+  };
   const writeStatus = (library?: Library) => locationOf(library)?.write_capability;
   const dateLayouts: { value: NonNullable<OrganizeRules['date_layout']>; label: string }[] = [
     { value: 'Y-M-D', label: '2026-10-22' },
@@ -783,6 +847,13 @@ export default function ImportWorkspace(props: {
                       />
                     }
                   />
+                  <DualBackupSection
+                    enabled={backupEnabled()}
+                    path={backupPath()}
+                    disabled={!!busy()}
+                    onToggle={setBackupEnabled}
+                    onPathChange={setBackupPath}
+                  />
                 </Group>
                 <Group
                   title="怎么整理"
@@ -895,6 +966,11 @@ export default function ImportWorkspace(props: {
                       />
                     }
                   />
+                  <RenameRuleSection
+                    rules={rules()}
+                    disabled={!!busy()}
+                    onChange={updateRules}
+                  />
                 </Group>
               </>
             }
@@ -905,13 +981,20 @@ export default function ImportWorkspace(props: {
                   rows={[
                     ['来源', sourceLabel() || '尚未选择'],
                     ['目标', selectedTarget()?.name || '尚未选择'],
+                    ...(backupEnabled() && backupPath().trim()
+                      ? ([['副盘备份', backupPath().trim()]] as [string, JSX.Element][])
+                      : []),
                     ['整理', basisName(rules().date_basis)],
                   ]}
                 />
                 <div class="import-preview">
                   <span>导入后的位置示例</span>
                   <Example />
-                  <small>文件名不会改变。</small>
+                  <small>
+                    {(rules().rename_mode ?? 'keep') === 'keep'
+                      ? '文件名不会改变。'
+                      : '同组 RAW + JPEG + XMP 自动保持同号主文件名。'}
+                  </small>
                 </div>
               </>
             }
@@ -947,11 +1030,32 @@ export default function ImportWorkspace(props: {
                 onChange={setFilter}
                 options={tabs().map(([value, label]) => ({ value, label }))}
               />
+              <ImportSelectionBar
+                items={plan()!.items}
+                includeLikely={includeLikely()}
+                selected={selectedSources()}
+                disabled={!!busy()}
+                onChange={setSelectedSources}
+              />
               <DataTable
                 label="导入文件"
                 empty="没有符合条件的文件。"
                 rows={visibleItems().slice(0, 200)}
                 columns={[
+                  {
+                    key: 'pick',
+                    label: '选择',
+                    render: (item) =>
+                      isSelectableImportItem(item, includeLikely()) ? (
+                        <Checkbox
+                          checked={selectedSources().has(item.source)}
+                          disabled={!!busy()}
+                          onChange={(checked) => toggleSourceItem(item.source, checked)}
+                        >
+                          <span class="visually-hidden">{item.relative_path}</span>
+                        </Checkbox>
+                      ) : null,
+                  },
                   {
                     key: 'file',
                     label: '文件',
@@ -1006,7 +1110,11 @@ export default function ImportWorkspace(props: {
                 rows={[
                   ['来源', sourceLabel() || plan()!.source],
                   ['目标', plannedTarget()?.name ?? ''],
+                  ...(plan()!.backup_destination
+                    ? ([['副盘备份', plan()!.backup_destination!]] as [string, JSX.Element][])
+                    : []),
                   ['待导入', `${counts().pending} 张 · ${bytes(plan()!.total_bytes)}`],
+                  ['本次已勾选', `${selectedSources().size} 项`],
                   ['已在库中，跳过', `${counts().existing} 张`],
                   ...(counts().likely
                     ? ([['疑似重复', `${counts().likely} 张 · 未校验`]] as [string, JSX.Element][])
@@ -1053,7 +1161,7 @@ export default function ImportWorkspace(props: {
               <Show when={counts().likely}>
                 <Checkbox
                   checked={includeLikely()}
-                  onChange={setIncludeLikely}
+                  onChange={updateIncludeLikely}
                   disabled={!!busy()}
                   help="文件名、大小与拍摄日期相同，但内容未经校验。可在图片库中建立内容指纹以严格判重。"
                 >
@@ -1064,12 +1172,7 @@ export default function ImportWorkspace(props: {
           }
           asideFooter={
             <>
-              <Show when={busy()}>
-                <Progress label={busy()} />
-                <span class="import-foot-note" role="status">
-                  {busy()}
-                </span>
-              </Show>
+              <ImportLiveProgress running={!!busy()} label={busy()} />
               <Checkbox checked={reviewed()} onChange={setReviewed} disabled={!!busy()}>
                 我已核对来源、目标和导入计划
               </Checkbox>
@@ -1096,9 +1199,17 @@ export default function ImportWorkspace(props: {
                   <>
                     已导入 {result()!.copied} 个文件到 {plannedTarget()?.name}
                     {result()!.duplicates ? `，跳过 ${result()!.duplicates} 个已有文件` : ''}
+                    {result()!.skipped_unselected
+                      ? `，未勾选跳过 ${result()!.skipped_unselected} 个`
+                      : ''}
                     {result()!.failed ? `，${result()!.failed} 个失败` : ''}。卡上原片已保留。
                   </>
                 }
+              />
+              <ImportPostActions
+                result={result()!}
+                removableSource={removableVolumePath()}
+                onEjected={() => void refreshVolumes()}
               />
               <Show when={scanMessage()}>
                 <p class="import-result-note" role="status">

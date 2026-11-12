@@ -207,3 +207,57 @@ fn siblings_of_an_opened_file_are_listed_by_name_without_indexing_them() {
     assert_eq!(listed["index"], 1);
     assert_eq!(svc.execute("library.list", json!({})).unwrap(), json!([]));
 }
+
+#[test]
+fn prefixed_library_folder_tree_omits_library_root_directory() {
+    let data = tempfile::tempdir().unwrap();
+    let storage_root = tempfile::tempdir().unwrap();
+    let lib_dir = storage_root.path().join("2026").join("Kyoto");
+    let sub_dir = lib_dir.join("01 Arashiyama");
+    fs::create_dir_all(&sub_dir).unwrap();
+    fs::write(lib_dir.join("root-shot.jpg"), jpeg_with("R5", 100, (35, 1))).unwrap();
+    fs::write(sub_dir.join("sub-shot.jpg"), jpeg_with("R5", 200, (50, 1))).unwrap();
+
+    let svc = Service::open(data.path()).unwrap();
+    let source = svc
+        .execute(
+            "storage.add",
+            json!({"name": "外接盘", "kind": "local", "endpoint": storage_root.path()}),
+        )
+        .unwrap();
+    let library = svc
+        .execute(
+            "library.add",
+            json!({
+                "name": "京都旅拍",
+                "storage_id": source["id"],
+                "prefix": "2026/Kyoto"
+            }),
+        )
+        .unwrap();
+    let id = library["id"].as_str().unwrap().to_owned();
+    svc.execute("library.scan", json!({"library_id": &id}))
+        .unwrap();
+
+    let tree = svc
+        .execute("library.folders", json!({"library_id": &id}))
+        .unwrap();
+    assert_eq!(tree["total"], 2);
+    let folders = tree["folders"].as_array().unwrap();
+    assert_eq!(
+        folders.len(),
+        1,
+        "neither '2026' nor 'Kyoto' (the library's own directory) may appear in folders: {tree}"
+    );
+    assert_eq!(folders[0]["name"], "01 Arashiyama");
+    assert_eq!(folders[0]["path"], "01 Arashiyama");
+    assert_eq!(folders[0]["count"], 1);
+
+    let scoped = svc
+        .execute(
+            "asset.list",
+            json!({"library_id": &id, "folder": "01 Arashiyama"}),
+        )
+        .unwrap();
+    assert_eq!(names(&scoped), ["sub-shot.jpg"]);
+}

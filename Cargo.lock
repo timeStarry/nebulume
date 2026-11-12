@@ -2834,6 +2834,7 @@ dependencies = [
  "kamadak-exif",
  "libc",
  "objc2-foundation",
+ "quick-xml 0.37.5",
  "rawloader",
  "rusqlite",
  "serde",

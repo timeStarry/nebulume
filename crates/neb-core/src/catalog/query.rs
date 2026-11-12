@@ -238,11 +238,22 @@ impl Core {
             .map(|folder| folder.trim_matches('/'))
             .filter(|folder| !folder.is_empty())
         {
+            let prefix = args
+                .library_id
+                .as_deref()
+                .and_then(|id| self.library(id).ok())
+                .map(|lib| lib.source_prefix.trim_matches('/').to_owned())
+                .unwrap_or_default();
+            let effective = if prefix.is_empty() {
+                folder.to_owned()
+            } else {
+                format!("{prefix}/{folder}")
+            };
             clauses.push("(key=? OR key LIKE ? ESCAPE '\\')");
-            where_params.push(V::Text(folder.to_owned()));
+            where_params.push(V::Text(effective.clone()));
             where_params.push(V::Text(format!(
                 "{}/%",
-                folder
+                effective
                     .replace('\\', "\\\\")
                     .replace('%', "\\%")
                     .replace('_', "\\_")
@@ -513,10 +524,12 @@ impl Core {
         }))
     }
 
-    /// A library's folders, nested, with photo counts that match the grid
-    /// (a RAW + JPEG pair counts once). `path` is what `asset.list` takes as `folder`.
+    /// A library's child folders, nested, with photo counts that match the grid
+    /// (a RAW + JPEG pair counts once). The library's own root directory (`source_prefix`)
+    /// never appears in the tree; `path` is library-relative and matches `asset.list` `folder`.
     pub(super) fn library_folders(&self, library_id: &str) -> Result<Value> {
-        self.library(library_id)?;
+        let library = self.library(library_id)?;
+        let prefix = library.source_prefix.trim_matches('/');
         let args: AssetQuery = serde_json::from_value(json!({"library_id": library_id}))?;
         let parts = self.query_parts(&args)?;
         let db = self.db()?;
@@ -534,7 +547,10 @@ impl Core {
             if !shown.contains(id.as_str()) {
                 continue;
             }
-            let segments: Vec<&str> = key.split('/').collect();
+            let Some(relative_key) = strip_library_prefix(&key, prefix) else {
+                continue;
+            };
+            let segments: Vec<&str> = relative_key.split('/').filter(|s| !s.is_empty()).collect();
             for depth in 1..segments.len() {
                 *counts.entry(segments[..depth].join("/")).or_default() += 1;
             }
@@ -656,4 +672,14 @@ fn valid_day(day: &Option<String>) -> bool {
     day.as_deref().is_none_or(|day| {
         day.len() == 10 && chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok()
     })
+}
+
+fn strip_library_prefix<'a>(key: &'a str, source_prefix: &str) -> Option<&'a str> {
+    let key = key.trim_start_matches('/');
+    let prefix = source_prefix.trim_matches('/');
+    if prefix.is_empty() {
+        Some(key)
+    } else {
+        key.strip_prefix(prefix)?.strip_prefix('/')
+    }
 }

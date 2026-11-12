@@ -289,12 +289,15 @@ export interface ImportItem {
   /** exif, paired_exif, import_date, modified_time, unknown or preserved. */
   date_source?: string;
 }
+export type RenameMode = 'keep' | 'date_prefix_seq' | 'prefix_original';
 export interface OrganizeRules {
   date_basis: 'capture' | 'import' | 'none' | 'preserve';
   date_layout: 'Y-M-D' | 'Y/Y-M-D' | 'Y/M/Y-M-D' | 'Y/M/D';
   type_split: 'none' | 'by_kind';
   unknown_date: 'folder' | 'modified_time';
   subfolder: string;
+  rename_mode?: RenameMode;
+  rename_prefix?: string;
 }
 export interface ImportPlan {
   id: string;
@@ -308,6 +311,7 @@ export interface ImportPlan {
   /** Present for NAS targets: whether this location passed the write test. */
   write_capability?: WriteCapability;
   library_id?: string;
+  backup_destination?: string;
   warnings: string[];
   [key: string]: unknown;
 }
@@ -353,13 +357,18 @@ export interface ImportResult {
   plan_id: string;
   source: string;
   destination: string;
-  status: 'completed' | 'partial' | 'failed' | 'interrupted';
+  status: 'completed' | 'partial' | 'failed' | 'interrupted' | 'cancelled';
   started_at: string;
   finished_at?: string;
   total: number;
   copied: number;
   duplicates: number;
   failed: number;
+  skipped_unselected?: number;
+  backup_destination?: string;
+  backup_copied?: number;
+  backup_failed?: number;
+  backup_errors?: string[];
   items: {
     source: string;
     destination: string;
@@ -374,6 +383,37 @@ export interface ImportResult {
   batch?: ImportBatch;
   batch_error?: string;
   [key: string]: unknown;
+}
+
+export interface ImportProgress {
+  plan_id: string;
+  status: string;
+  total_items: number;
+  done_items: number;
+  total_bytes: number;
+  copied_bytes: number;
+  current_file?: string | null;
+  backup_copied: number;
+  cancelling: boolean;
+}
+
+export interface ImportStatus {
+  active: boolean;
+  cancelling: boolean;
+  progress?: ImportProgress | null;
+}
+
+export interface XmpPolicy {
+  auto_write: boolean;
+}
+
+export interface XmpSyncReport {
+  written?: number;
+  skipped?: number;
+  updated?: number;
+  unchanged?: number;
+  missing_sidecar?: number;
+  errors: { id: string; path: string; message: string }[];
 }
 
 export function bytes(value: number): string {
