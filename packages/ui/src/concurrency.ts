@@ -20,15 +20,18 @@ export function abortError(message = 'Preview request cancelled before dispatch'
 }
 // Cancellation removes only waiting work. Once started, an operation owns its slot until it
 // settles; AbortSignal cannot interrupt an already issued Tauri call or protocol render.
-export function createConcurrencyLimit(limit: number) {
+export function createConcurrencyLimit(limit: number, order: 'fifo' | 'lifo' = 'fifo') {
   if (!Number.isInteger(limit) || limit < 1) throw new Error('Concurrency limit must be positive');
   let active = 0;
-  const waiting = new Set<{ start: () => void }>();
+  const waiting: Array<{ start: () => void }> = [];
+  function removeWaiting(entry: { start: () => void }) {
+    const idx = waiting.indexOf(entry);
+    if (idx >= 0) waiting.splice(idx, 1);
+  }
   function release() {
     active--;
-    while (active < limit && waiting.size) {
-      const next = waiting.values().next().value!;
-      waiting.delete(next);
+    while (active < limit && waiting.length) {
+      const next = order === 'lifo' ? waiting.pop()! : waiting.shift()!;
       next.start();
     }
   }
@@ -40,7 +43,7 @@ export function createConcurrencyLimit(limit: number) {
       function cancel() {
         if (!pending) return;
         pending = false;
-        waiting.delete(entry);
+        removeWaiting(entry);
         signal?.removeEventListener('abort', cancel);
         reject(abortError());
       }
@@ -82,7 +85,7 @@ export function createConcurrencyLimit(limit: number) {
       }
       if (active < limit) start();
       else {
-        waiting.add(entry);
+        waiting.push(entry);
         signal?.addEventListener('abort', cancel, { once: true });
       }
     });
@@ -101,12 +104,12 @@ export function untilAborted<T>(promise: Promise<T>, signal?: AbortSignal): Prom
 export function createPreviewScheduler(limits: { thumbnail?: number; viewer?: number } = {}) {
   const channels = {
     local: {
-      thumbnail: createConcurrencyLimit(limits.thumbnail ?? 4),
-      viewer: createConcurrencyLimit(limits.viewer ?? 2),
+      thumbnail: createConcurrencyLimit(limits.thumbnail ?? 4, 'lifo'),
+      viewer: createConcurrencyLimit(limits.viewer ?? 2, 'fifo'),
     },
     remote: {
-      thumbnail: createConcurrencyLimit(limits.thumbnail ?? 4),
-      viewer: createConcurrencyLimit(limits.viewer ?? 2),
+      thumbnail: createConcurrencyLimit(limits.thumbnail ?? 4, 'lifo'),
+      viewer: createConcurrencyLimit(limits.viewer ?? 2, 'fifo'),
     },
   };
   return <T>(operation: () => Promise<T>, options: PreviewRequestOptions = {}): Promise<T> =>

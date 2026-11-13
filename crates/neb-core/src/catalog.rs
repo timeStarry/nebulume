@@ -2115,14 +2115,21 @@ impl Core {
     ) -> Result<Arc<PreviewImage>> {
         let asset = self.asset(id)?;
         let path = self.checked_asset_path(&asset)?;
+        let fp = self.fingerprint(&asset, &path, uncropped)?;
         let suffix = if prefer_raw { ":raw" } else { "" };
-        let key = format!(
-            "{}:{}{suffix}",
-            self.fingerprint(&asset, &path, uncropped)?,
-            tier.as_str()
-        );
+        let key = format!("{fp}:{}{suffix}", tier.as_str());
         if let Some(image) = self.previews.get(&key) {
             return Ok(image);
+        }
+        for higher_tier in tier.higher_standard_tiers() {
+            let higher_key = format!("{fp}:{}{suffix}", higher_tier.as_str());
+            if let Some(higher) = self.previews.get(&higher_key) {
+                if let Ok(downsampled) = imaging::downsample_preview(&higher, tier) {
+                    let image = Arc::new(downsampled);
+                    self.previews.put(key, Arc::clone(&image));
+                    return Ok(image);
+                }
+            }
         }
         let crop = if uncropped { None } else { asset.crop };
         let image = Arc::new(imaging::preview_with_options(

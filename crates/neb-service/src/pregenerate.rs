@@ -24,6 +24,13 @@ impl Service {
         cancel: &AtomicBool,
     ) -> Result<PregenerateReport, CommandError> {
         let mut report = PregenerateReport::default();
+        if self
+            .cache
+            .preview_policy()
+            .is_ok_and(|policy| policy == "memory_only")
+        {
+            return Ok(report);
+        }
         for id in self.core.local_asset_ids(library_id)? {
             if cancel.load(Ordering::Acquire) {
                 report.cancelled = true;

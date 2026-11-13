@@ -490,3 +490,23 @@ test('remote inspector pin is explicit, uses metadata state, and surfaces backen
   await pin.click();
   await expect(page.getByRole('button', { name: '解除离线保留', exact: true })).toBeVisible();
 });
+
+test('selectable remote preview cache modes save stream_preview and memory_only cleanly', async ({
+  page,
+}) => {
+  const fixture = await nativeCache(page);
+  await settings(page);
+
+  const select = page.getByLabel('远端预览');
+  await expect(select).toHaveValue('automatic');
+
+  await select.selectOption('stream_preview');
+  await expect(page.locator('.cache-policy-hint')).toContainText('仅在磁盘缓存轻量预览图');
+  await page.getByRole('button', { name: '保存缓存策略' }).click();
+  expect(fixture.state.policy.preview_policy).toBe('stream_preview');
+
+  await select.selectOption('memory_only');
+  await expect(page.locator('.cache-policy-hint')).toContainText('预览与解码全程仅驻留内存');
+  await page.getByRole('button', { name: '保存缓存策略' }).click();
+  expect(fixture.state.policy.preview_policy).toBe('memory_only');
+});

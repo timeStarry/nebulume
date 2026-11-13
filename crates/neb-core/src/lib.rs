@@ -12,6 +12,7 @@ mod focus_points;
 mod icc;
 mod imaging;
 mod ingest_records;
+mod jpeg_range;
 #[cfg(target_os = "macos")]
 mod macos_imageio;
 mod model;
@@ -24,7 +25,10 @@ pub use cache::{CacheLease, CacheManager, Reservation};
 pub use catalog::Core;
 pub use focus_points::read_from as remote_focus;
 pub use focus_points::{FocusInfo, FocusRegion};
-pub use imaging::{histogram_from_jpeg, remote_preview, ExportColorSpace, ExportOptions};
+pub use imaging::{
+    downsample_preview, histogram_from_jpeg, remote_preview, remote_preview_bundle,
+    stream_preview_from_bytes, ExportColorSpace, ExportOptions,
+};
 pub use ingest_records::{Card, CardIdentity, ImportBatch, ImportPreset};
 pub use model::{Asset, Collection, Crop, Library, Location};
 pub use preview::{PreviewImage, PreviewMemory, PreviewTier};

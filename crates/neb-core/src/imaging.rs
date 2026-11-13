@@ -666,15 +666,15 @@ pub fn preview_with_options(
         !prefer_raw && tier.prefers_embedded(),
         prefer_raw,
     )?;
-    encode_preview(frame, tier.pixels())
+    encode_preview_tier(&frame, tier)
 }
 
-fn encode_preview(frame: RenderedFrame, max_size: u32) -> Result<PreviewImage> {
-    let image = downsample(frame.image, max_size);
+fn encode_preview_tier(frame: &RenderedFrame, tier: PreviewTier) -> Result<PreviewImage> {
+    let image = downsample(frame.image.clone(), tier.pixels());
     let mut bytes = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut bytes, 88);
-    if let Some(icc) = frame.icc {
-        encoder.set_icc_profile(icc)?;
+    let mut encoder = JpegEncoder::new_with_quality(&mut bytes, tier.jpeg_quality());
+    if let Some(icc) = &frame.icc {
+        encoder.set_icc_profile(icc.clone())?;
     }
     encoder.encode_image(&image.to_rgb8())?;
     Ok(PreviewImage {
@@ -684,6 +684,40 @@ fn encode_preview(frame: RenderedFrame, max_size: u32) -> Result<PreviewImage> {
         source: frame.source.to_owned(),
         coordinate_mapping: Some(serde_json::to_value(&frame.coordinate_mapping)?),
         extras: serde_json::Map::new(),
+    })
+}
+
+/// Downsamples an already-rendered higher-tier preview (e.g. `P2560` or `T1024`)
+/// in memory into a smaller grid tier (`T256` / `T512` / `T1024`), preserving
+/// its ICC profile, coordinate mapping, source, and inspection metadata without
+/// touching the original file or remote network.
+pub fn downsample_preview(higher: &PreviewImage, tier: PreviewTier) -> Result<PreviewImage> {
+    let mut reader = ImageReader::with_format(Cursor::new(&higher.jpeg), image::ImageFormat::Jpeg);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(65_536);
+    limits.max_image_height = Some(65_536);
+    limits.max_alloc = Some(MAX_PIXELS * 4);
+    reader.limits(limits);
+    let mut decoder = reader
+        .into_decoder()
+        .context("E_DECODE: Cached higher-tier preview is not a readable JPEG")?;
+    let icc = decoder.icc_profile().ok().flatten();
+    let decoded = DynamicImage::from_decoder(decoder)
+        .context("E_DECODE: Failed to decode higher-tier preview")?;
+    let scaled = downsample(decoded, tier.pixels());
+    let mut bytes = Cursor::new(Vec::new());
+    let mut encoder = JpegEncoder::new_with_quality(&mut bytes, tier.jpeg_quality());
+    if let Some(icc) = icc {
+        encoder.set_icc_profile(icc)?;
+    }
+    encoder.encode_image(&scaled.to_rgb8())?;
+    Ok(PreviewImage {
+        jpeg: bytes.into_inner(),
+        width: scaled.width(),
+        height: scaled.height(),
+        source: higher.source.clone(),
+        coordinate_mapping: higher.coordinate_mapping.clone(),
+        extras: higher.extras.clone(),
     })
 }
 
@@ -728,6 +762,67 @@ pub fn remote_preview<R: Read + Seek>(
     crop: Option<Crop>,
     tier: PreviewTier,
 ) -> Result<PreviewImage> {
+    Ok(remote_preview_bundle(input, length, "raw", crop, tier)?.0)
+}
+
+/// Bounded HTTP Range preview for RAW, TIFF, and Camera JPEGs (MPF / EXIF).
+/// When `tier.is_grid()` and the decoded embedded image has sufficient resolution
+/// for `P2560`, also returns `Some(p2560_preview)` encoded from the same decoded
+/// pixels so opening the viewer needs zero additional network requests.
+pub fn remote_preview_bundle<R: Read + Seek>(
+    input: &mut R,
+    length: u64,
+    ext: &str,
+    crop: Option<Crop>,
+    tier: PreviewTier,
+) -> Result<(PreviewImage, Option<PreviewImage>)> {
+    let ext_lower = ext.to_ascii_lowercase();
+    if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
+        let jpg = crate::jpeg_range::read_jpeg_range_preview(input, length, tier)?;
+        let mut metadata = jpg
+            .parsed_exif
+            .as_ref()
+            .map(exif_metadata)
+            .unwrap_or_default();
+        metadata.insert("Format".into(), ext_lower.to_ascii_uppercase());
+        if jpg.icc.is_some() {
+            metadata
+                .entry("Color Profile".into())
+                .or_insert_with(|| "Embedded ICC".into());
+        }
+        metadata.insert("Preview Source".into(), "remote_embedded_jpeg".into());
+        metadata.insert("Decoder".into(), "相机内嵌预览".into());
+        let p2560_min = crate::jpeg_range::min_long_side_for_tier(
+            PreviewTier::P2560,
+            jpg.full_width.max(jpg.full_height),
+        );
+        let can_emit_p2560 = tier.is_grid() && jpg.embedded_long_side >= p2560_min;
+        let frame = finish_frame(
+            jpg.image,
+            "remote_embedded_jpeg",
+            jpg.orientation,
+            crop,
+            jpg.icc,
+        )?;
+        let histogram = histogram_image(frame.image.clone(), frame.source)?;
+        let inspection =
+            json!({"width": jpg.full_width, "height": jpg.full_height, "metadata": metadata});
+        let mut primary = encode_preview_tier(&frame, tier)?;
+        primary
+            .extras
+            .insert("inspection".into(), inspection.clone());
+        primary.extras.insert("histogram".into(), histogram.clone());
+        let companion = if can_emit_p2560 {
+            let mut p2560 = encode_preview_tier(&frame, PreviewTier::P2560)?;
+            p2560.extras.insert("inspection".into(), inspection);
+            p2560.extras.insert("histogram".into(), histogram);
+            Some(p2560)
+        } else {
+            None
+        };
+        return Ok((primary, companion));
+    }
+
     input.seek(SeekFrom::Start(0))?;
     let embedded = crate::embedded_preview::read_embedded_from(&mut *input, length)?;
     // Decode first: an EXIF parser's optional failure must never swallow a broken
@@ -749,6 +844,7 @@ pub fn remote_preview<R: Read + Seek>(
     metadata.insert("Decoder".into(), "相机内嵌预览".into());
     let width = embedded.image.width();
     let height = embedded.image.height();
+    let emb_long = width.max(height);
     let frame = finish_frame(
         embedded.image,
         "remote_embedded_jpeg",
@@ -757,13 +853,244 @@ pub fn remote_preview<R: Read + Seek>(
         icc,
     )?;
     let histogram = histogram_image(frame.image.clone(), frame.source)?;
-    let mut preview = encode_preview(frame, tier.pixels())?;
-    preview.extras.insert(
-        "inspection".into(),
-        json!({"width":width,"height":height,"metadata":metadata}),
+    let inspection = json!({"width": width, "height": height, "metadata": metadata});
+    let mut preview = encode_preview_tier(&frame, tier)?;
+    preview
+        .extras
+        .insert("inspection".into(), inspection.clone());
+    preview.extras.insert("histogram".into(), histogram.clone());
+    let companion = if tier.is_grid() && emb_long >= 1280 {
+        let mut p2560 = encode_preview_tier(&frame, PreviewTier::P2560)?;
+        p2560.extras.insert("inspection".into(), inspection);
+        p2560.extras.insert("histogram".into(), histogram);
+        Some(p2560)
+    } else {
+        None
+    };
+    Ok((preview, companion))
+}
+
+fn read_parsed_exif_bytes(bytes: &[u8]) -> Option<exif::Exif> {
+    let len = bytes.len() as u64;
+    let mut cursor = Cursor::new(bytes);
+    if let Ok(Some(merged)) = crate::cr3::merged_exif_tiff(&mut cursor, len) {
+        return exif::Reader::new()
+            .continue_on_error(true)
+            .read_raw(merged)
+            .or_else(|e| e.distill_partial_result(|_| {}))
+            .ok();
+    }
+    cursor.set_position(0);
+    exif::Reader::new()
+        .continue_on_error(true)
+        .read_from_container(&mut cursor)
+        .or_else(|e| e.distill_partial_result(|_| {}))
+        .ok()
+}
+
+/// Pure in-memory decode & inspection for streamed remote files (`stream_preview`
+/// and `memory_only` modes). Never writes temporary or original files to disk.
+/// When `tier.is_grid()` and `!prefer_raw`, decodes at viewer resolution so both
+/// the requested grid thumbnail and `P2560` viewer tier are produced in one pass.
+pub fn stream_preview_from_bytes(
+    bytes: &[u8],
+    ext: &str,
+    crop: Option<Crop>,
+    tier: PreviewTier,
+    prefer_raw: bool,
+) -> Result<(PreviewImage, Option<PreviewImage>)> {
+    ensure!(
+        !bytes.is_empty() && u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_FILE_BYTES,
+        "E_LIMIT: Streamed image exceeds the 512 MiB decode limit"
     );
-    preview.extras.insert("histogram".into(), histogram);
-    Ok(preview)
+    let ext = ext.to_ascii_lowercase();
+    let parsed_exif = read_parsed_exif_bytes(bytes);
+    let adobe_rgb = parsed_exif
+        .as_ref()
+        .is_some_and(crate::icc::is_adobe_rgb_exif);
+    let mut metadata = parsed_exif.as_ref().map(exif_metadata).unwrap_or_default();
+    metadata.insert("Format".into(), ext.to_ascii_uppercase());
+    if adobe_rgb {
+        metadata
+            .entry("Color Profile".into())
+            .or_insert_with(|| "Adobe RGB (1998)".into());
+    }
+
+    let emit_p2560 = tier.is_grid() && !prefer_raw;
+    let target_max = if emit_p2560 {
+        PreviewTier::P2560.pixels()
+    } else {
+        tier.pixels()
+    };
+
+    let (full_width, full_height, frame) = if kind(&ext) == Some("raw") {
+        let raw_limit = scaled_decode_limit(Some(target_max), crop);
+        let render_mem_sensor = |limit: Option<u32>| -> Result<(DynamicImage, u8, u32, u32)> {
+            if ext == "cr3" {
+                bail!("E_UNSUPPORTED_CODEC: Canon CR3 decoding is not available in this build");
+            }
+            let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut reader = Cursor::new(bytes);
+                rawloader::decode(&mut reader)
+            }))
+            .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected streamed file"))?
+            .context("E_UNSUPPORTED_CODEC: Streamed RAW decoding failed")?;
+            let (mut fw, mut fh) = raw_dimensions(&raw)?;
+            let orient_enum = Orientation::from_exif(raw.orientation.to_u16() as u8)
+                .unwrap_or(Orientation::NoTransforms);
+            if matches!(
+                orient_enum,
+                Orientation::Rotate90
+                    | Orientation::Rotate270
+                    | Orientation::Rotate90FlipH
+                    | Orientation::Rotate270FlipH
+            ) {
+                std::mem::swap(&mut fw, &mut fh);
+            }
+            Ok((develop_raw(&raw, limit)?, orient_enum.to_exif(), fw, fh))
+        };
+
+        if prefer_raw {
+            let (img, orient, fw, fh) = render_mem_sensor(raw_limit)
+                .context("此 RAW 格式暂不支持传感器原始显影，请使用相机内嵌预览模式查看。")?;
+            metadata.insert(
+                "Decoder".into(),
+                "rawloader 0.37.2 · basic sensor rendering".into(),
+            );
+            (
+                fw,
+                fh,
+                finish_frame(img, "raw_demosaic", orient, crop, None)?,
+            )
+        } else if let Ok(emb) =
+            crate::embedded_preview::read_embedded_from(Cursor::new(bytes), bytes.len() as u64)
+        {
+            let icc = emb
+                .icc
+                .or_else(|| adobe_rgb.then(crate::icc::adobe_rgb_1998_icc));
+            let fw = emb.image.width();
+            let fh = emb.image.height();
+            metadata.insert("Preview Source".into(), "embedded_jpeg".into());
+            metadata.insert("Decoder".into(), "相机内嵌预览".into());
+            (
+                fw,
+                fh,
+                finish_frame(emb.image, "embedded_jpeg", emb.orientation, crop, icc)?,
+            )
+        } else {
+            let (img, orient, fw, fh) = render_mem_sensor(raw_limit)?;
+            metadata.insert(
+                "Decoder".into(),
+                "rawloader 0.37.2 · basic sensor rendering".into(),
+            );
+            (
+                fw,
+                fh,
+                finish_frame(img, "raw_demosaic", orient, crop, None)?,
+            )
+        }
+    } else {
+        #[cfg(target_os = "macos")]
+        if matches!(ext.as_str(), "heic" | "heif" | "avif") {
+            let (raw_w, raw_h, orient_raw, profile) = crate::macos_imageio::inspect_bytes(bytes)?;
+            metadata.insert("Decoder".into(), "macOS ImageIO".into());
+            if let Some(profile) = profile {
+                metadata.insert("Color Profile".into(), profile);
+            }
+            let decode_limit = scaled_decode_limit(Some(target_max), crop);
+            let (image, orientation, icc) =
+                crate::macos_imageio::decode_bytes(bytes, decode_limit)?;
+            let icc = icc.or_else(|| adobe_rgb.then(crate::icc::adobe_rgb_1998_icc));
+            let (mut fw, mut fh) = (raw_w, raw_h);
+            if matches!(
+                Orientation::from_exif(orient_raw).unwrap_or(Orientation::NoTransforms),
+                Orientation::Rotate90
+                    | Orientation::Rotate270
+                    | Orientation::Rotate90FlipH
+                    | Orientation::Rotate270FlipH
+            ) {
+                std::mem::swap(&mut fw, &mut fh);
+            }
+            let frame = finish_frame(image, "raster", orientation, crop, icc)?;
+            let histogram = histogram_image(frame.image.clone(), frame.source)?;
+            let inspection = json!({"width": fw, "height": fh, "metadata": metadata});
+            let mut primary = encode_preview_tier(&frame, tier)?;
+            primary
+                .extras
+                .insert("inspection".into(), inspection.clone());
+            primary.extras.insert("histogram".into(), histogram.clone());
+            let companion = if emit_p2560 {
+                let mut p2560 = encode_preview_tier(&frame, PreviewTier::P2560)?;
+                p2560.extras.insert("inspection".into(), inspection);
+                p2560.extras.insert("histogram".into(), histogram);
+                Some(p2560)
+            } else {
+                None
+            };
+            return Ok((primary, companion));
+        }
+
+        let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(65_536);
+        limits.max_image_height = Some(65_536);
+        limits.max_alloc = Some(MAX_PIXELS * 8);
+        reader.limits(limits);
+        let mut decoder = reader
+            .into_decoder()
+            .context("E_UNSUPPORTED_CODEC: Streamed image codec unavailable or invalid file")?;
+        let (mut fw, mut fh) = decoder.dimensions();
+        check_dimensions(fw, fh)?;
+        let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+        let icc = decoder
+            .icc_profile()
+            .ok()
+            .flatten()
+            .or_else(|| adobe_rgb.then(crate::icc::adobe_rgb_1998_icc));
+        if icc.is_some() {
+            metadata
+                .entry("Color Profile".into())
+                .or_insert_with(|| "Embedded ICC".into());
+        }
+        metadata.insert(
+            "Pixel Format".into(),
+            format!("{:?}", decoder.original_color_type()),
+        );
+        let mut image = DynamicImage::from_decoder(decoder)
+            .context("E_DECODE: Streamed image decoding failed")?;
+        image.apply_orientation(orientation);
+        if matches!(
+            orientation,
+            Orientation::Rotate90
+                | Orientation::Rotate270
+                | Orientation::Rotate90FlipH
+                | Orientation::Rotate270FlipH
+        ) {
+            std::mem::swap(&mut fw, &mut fh);
+        }
+        (
+            fw,
+            fh,
+            finish_frame(image, "raster", orientation.to_exif(), crop, icc)?,
+        )
+    };
+
+    let histogram = histogram_image(frame.image.clone(), frame.source)?;
+    let inspection = json!({"width": full_width, "height": full_height, "metadata": metadata});
+    let mut primary = encode_preview_tier(&frame, tier)?;
+    primary
+        .extras
+        .insert("inspection".into(), inspection.clone());
+    primary.extras.insert("histogram".into(), histogram.clone());
+    let companion = if emit_p2560 {
+        let mut p2560 = encode_preview_tier(&frame, PreviewTier::P2560)?;
+        p2560.extras.insert("inspection".into(), inspection);
+        p2560.extras.insert("histogram".into(), histogram);
+        Some(p2560)
+    } else {
+        None
+    };
+    Ok((primary, companion))
 }
 
 fn downsample(image: DynamicImage, max_side: u32) -> DynamicImage {

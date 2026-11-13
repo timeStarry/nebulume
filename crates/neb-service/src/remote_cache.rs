@@ -30,13 +30,113 @@ fn snapshot_capture_fields(snapshot: &Value) -> (String, &'static str) {
     }
 }
 
-struct DownloadSlot<'a>(&'a (Mutex<usize>, Condvar));
+const STREAM_PREVIEW_MAX_BYTES: u64 = 128 * 1024 * 1024;
+const JPEG_RANGE_MIN_BYTES: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DownloadPriority {
+    /// Interactive viewer (`P2560` / `Full`): FIFO order + 1 dedicated burst slot
+    /// so opening a photo never stalls behind 4 background transfers.
+    Viewer,
+    /// Explicit user asset actions (`fetch_original`, `refresh`, `offline.set`, `export`, `focus`): FIFO order.
+    Standard,
+    /// Grid thumbnails (`T256` / `T512` / `T1024`): LIFO order so the most recently
+    /// scrolled-into-view thumbnails dispatch first.
+    Thumbnail,
+}
+
+#[derive(Default)]
+pub(crate) struct DownloadScheduler {
+    state: Mutex<DownloadState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct DownloadState {
+    active_total: usize,
+    active_viewer: usize,
+    next_ticket: u64,
+    viewer_queue: VecDeque<u64>,
+    standard_queue: VecDeque<u64>,
+    thumbnail_queue: VecDeque<u64>,
+}
+
+impl DownloadState {
+    fn can_acquire(&self, priority: DownloadPriority, ticket: u64) -> bool {
+        match priority {
+            DownloadPriority::Viewer => {
+                (self.active_total < 4 || (self.active_total < 5 && self.active_viewer == 0))
+                    && self.viewer_queue.front() == Some(&ticket)
+            }
+            DownloadPriority::Standard => {
+                self.active_total < 4
+                    && self.viewer_queue.is_empty()
+                    && self.standard_queue.front() == Some(&ticket)
+            }
+            DownloadPriority::Thumbnail => {
+                self.active_total < 4
+                    && self.viewer_queue.is_empty()
+                    && self.standard_queue.is_empty()
+                    && self.thumbnail_queue.back() == Some(&ticket)
+            }
+        }
+    }
+
+    fn remove_ticket(&mut self, priority: DownloadPriority, ticket: u64) {
+        let queue = match priority {
+            DownloadPriority::Viewer => &mut self.viewer_queue,
+            DownloadPriority::Standard => &mut self.standard_queue,
+            DownloadPriority::Thumbnail => &mut self.thumbnail_queue,
+        };
+        queue.retain(|queued| *queued != ticket);
+    }
+}
+
+pub(crate) struct DownloadSlot<'a> {
+    scheduler: &'a DownloadScheduler,
+    priority: DownloadPriority,
+}
+
 impl Drop for DownloadSlot<'_> {
     fn drop(&mut self) {
-        if let Ok(mut count) = self.0 .0.lock() {
-            *count = count.saturating_sub(1);
-            self.0 .1.notify_one();
+        if let Ok(mut state) = self.scheduler.state.lock() {
+            state.active_total = state.active_total.saturating_sub(1);
+            if self.priority == DownloadPriority::Viewer {
+                state.active_viewer = state.active_viewer.saturating_sub(1);
+            }
+            self.scheduler.changed.notify_all();
         }
+    }
+}
+
+impl DownloadScheduler {
+    pub(crate) fn acquire(&self, priority: DownloadPriority) -> Result<DownloadSlot<'_>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("Download state unavailable"))?;
+        let ticket = state.next_ticket;
+        state.next_ticket = state.next_ticket.wrapping_add(1);
+        match priority {
+            DownloadPriority::Viewer => state.viewer_queue.push_back(ticket),
+            DownloadPriority::Standard => state.standard_queue.push_back(ticket),
+            DownloadPriority::Thumbnail => state.thumbnail_queue.push_back(ticket),
+        }
+        while !state.can_acquire(priority, ticket) {
+            state = match self.changed.wait(state) {
+                Ok(guard) => guard,
+                Err(_) => return Err(anyhow!("Download state unavailable")),
+            };
+        }
+        state.remove_ticket(priority, ticket);
+        state.active_total += 1;
+        if priority == DownloadPriority::Viewer {
+            state.active_viewer += 1;
+        }
+        Ok(DownloadSlot {
+            scheduler: self,
+            priority,
+        })
     }
 }
 
@@ -51,20 +151,11 @@ impl Drop for PendingWrite {
 
 impl Service {
     fn download_slot(&self) -> Result<DownloadSlot<'_>> {
-        let mut count = self
-            .downloads
-            .0
-            .lock()
-            .map_err(|_| anyhow!("Download state unavailable"))?;
-        while *count >= 4 {
-            count = self
-                .downloads
-                .1
-                .wait(count)
-                .map_err(|_| anyhow!("Download state unavailable"))?;
-        }
-        *count += 1;
-        Ok(DownloadSlot(&self.downloads))
+        self.downloads.acquire(DownloadPriority::Standard)
+    }
+
+    fn download_slot_with_priority(&self, priority: DownloadPriority) -> Result<DownloadSlot<'_>> {
+        self.downloads.acquire(priority)
     }
 
     pub(super) fn adopt_legacy_cache(&self) -> Result<()> {
@@ -386,6 +477,32 @@ impl Service {
         self.render_preview_with_mode(asset, tier, uncropped, false)
     }
 
+    fn try_cascade_preview(
+        &self,
+        asset: &Asset,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+        local: bool,
+        memory_only: bool,
+    ) -> Result<Option<Arc<PreviewImage>>> {
+        for higher_tier in tier.higher_standard_tiers() {
+            let higher_key =
+                self.preview_key_with_mode(asset, *higher_tier, uncropped, prefer_raw)?;
+            let higher = if memory_only {
+                self.previews.get(&higher_key)
+            } else {
+                self.stored_preview(&higher_key, local)?
+            };
+            if let Some(higher) = higher {
+                if let Ok(downsampled) = neb_core::downsample_preview(&higher, tier) {
+                    return Ok(Some(Arc::new(downsampled)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub(super) fn render_preview_with_mode(
         &self,
         asset: &Asset,
@@ -395,55 +512,136 @@ impl Service {
     ) -> Result<Arc<PreviewImage>> {
         let key = self.preview_key_with_mode(asset, tier, uncropped, prefer_raw)?;
         if asset.source_key.is_none() {
-            if let Some(image) = self.stored_preview(&key, true)? {
+            let local_policy = self
+                .cache
+                .try_preview_policy()
+                .unwrap_or_else(|| "automatic".into());
+            let memory_only = local_policy == "memory_only";
+            if let Some(image) = if memory_only {
+                self.previews.get(&key)
+            } else {
+                self.stored_preview(&key, true)?
+            } {
                 return Ok(image);
+            }
+            if let Some(cascaded) =
+                self.try_cascade_preview(asset, tier, uncropped, prefer_raw, true, memory_only)?
+            {
+                self.previews.put(key.clone(), Arc::clone(&cascaded));
+                if !memory_only {
+                    self.persist_local_preview(key, &cascaded);
+                }
+                return Ok(cascaded);
             }
             let image = self
                 .core
                 .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?;
             self.previews.put(key.clone(), Arc::clone(&image));
-            self.persist_local_preview(key, &image);
+            if !memory_only {
+                self.persist_local_preview(key, &image);
+            }
             return Ok(image);
         }
-        if let Some(image) = self.stored_preview(&key, false)? {
+
+        let policy = self.cache.preview_policy()?;
+        let memory_only = policy == "memory_only";
+        if let Some(image) = if memory_only {
+            self.previews.get(&key)
+        } else {
+            self.stored_preview(&key, false)?
+        } {
             return Ok(image);
         }
-        let _slot = self.download_slot()?;
+        if let Some(cascaded) =
+            self.try_cascade_preview(asset, tier, uncropped, prefer_raw, false, memory_only)?
+        {
+            if !memory_only {
+                if let Err(error) = self.cache.preview_put(&key, &cascaded.to_envelope()) {
+                    if !Self::optional_preview_cache_error(&error) {
+                        return Err(error);
+                    }
+                }
+            }
+            self.previews.put(key, Arc::clone(&cascaded));
+            return Ok(cascaded);
+        }
+
+        let priority = if tier.is_grid() {
+            DownloadPriority::Thumbnail
+        } else {
+            DownloadPriority::Viewer
+        };
+        let _slot = self.download_slot_with_priority(priority)?;
+
+        if let Some(image) = if memory_only {
+            self.previews.get(&key)
+        } else {
+            self.stored_preview(&key, false)?
+        } {
+            return Ok(image);
+        }
+        if let Some(cascaded) =
+            self.try_cascade_preview(asset, tier, uncropped, prefer_raw, false, memory_only)?
+        {
+            if !memory_only {
+                if let Err(error) = self.cache.preview_put(&key, &cascaded.to_envelope()) {
+                    if !Self::optional_preview_cache_error(&error) {
+                        return Err(error);
+                    }
+                }
+            }
+            self.previews.put(key, Arc::clone(&cascaded));
+            return Ok(cascaded);
+        }
+
         let lease = self.current_original(asset)?;
         if lease.is_some() && !self.cache.is_pinned(&asset.id)? {
             self.core.refresh_asset(&asset.id)?;
             self.core.bind_original_revision(&asset.id)?;
         }
-        let image = if lease.is_none() && prefer_raw {
-            self.require_automatic_download()?;
-            let _lease = self.original(asset, false)?;
-            self.core
-                .preview_image_with_mode(&asset.id, tier, uncropped, true)?
-        } else if lease.is_none() {
-            match self.range_preview(asset, if uncropped { None } else { asset.crop }, tier) {
-                Ok(image) => Arc::new(image),
-                Err(error) if Self::may_fallback(&error) => {
-                    self.require_automatic_download()?;
-                    let _lease = self.original(asset, false)?;
-                    self.core
-                        .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?
-                }
-                Err(error)
-                    if matches!(
-                        Self::range_read_error(&error),
-                        Some(RangeReadError::BudgetExceeded)
-                    ) =>
-                {
-                    // A bounded attempt must not silently become a much larger
-                    // transfer. Let the existing explicit-download action recover.
-                    bail!("E_DOWNLOAD_REQUIRED: 此图片的内嵌预览超出分段读取上限，可下载原图后再尝试预览。")
-                }
-                Err(error) => return Err(error),
-            }
+
+        let (image, companion_p2560) = if lease.is_some() {
+            (
+                self.core
+                    .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?,
+                None,
+            )
+        } else if prefer_raw {
+            self.fallback_remote_preview(asset, tier, uncropped, true, &policy)?
         } else {
-            self.core
-                .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?
+            let should_try_range = asset.kind == "raw"
+                || matches!(asset.extension.as_str(), "tif" | "tiff")
+                || (matches!(asset.extension.as_str(), "jpg" | "jpeg")
+                    && (asset.size == 0
+                        || asset.size >= JPEG_RANGE_MIN_BYTES
+                        || policy == "manual"));
+            if should_try_range {
+                match self.range_preview_bundle(
+                    asset,
+                    if uncropped { None } else { asset.crop },
+                    tier,
+                ) {
+                    Ok((primary, companion)) => (Arc::new(primary), companion),
+                    Err(error) if Self::may_fallback(&error) => {
+                        self.fallback_remote_preview(asset, tier, uncropped, prefer_raw, &policy)?
+                    }
+                    Err(error)
+                        if matches!(
+                            Self::range_read_error(&error),
+                            Some(RangeReadError::BudgetExceeded)
+                        ) =>
+                    {
+                        // A bounded attempt must not silently become a much larger
+                        // transfer. Let the existing explicit-download action recover.
+                        bail!("E_DOWNLOAD_REQUIRED: 此图片的内嵌预览超出分段读取上限，可下载原图后再尝试预览。")
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                self.fallback_remote_preview(asset, tier, uncropped, prefer_raw, &policy)?
+            }
         };
+
         if let Some(inspection) = image.extras.get("inspection") {
             self.core.record_remote_inspection(&asset.id, inspection)?;
         }
@@ -451,13 +649,105 @@ impl Service {
         // overlay live metadata, so ratings/crops/pins never come from the cache.
         let fresh = self.core.asset(&asset.id)?;
         let key = self.preview_key_with_mode(&fresh, tier, uncropped, prefer_raw)?;
-        if let Err(error) = self.cache.preview_put(&key, &image.to_envelope()) {
-            if !Self::optional_preview_cache_error(&error) {
-                return Err(error);
+        if !memory_only {
+            if let Err(error) = self.cache.preview_put(&key, &image.to_envelope()) {
+                if !Self::optional_preview_cache_error(&error) {
+                    return Err(error);
+                }
             }
         }
         self.previews.put(key, Arc::clone(&image));
+
+        if let Some(companion) = companion_p2560 {
+            let companion_key =
+                self.preview_key_with_mode(&fresh, PreviewTier::P2560, uncropped, prefer_raw)?;
+            let companion = Arc::new(companion);
+            if !memory_only {
+                let _ = self
+                    .cache
+                    .preview_put(&companion_key, &companion.to_envelope());
+            }
+            self.previews.put(companion_key, companion);
+        }
         Ok(image)
+    }
+
+    fn fallback_remote_preview(
+        &self,
+        asset: &Asset,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+        policy: &str,
+    ) -> Result<(Arc<PreviewImage>, Option<PreviewImage>)> {
+        match policy {
+            "manual" => {
+                self.require_automatic_download()?;
+                unreachable!()
+            }
+            "stream_preview" | "memory_only" => {
+                let (primary, companion) =
+                    self.stream_remote_preview(asset, uncropped, tier, prefer_raw)?;
+                Ok((Arc::new(primary), companion))
+            }
+            _ => {
+                let _lease = self.original(asset, false)?;
+                let primary = self
+                    .core
+                    .preview_image_with_mode(&asset.id, tier, uncropped, prefer_raw)?;
+                Ok((primary, None))
+            }
+        }
+    }
+
+    fn stream_remote_preview(
+        &self,
+        asset: &Asset,
+        uncropped: bool,
+        tier: PreviewTier,
+        prefer_raw: bool,
+    ) -> Result<(PreviewImage, Option<PreviewImage>)> {
+        ensure!(
+            asset.size <= STREAM_PREVIEW_MAX_BYTES,
+            "E_DOWNLOAD_REQUIRED: 此远程原图超过流式内存解码上限（128 MiB），可手动下载原图后预览。"
+        );
+        let library = self.core.library(&asset.library_id)?;
+        let source = library
+            .storage_id
+            .as_deref()
+            .context("E_NOT_FOUND: Remote library has no storage source")?;
+        let key = asset
+            .source_key
+            .as_deref()
+            .context("E_INVALID: Not a remote image")?;
+        let download_bound = if asset.size == 0 {
+            STREAM_PREVIEW_MAX_BYTES
+        } else {
+            asset.size
+        };
+        let reader = self
+            .storage
+            .lock()
+            .map_err(|_| anyhow!("Storage state unavailable"))?
+            .open_reader(source, key)?;
+        let mut reader = BoundedImageReader {
+            inner: reader,
+            remaining: usize::try_from(download_bound)?,
+        };
+        let capacity = usize::try_from(asset.size)
+            .unwrap_or(0)
+            .min(16 * 1024 * 1024);
+        let mut bytes = Vec::with_capacity(capacity);
+        reader.read_to_end(&mut bytes)?;
+        ensure!(
+            asset.size == 0 || u64::try_from(bytes.len())? == asset.size,
+            "E_CONFLICT: Remote original size changed; rescan the library before retrying"
+        );
+        let crop = if uncropped { None } else { asset.crop };
+        let result =
+            neb_core::stream_preview_from_bytes(&bytes, &asset.extension, crop, tier, prefer_raw)?;
+        drop(bytes);
+        Ok(result)
     }
 
     /// IPC shape: preview metadata, its tier and live asset metadata; no pixels.
@@ -470,14 +760,15 @@ impl Service {
         Ok(value)
     }
 
-    fn range_preview(
+    fn range_preview_bundle(
         &self,
         asset: &Asset,
         crop: Option<neb_core::Crop>,
         tier: PreviewTier,
-    ) -> Result<PreviewImage> {
+    ) -> Result<(PreviewImage, Option<PreviewImage>)> {
         ensure!(
-            asset.kind == "raw" || matches!(asset.extension.as_str(), "tif" | "tiff"),
+            asset.kind == "raw"
+                || matches!(asset.extension.as_str(), "tif" | "tiff" | "jpg" | "jpeg"),
             "E_UNSUPPORTED_CODEC: This format requires the original file for rendering"
         );
         let library = self.core.library(&asset.library_id)?;
@@ -501,7 +792,13 @@ impl Service {
             asset.size == 0 || identity.length == asset.size,
             "E_CONFLICT: Remote image changed; rescan the library"
         );
-        let result = neb_core::remote_preview(&mut reader, identity.length, crop, tier);
+        let result = neb_core::remote_preview_bundle(
+            &mut reader,
+            identity.length,
+            &asset.extension,
+            crop,
+            tier,
+        );
         // Optional EXIF parsing must not hide a failed/changed transport.
         reader.metadata()?;
         result
@@ -683,16 +980,21 @@ impl Service {
             }
             "asset.histogram" if asset.source_key.is_some() => {
                 let (_, uncropped) = preview_request(&params)?;
-                let image = self.render_preview(&asset, PreviewTier::P2560, uncropped)?;
-                if let Some(histogram) = image.extras.get("histogram") {
-                    let mut histogram = histogram.clone();
-                    histogram["asset"] = self.asset_value(&self.core.asset(id)?)?;
-                    return Ok(histogram);
+                let key = self.preview_key(&asset, PreviewTier::P2560, uncropped)?;
+                if let Some(mut hit) = self.histograms.get(&key) {
+                    hit["asset"] = self.asset_value(&self.core.asset(id)?)?;
+                    return Ok(hit);
                 }
-                let _slot = self.download_slot()?;
-                let _lease = self.original(&asset, false)?;
-                let mut histogram = self.core.dispatch(command, params.clone())?;
-                histogram["asset"] = self.asset_value(&self.core.asset(id)?)?;
+                let image = self.render_preview(&asset, PreviewTier::P2560, uncropped)?;
+                let mut histogram = if let Some(histogram) = image.extras.get("histogram") {
+                    histogram.clone()
+                } else {
+                    neb_core::histogram_from_jpeg(&image.jpeg, &image.source)?
+                };
+                let fresh = self.core.asset(id)?;
+                let fresh_key = self.preview_key(&fresh, PreviewTier::P2560, uncropped)?;
+                self.histograms.put(fresh_key, histogram.clone());
+                histogram["asset"] = self.asset_value(&fresh)?;
                 Ok(histogram)
             }
             "asset.focus" if asset.source_key.is_some() => {
@@ -900,5 +1202,76 @@ mod pending_write_tests {
             .unwrap();
         assert!(!report.timed_out);
         assert_eq!(report.pending_writes, 0);
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn viewer_has_interactive_burst_slot_and_thumbnails_wake_lifo() {
+        let scheduler = Arc::new(DownloadScheduler::default());
+        let g1 = scheduler.acquire(DownloadPriority::Thumbnail).unwrap();
+        let g2 = scheduler.acquire(DownloadPriority::Thumbnail).unwrap();
+        let g3 = scheduler.acquire(DownloadPriority::Thumbnail).unwrap();
+        let g4 = scheduler.acquire(DownloadPriority::Thumbnail).unwrap();
+        // Even with 4 thumbnails active, 1 interactive Viewer slot succeeds immediately!
+        let gv1 = scheduler.acquire(DownloadPriority::Viewer).unwrap();
+
+        let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let spawn_waiter = |prio: DownloadPriority, label: &'static str, expected_q: usize| {
+            let sched = Arc::clone(&scheduler);
+            let ord = Arc::clone(&order);
+            let handle = std::thread::spawn(move || {
+                let _slot = sched.acquire(prio).unwrap();
+                ord.lock().unwrap().push(label);
+                std::thread::sleep(Duration::from_millis(15));
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                let st = scheduler.state.lock().unwrap();
+                let q_len = match prio {
+                    DownloadPriority::Viewer => st.viewer_queue.len(),
+                    DownloadPriority::Standard => st.standard_queue.len(),
+                    DownloadPriority::Thumbnail => st.thumbnail_queue.len(),
+                };
+                drop(st);
+                if q_len >= expected_q {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "waiter {label} did not queue"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            handle
+        };
+
+        let t1 = spawn_waiter(DownloadPriority::Thumbnail, "T1", 1);
+        let t2 = spawn_waiter(DownloadPriority::Thumbnail, "T2", 2);
+        let t3 = spawn_waiter(DownloadPriority::Thumbnail, "T3", 3);
+        let s1 = spawn_waiter(DownloadPriority::Standard, "S1", 1);
+        let v2 = spawn_waiter(DownloadPriority::Viewer, "V2", 1);
+
+        // Release 1 slot at a time so wake order is strictly serialized:
+        // First drop gv1 -> active_total becomes 4, active_viewer becomes 0 -> V2 wakes immediately!
+        drop(gv1);
+        v2.join().unwrap();
+
+        // Now active_total is 4 (g1..g4). Drop g4 -> active_total becomes 3 -> S1 wakes before thumbnails!
+        drop(g4);
+        s1.join().unwrap();
+
+        // Now drop g3 -> T3 (most recent LIFO thumbnail) wakes before T2 and T1!
+        drop(g3);
+        t3.join().unwrap();
+        t2.join().unwrap();
+        t1.join().unwrap();
+        drop((g1, g2));
+
+        assert_eq!(*order.lock().unwrap(), vec!["V2", "S1", "T3", "T2", "T1"]);
     }
 }

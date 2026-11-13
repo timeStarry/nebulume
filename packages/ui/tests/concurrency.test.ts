@@ -172,3 +172,58 @@ it('cancels queued work immediately even when in-flight aborts detach', async ()
   await active;
   expect(started).toBe(false);
 });
+
+it('dispatches queued thumbnail previews in LIFO order while viewer lane stays FIFO', async () => {
+  const schedule = createPreviewScheduler({ thumbnail: 1, viewer: 1 });
+  const thumbHold = gate();
+  const viewerHold = gate();
+  const thumbOrder: string[] = [];
+  const viewerOrder: string[] = [];
+
+  const firstThumb = schedule(() => thumbHold.promise, {
+    source: 'remote',
+    priority: 'thumbnail',
+  });
+  const t1 = schedule(
+    async () => {
+      thumbOrder.push('T1');
+    },
+    { source: 'remote', priority: 'thumbnail' },
+  );
+  const t2 = schedule(
+    async () => {
+      thumbOrder.push('T2');
+    },
+    { source: 'remote', priority: 'thumbnail' },
+  );
+  const t3 = schedule(
+    async () => {
+      thumbOrder.push('T3');
+    },
+    { source: 'remote', priority: 'thumbnail' },
+  );
+
+  const firstViewer = schedule(() => viewerHold.promise, {
+    source: 'remote',
+    priority: 'viewer',
+  });
+  const v1 = schedule(
+    async () => {
+      viewerOrder.push('V1');
+    },
+    { source: 'remote', priority: 'viewer' },
+  );
+  const v2 = schedule(
+    async () => {
+      viewerOrder.push('V2');
+    },
+    { source: 'remote', priority: 'viewer' },
+  );
+
+  thumbHold.resolve();
+  viewerHold.resolve();
+  await Promise.all([firstThumb, t1, t2, t3, firstViewer, v1, v2]);
+
+  expect(thumbOrder).toEqual(['T3', 'T2', 'T1']);
+  expect(viewerOrder).toEqual(['V1', 'V2']);
+});
