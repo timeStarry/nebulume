@@ -18,7 +18,7 @@ test('Appearance persists and uses a dark mark on a light surface', async ({ pag
     .poll(async () => {
       const source = await page.locator('.brand-mark:visible').getAttribute('src');
       return source?.startsWith('data:')
-        ? decodeURIComponent(source).includes("fill='#11151C'")
+        ? decodeURIComponent(source).includes("fill='#1F1F1F'")
         : source?.includes('brand-mark-ink');
     })
     .toBe(true);

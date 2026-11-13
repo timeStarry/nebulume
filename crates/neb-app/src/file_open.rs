@@ -167,7 +167,7 @@ pub fn open_paths(app: AppHandle, paths: Vec<PathBuf>) {
             }
             app.dialog()
                 .message(message)
-                .title("Nebulume · Cannot open image")
+                .title("Lumen · Cannot open image")
                 .kind(MessageDialogKind::Error)
                 .show(|_| {});
         }
@@ -202,23 +202,34 @@ mod tests {
 
     #[test]
     fn bundle_associations_do_not_advertise_unsupported_codecs() {
-        let config: serde_json::Value =
-            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        let extensions: Vec<_> = config["bundle"]["fileAssociations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|association| {
-                association["ext"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter_map(|value| value.as_str())
-            })
-            .collect();
-        assert!(extensions.contains(&"jpg") && extensions.contains(&"dng"));
-        for unsupported in ["cr3", "heic", "heif", "avif"] {
-            assert!(!extensions.contains(&unsupported));
+        let collect_extensions = |raw: &str| -> Vec<String> {
+            let config: serde_json::Value = serde_json::from_str(raw).unwrap();
+            config["bundle"]["fileAssociations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|association| {
+                    association["ext"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_owned))
+                })
+                .collect()
+        };
+        let base = collect_extensions(include_str!("../tauri.conf.json"));
+        assert!(
+            base.iter().any(|ext| ext == "jpg")
+                && base.iter().any(|ext| ext == "dng")
+                && base.iter().any(|ext| ext == "cr3")
+        );
+        for macos_only in ["heic", "heif", "avif"] {
+            assert!(!base.iter().any(|ext| ext == macos_only));
+        }
+
+        let macos = collect_extensions(include_str!("../tauri.macos.conf.json"));
+        for modern in ["cr3", "heic", "heif", "avif"] {
+            assert!(macos.iter().any(|ext| ext == modern));
         }
     }
 

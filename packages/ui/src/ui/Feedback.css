@@ -1,3 +1,25 @@
+.nl-field-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: calc(-1 * var(--nl-s-2)) 0 var(--nl-s-4);
+  font-size: var(--nl-t-12);
+  line-height: 18px;
+  color: var(--nl-text-2);
+}
+.nl-field-hint > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.nl-field-hint--info {
+  color: var(--nl-info);
+}
+.nl-field-hint--warn {
+  color: var(--nl-warn);
+}
+.nl-field-hint--error {
+  color: var(--nl-reject);
+}
 .nl-banner {
   display: flex;
   align-items: center;
@@ -7,6 +29,8 @@
   border-radius: var(--nl-r-md);
   background: var(--nl-side);
   color: var(--nl-text);
+  font-size: var(--nl-t-13);
+  line-height: var(--nl-leading-prose);
 }
 .nl-banner > svg {
   flex: none;

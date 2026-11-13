@@ -1,57 +1,126 @@
-# Nebulume
+<p align="center">
+  <img src="packages/ui/public/favicon.svg" width="84" height="84" alt="Lumen" />
+</p>
 
-本地优先的图像管理工具。选择本地目录建立图片库，或连接 WebDAV、S3 浏览远端照片；双击图片进入独立查看窗口。
+<h1 align="center">Lumen</h1>
 
-[下载 Windows x64 版本](https://github.com/timeStarry/nebulume/releases) · [更新记录](CHANGELOG.md)
+<p align="center">
+  安静、顺手的照片库与选片工具
+</p>
 
-当前提供 Windows x64 安装器与独立程序。macOS、Linux 尚未完成本版本发布验收，暂不提供对应安装包。
+<p align="center">
+  <a href="https://github.com/timeStarry/lumen/releases">版本下载</a> ·
+  <a href="CHANGELOG.md">更新记录</a> ·
+  <a href="docs/ARCHITECTURE.md">架构设计</a> ·
+  <a href="docs/INTERACTION.md">交互说明</a> ·
+  <a href="docs/IDENTITY.md">品牌规范</a>
+</p>
 
-## 功能
+---
 
-- 图库搜索、星级、格式筛选、RAW/JPEG 合并及整库排序。默认按 EXIF 拍摄时间排序，支持后台补索引；未知时间保持未知。
-- WebDAV、S3 目录索引与按需预览，支持部分 TIFF/RAW 的分段内嵌 JPEG 读取。
-- 可设置缓存位置、总容量、原图保留期限及自动获取策略，支持缓存清理、迁移和固定离线。
-- 独立查看窗口提供缩放、全屏、EXIF、直方图、非破坏裁剪和 JPEG 导出；部分 Nikon 照片可显示记录的对焦区域。
-- 从存储卡或挂载目录安全导入本地图库，支持计划审核、校验、内容去重和结果记录。
-- 深色、浅色及跟随系统主题。
+**Lumen** 是一款面向桌面摄影工作流的照片库管理与选片工具，基于 Rust（Tauri 2 + SQLite）与 SolidJS 构建。你可以直接选择本地目录或外接移动硬盘原地建立图片库，也可以连接 WebDAV、S3 按需浏览 NAS 与对象存储中的照片，在无干扰的中性灰暗房界面中完成看片、对比查焦、分层打标、存储卡导入与预设导出。
 
-原片默认只读。扫描建立索引，裁剪保存为配方，导出写入新文件；导入保留源文件，不覆盖无关目标内容。
+## 设计理念
 
-## 使用范围
+- **原片始终只读**：照片留在原有文件夹中管理，不复制进私有黑盒库。扫描仅建立本地索引；星级、旗标、色标与裁剪保存为非破坏性配方（支持双向同步同名 `.xmp` 伴随文件），导出始终生成新文件。
+- **中性暗房看片环境**：审片界面严守中性黑白灰阶梯，避免品牌色或高饱和控件产生视觉色偏；查看器采用 `40px` 非遮挡窄顶栏与邻帧预解码管线，连续翻看时无尺寸跳变与模糊闪烁。
+- **本地与远端统一模型**：同一套检索、配对、打标与选片体验同时覆盖本地文件夹、离线外接盘与远端 WebDAV / S3 目录；远端内容按需分段或缓存读取，凭据交由系统安全钥匙串托管。
 
-RAW 支持受格式和机型限制，不支持 CR3、HEIC/HEIF、AVIF。查看器使用最长边 2560px 的预览，1:1 对应该预览像素；完整分辨率瓦片与专业 ICC 色彩管理尚未实现。
+## 功能概览
 
-远端当前只读；普通 JPEG/PNG 首次预览通常需要下载完整文件。导入目标限于本地图库，尚不支持暂停、续传、多份备份或安全弹出。更多限制见[实施状态](docs/STATUS.md#已知边界)。
+### 图库组织与检索
+- **多维度虚拟组织**：文件夹层级树、手动精选集、动态规则智能精选集、层级关键词（`>` 分级前缀检索）与连拍自动折叠栈（Burst Stacks）。
+- **高频筛选与统计**：支持全文检索、星级（`1–5`）、选片旗标（`P / X / U`）、红/黄/绿/蓝四色标签（`6–9`）、机身/镜头/焦段/ISO 及拍摄日期组合查询；「概览」视图提供时间线与器材分布图表，点击任意柱段即刻反查照片。
+- **外接盘与海量目录**：支持 RAW+JPEG 同名配对合并、移动/改名指纹追踪（`quick_hash`）、外接硬盘离线浏览与路径变更无损重定位，右侧时间轴滑尺与 `⌘K`（`Ctrl+K`）全局命令面板直达任意位置。
 
-WebDAV、S3 公网连接使用 HTTPS，也支持局域网 HTTP 和用户确认的设备证书。凭据默认保存在系统凭据库，也可选择仅本次会话；配置和 SQLite 不保存秘密。
+### 沉浸查看与同步选片
+- **无遮挡零跳变查看器**：常驻 `40px` 窄顶栏（可选自动隐藏），双缓冲舞台配合双向 `p2560` 预解码缓存，确保横竖画幅切换与侧栏展开时画面稳定不跳动。
+- **专业查焦与辅助叠加**：支持原图 1:1 像素查焦（按需后台无缝升级 `full` 高清档）、RAW 相机内嵌预览秒开与传感器显影切换（`R`）、高光/暗部溢出警告（`J`）、Nikon AF 区域覆盖及可自定义四角参数浮层（`D`）。
+- **单张与多图对比选片**：主窗口内一键进入选片工作台，支持单张快速过片（自动前进与会话内撤销）及 **2 张 / 4 张同步缩放平移对比台**（`C`），「完成选片」可批量导出留用或将淘汰照片移入系统废纸篓。
 
-## 开发
+### 格式、色彩与外部互通
+- **现代相机与图像格式**：支持主流相机 RAW（CR2、CR3、NEF、ARW、RAF、ORF、RW2、PEF、SRW、DNG）、HEIC/HEIF、AVIF（macOS 原生解码）、JPEG、PNG、TIFF、WebP 等格式。
+- **广色域色彩管理**：预览与导出保留源图像内嵌 ICC 配置（并对 Adobe RGB EXIF 标记自动合成标准 ICC），内置线性光矩阵转换支持 `sRGB`、`Display P3` 与 `Adobe RGB (1998)` 预设化批量导出。
+- **开放 `.xmp` 伴随生态**：无损读写同名 `.xmp` 伴随文件（保留 Lightroom / Camera Raw 既有冲印参数），支持一键在访达/资源管理器定位或移交外部精修软件（`⌘E`）。
 
-需要 Rust 1.90+、Node.js 22+、pnpm 9，以及 Tauri 2 系统依赖。Windows 需要 Visual Studio C++ Build Tools 和 WebView2。
+### 存储卡导入与网络位置
+- **三步校验导入**：支持存储卡识别与方案记忆、按单张或按日勾选子集、RAW+JPEG+XMP 同号模板重命名、**主库 + 副盘双盘同步复制**、逐文件 SHA-256 读回校验与导完安全退卡。
+- **可控网络存储与缓存**：支持公网 HTTPS、局域网（含 Tailscale / CGNAT 网段）HTTP 及设备自签证书指纹固定与过期更新；远端缓存支持容量上限、保留期限、分类清理与离线固定。
 
-```sh
-pnpm install --frozen-lockfile
-pnpm build
-cargo test --workspace --locked
-pnpm test
-pnpm typecheck
-pnpm desktop
+## 常用快捷键
+
+| 场景 | 快捷键 | 说明 |
+| :--- | :--- | :--- |
+| **全局 / 网格** | `⌘K` / `Ctrl+K` | 打开全局命令面板（跳转图片库、精选集、筛选与设置） |
+| | `⌘1` / `⌘2` / `⌘3` | 切换「照片 / 选片 / 概览」视图 |
+| | `Space` / `Enter` | 打开或关闭当前照片查看器 |
+| | `1–5` / `0` | 设置星级 / 清除星级（支持多选与 `⌘A` 全选批量打标） |
+| | `P` / `X` / `U` | 标记留用 / 淘汰 / 清除旗标 |
+| | `6` / `7` / `8` / `9` | 切换红 / 黄 / 绿 / 蓝色标签 |
+| | `⌘⇧E` / `⌘E` | 按预设批量导出 / 移交外部精修软件 |
+| **查看 / 选片** | `←` / `→` | 上一张 / 下一张（选片打标支持自动前进） |
+| | `Z` | 适合窗口 ↔ 1:1 原生像素查焦 |
+| | `C` | 进入定比裁剪（查看模式）/ 切换 2·4 图同步对比台（选片模式） |
+| | `J` / `R` | 高光暗部溢出警告 / 切换 RAW 内嵌预览与传感器显影 |
+| | `I` / `D` / `F` | 展开影像信息侧栏 / 显隐四角叠加信息 / 切换全屏 |
+| | `⌘Z` / `Ctrl+Z` | 撤销最近一次星级、旗标、色标或废纸篓操作 |
+
+## 系统架构
+
+Lumen 将文件安全、SQLite 目录索引、图像解码、色彩转换与远端存储协议全部收敛在纯 Rust 核心库中，桌面端（Tauri 2）与命令行（`neb-cli`）共享同一套无界面耦合的 `neb-service` 命令服务：
+
+```text
+nebulume/
+├── crates/
+│   ├── neb-core/      # SQLite 图库索引 (Schema v14)、RAW/CR3/栅格解码、ICC 色彩、XMP 同步与缓存
+│   ├── neb-storage/   # 本地作用域路径、WebDAV/S3 连接、版本锁定分段读取与系统钥匙串凭据
+│   ├── neb-ingest/    # 冻结导入计划、伴随组重命名、双盘校验复制与作业记录
+│   ├── neb-service/   # 统一命令路由、并发租约、后台任务协调与内存预览 LRU
+│   ├── neb-app/       # Tauri 2 桌面窗口、neb:// 自定义图像协议、原生壳层交互与自动更新
+│   └── neb-cli/       # 命令行工具与自动化测试入口
+└── packages/
+    └── ui/            # SolidJS 暗房界面、设计系统原语 (src/ui/) 与状态模型
 ```
 
-浏览器模式：`pnpm dev`。可选择浏览器支持的图片进行临时会话，关闭页面后清除；完整 EXIF、RAW、远端存储和导入能力需使用桌面版。
+## 本地开发与构建
 
-命令行入口：`cargo run -p neb-cli -- --help`。使用 `--data-dir` 指定隔离测试目录。桌面开发和验收可通过 `NEBULUME_DATA_DIR` 指定独立数据目录；默认路径由平台确定，应用标识为 `app.nebulume.desktop`。
+### 环境要求
+- **Rust** `1.90+`（含 `rustfmt`、`clippy`）
+- **Node.js** `22+` 与 **pnpm** `9`
+- **Python** `3.11+`（用于图标校验与发布打包脚本）
+- 对应操作系统的 [Tauri v2 系统依赖](https://v2.tauri.app/start/prerequisites/)
 
-在 `crates/neb-app` 运行 `pnpm exec tauri build --no-bundle` 构建桌面程序，运行 `pnpm exec tauri build --bundles nsis -- --locked` 构建 Windows 安装器。完整步骤见[发布指南](docs/RELEASING.md)。
+### 常用命令
 
-## 文档
+```sh
+# 安装前端依赖
+pnpm install --frozen-lockfile
 
-- [架构与数据设计](docs/ARCHITECTURE.md)
-- [管理与查看交互](docs/INTERACTION.md)
-- [命令契约](docs/API.md)
-- [实施状态与限制](docs/STATUS.md)
-- [测试策略](docs/TESTING.md)
-- [发布指南](docs/RELEASING.md)
-- [治理与重构设计](docs/REFACTOR_DESIGN.md)
+# 启动桌面开发环境（推荐，具备完整原生解码、存储与导入导出能力）
+pnpm desktop
 
-本项目未授予开源许可。
+# 仅启动前端浏览器演示模式
+pnpm dev
+
+# 运行全量检查与测试
+pnpm test                          # UI 设计系统门禁 + Vitest 单元测试
+pnpm typecheck                     # TypeScript 类型检查
+pnpm build                         # 前端生产构建
+cargo test --workspace --locked    # Rust 全工作区测试
+cargo clippy --workspace --all-targets --locked -- -D warnings
+
+# 运行 CLI 或构建正式桌面应用包
+cargo run -p neb-cli -- --help
+pnpm desktop:build
+```
+
+## 文档导航
+
+- [品牌识别与设计矩阵](docs/IDENTITY.md) — 命名规范、三态光圈徽标、暗房色彩边界与数据兼容约定
+- [架构与数据设计](docs/ARCHITECTURE.md) — 模块职责、SQLite Schema 演进、五档预览协议与并发模型
+- [图片库与查看器交互](docs/INTERACTION.md) — 视图层级、键盘流、导入整理、选片对比与查看器细节
+- [命令与协议契约](docs/API.md) — 前后端 / CLI 共享的 RPC 命令、参数结构与错误码约定
+- [实施状态与已知边界](docs/STATUS.md) — 当前平台能力矩阵、格式支持范围与已知限制
+- [测试策略](docs/TESTING.md) — 单元测试、浏览器工作流、真实 Rust/UI 联调与实机验收方法
+- [发布指南](docs/RELEASING.md) — 版本对齐、签名校验、产物清单与自动化发布流水线
+- [第三方依赖说明](NOTICE.md) — 上游依赖组件与许可证合规说明

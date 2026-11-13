@@ -113,6 +113,27 @@ export async function fixture(
           };
           break;
         }
+        case 'asset.ids': {
+          const filter = call.params.flag as string | undefined;
+          const items = [...assets.values()].filter(
+            (item) =>
+              !filter ||
+              filter === 'any' ||
+              (filter === 'not_reject' ? item.flag !== 'reject' : item.flag === filter),
+          );
+          result = { ids: items.map((item) => item.id), total: items.length };
+          break;
+        }
+        case 'asset.facets':
+          result = { cameras: [], lenses: [], captured: { first: null, last: null } };
+          break;
+        case 'library.folders':
+          result = { total: assets.size, folders: [] };
+          break;
+        case '$native/pregenerate_previews':
+        case '$native/watch_libraries':
+          result = null;
+          break;
         case 'asset.get':
           result = { ...target };
           break;

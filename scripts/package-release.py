@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Package verified Windows release artifacts without reading application data."""
+"""Package verified Windows and macOS release artifacts without reading application data."""
 
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -13,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tomllib
 from typing import BinaryIO
 import zipfile
@@ -204,24 +207,91 @@ def check_executable(path: Path, newest_input: int) -> dict[str, int | str]:
     return info(path)
 
 
-def read_signature(path: Path, newest_input: int) -> tuple[str, dict[str, int | str]]:
+def check_macos_dmg(path: Path) -> dict[str, int | str]:
+    require(path.is_file() and not path.is_symlink(), f"Missing regular macOS DMG artifact: {path}")
+    require(path.stat().st_size > 0, f"macOS DMG artifact is empty: {path}")
+    return info(path)
+
+
+def check_macos_updater_archive(path: Path) -> dict[str, int | str]:
+    require(path.is_file() and not path.is_symlink(), f"Missing regular macOS updater archive: {path}")
+    with path.open("rb") as stream:
+        require(stream.read(2) == b"\x1f\x8b", f"macOS updater archive lacks gzip header: {path}")
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            members = set()
+            for member in archive.getmembers():
+                raw_name = member.name
+                require(
+                    not raw_name.startswith("/") and ".." not in PurePosixPath(raw_name).parts,
+                    f"Unsafe tar member path in macOS updater archive: {raw_name!r}",
+                )
+                members.add(raw_name.lstrip("./").rstrip("/"))
+    except tarfile.TarError as error:
+        raise ReleaseError(f"Invalid macOS updater tar.gz archive {path}: {error}") from error
+    required_members = {
+        "Lumen.app/Contents/Info.plist",
+        "Lumen.app/Contents/MacOS/nebulume",
+        "Lumen.app/Contents/_CodeSignature/CodeResources",
+    }
+    missing = sorted(required_members - members)
+    require(not missing, f"macOS updater archive lacks required bundle members: {', '.join(missing)}")
+    return info(path)
+
+
+def read_signature(path: Path, newest_input: int | None = None) -> tuple[str, dict[str, int | str]]:
     require(path.is_file() and not path.is_symlink(), f"Missing regular updater signature: {path}")
-    require(path.stat().st_mtime_ns >= newest_input, f"Updater signature predates tracked production inputs: {path}")
+    if newest_input is not None:
+        require(
+            path.stat().st_mtime_ns >= newest_input,
+            f"Updater signature predates tracked production inputs: {path}",
+        )
     raw = path.read_bytes()
     text = raw.decode("ascii")
-    require(len(text.strip().splitlines()) == 1, f"Updater signature must be a single line: {path}")
-    return text.strip(), {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    lines = text.strip().splitlines()
+    require(len(lines) == 1, f"Updater signature must be a single line: {path}")
+    cleaned = lines[0].strip()
+    try:
+        base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ReleaseError(f"Updater signature is not valid base64: {path}") from error
+    return cleaned, {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
 def latest_json(
-    version: str, installer_name: str, signature: str, notes: str, pub_date: str
+    version: str,
+    installer_name: str,
+    signature: str,
+    notes: str,
+    pub_date: str,
+    macos_updater_name: str | None = None,
+    macos_signature: str | None = None,
 ) -> bytes:
-    return json_bytes(updater_manifest(version, installer_name, signature, notes, pub_date))
+    return json_bytes(
+        updater_manifest(
+            version,
+            installer_name,
+            signature,
+            notes,
+            pub_date,
+            macos_updater_name=macos_updater_name,
+            macos_signature=macos_signature,
+        )
+    )
 
 
 def resolve_path(value: str) -> Path:
     path = Path(value)
     return (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
+
+
+def copy_verified(source_path: Path, destination_path: Path, expected: dict[str, int | str], label: str) -> None:
+    with source_path.open("rb") as source, destination_path.open("xb") as destination:
+        shutil.copyfileobj(source, destination, length=1024 * 1024)
+    require(
+        info(destination_path) == expected == info(source_path),
+        f"{label} changed during copy",
+    )
 
 
 def package(args: argparse.Namespace) -> dict:
@@ -256,64 +326,95 @@ def package(args: argparse.Namespace) -> dict:
     ).hexdigest()
     target = resolve_path(args.target_dir) / "release"
     exe_source = target / "nebulume.exe"
-    installer_name = f"Nebulume_{args.version}_x64-setup.exe"
+    installer_name = f"Lumen_{args.version}_x64-setup.exe"
     installer_source = target / "bundle/nsis" / installer_name
     exe_record = check_executable(exe_source, newest_input)
     installer_record = check_executable(installer_source, newest_input)
     signature_name = f"{installer_name}.sig"
     signature_source = installer_source.with_name(signature_name)
     signature, signature_record = read_signature(signature_source, newest_input)
+
+    macos_dir = resolve_path(args.macos_dir)
+    macos_dmg_name = f"Lumen_{args.version}_universal.dmg"
+    macos_dmg_source = macos_dir / macos_dmg_name
+    macos_dmg_record = check_macos_dmg(macos_dmg_source)
+    macos_updater_name = f"Lumen_{args.version}_macos_universal.app.tar.gz"
+    macos_updater_source = macos_dir / macos_updater_name
+    macos_updater_record = check_macos_updater_archive(macos_updater_source)
+    macos_sig_name = f"{macos_updater_name}.sig"
+    macos_sig_source = macos_dir / macos_sig_name
+    macos_signature, macos_sig_record = read_signature(macos_sig_source, None)
+
     raw_output = Path(args.output_dir)
     if not raw_output.is_absolute():
         raw_output = ROOT / raw_output
     require(not os.path.lexists(raw_output), "Output directory must be new, including no existing symlink")
     output = raw_output.resolve()
     require(not os.path.lexists(output), "Output directory must be new; existing output is never overwritten")
+    source_paths = (
+        validation_path,
+        exe_source,
+        installer_source,
+        signature_source,
+        macos_dmg_source,
+        macos_updater_source,
+        macos_sig_source,
+        notes_path,
+    )
     require(
-        not validation_path.is_relative_to(output)
-        and not exe_source.is_relative_to(output)
-        and not installer_source.is_relative_to(output)
-        and not signature_source.is_relative_to(output)
-        and not notes_path.is_relative_to(output),
+        all(not candidate.is_relative_to(output) for candidate in source_paths),
         "Output must not contain source artifacts or the validation input",
     )
-    archive_name = f"Nebulume_{args.version}_windows_x64.zip"
+    archive_name = f"Lumen_{args.version}_windows_x64.zip"
     names = {
-        installer_name, signature_name, archive_name,
-        "latest.json", "manifest.json", "SHA256SUMS.txt",
+        installer_name,
+        signature_name,
+        archive_name,
+        macos_dmg_name,
+        macos_updater_name,
+        macos_sig_name,
+        "latest.json",
+        "manifest.json",
+        "SHA256SUMS.txt",
     }
     now = datetime.now(timezone.utc)
     created = now.isoformat()
     latest = latest_json(
-        args.version, installer_name, signature, notes, now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        args.version,
+        installer_name,
+        signature,
+        notes,
+        now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        macos_updater_name=macos_updater_name,
+        macos_signature=macos_signature,
     )
     latest_record = {"bytes": len(latest), "sha256": hashlib.sha256(latest).hexdigest()}
     runtime = {
         "schema_version": 1,
-        "product": "Nebulume",
+        "product": "Lumen",
         "version": args.version,
         "platform": "windows-x86_64",
         "source": identity,
         "unsigned": verification["unsigned"],
-        "application": {"filename": "nebulume.exe", **exe_record},
+        "application": {"filename": "Lumen.exe", **exe_record},
         "data_storage": "system_application_data_directory",
         "requirements": ["Microsoft Edge WebView2 Runtime"],
     }
     readme = (
-        f"Nebulume {args.version} · Windows x64\n\n"
-        "解压后运行 nebulume.exe；需要 Microsoft Edge WebView2 Runtime。\n"
+        f"Lumen {args.version} · Windows x64\n\n"
+        "解压后运行 Lumen.exe；需要 Microsoft Edge WebView2 Runtime。\n"
         "独立程序仍使用系统应用数据目录保存图库索引、设置和缓存，"
         "不会将用户数据保存在本 ZIP 内，也不是随程序目录携带数据的便携数据模式。\n"
         "原片默认只读；导入保留来源，裁剪保存配方，导出生成新文件。\n"
         "本包不含用户数据库、照片、连接配置、凭据或测试日志。\n"
         f"源码标签：{identity['tag']}\n提交：{identity['commit']}\n"
         f"Windows 代码签名：{'未签名' if verification['unsigned'] else '已签名（见发布验证）'}\n"
-        "下载与更新：https://github.com/timeStarry/nebulume/releases\n"
+        "下载与更新：https://github.com/timeStarry/lumen/releases\n"
         "SHA256SUMS.txt 用于核对本包成员；完整发布说明与已知限制见 Release。\n"
     ).encode("utf-8")
     contents = {"README.txt": readme, "manifest.json": json_bytes(runtime)}
     member_records = {
-        "nebulume.exe": exe_record,
+        "Lumen.exe": exe_record,
         **{
             name: {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
             for name, content in contents.items()
@@ -331,22 +432,26 @@ def package(args: argparse.Namespace) -> dict:
     # All preconditions precede output creation. Failures leave evidence for inspection;
     # this script never deletes partial output or reuses an existing directory.
     output.mkdir(parents=True, exist_ok=False)
-    installer = output / installer_name
-    with installer_source.open("rb") as source, installer.open("xb") as destination:
-        shutil.copyfileobj(source, destination, length=1024 * 1024)
-    require(info(installer) == installer_record == info(installer_source), "Installer changed during copy")
-    signature_copy = output / signature_name
-    with signature_source.open("rb") as source, signature_copy.open("xb") as destination:
-        shutil.copyfileobj(source, destination)
-    require(
-        info(signature_copy) == signature_record == info(signature_source),
-        "Updater signature changed during copy",
+    copy_verified(installer_source, output / installer_name, installer_record, "Installer")
+    copy_verified(signature_source, output / signature_name, signature_record, "Updater signature")
+    copy_verified(macos_dmg_source, output / macos_dmg_name, macos_dmg_record, "macOS DMG")
+    copy_verified(
+        macos_updater_source,
+        output / macos_updater_name,
+        macos_updater_record,
+        "macOS updater archive",
+    )
+    copy_verified(
+        macos_sig_source,
+        output / macos_sig_name,
+        macos_sig_record,
+        "macOS updater signature",
     )
     exclusive_write(output / "latest.json", latest)
     require(info(output / "latest.json") == latest_record, "latest.json changed after writing")
     archive = output / archive_name
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-        bundle.write(exe_source, "nebulume.exe")
+        bundle.write(exe_source, "Lumen.exe")
         for name, content in sorted(contents.items()):
             bundle.writestr(name, content)
     with zipfile.ZipFile(archive) as bundle:
@@ -364,9 +469,10 @@ def package(args: argparse.Namespace) -> dict:
     archive_record = info(archive)
     manifest = {
         "schema_version": 1,
-        "product": "Nebulume",
+        "product": "Lumen",
         "version": args.version,
-        "platform": "windows-x86_64",
+        "platform": "windows-x86_64+macos-universal",
+        "platforms": ["windows-x86_64", "macos-universal"],
         "created_utc": created,
         "source": identity,
         "source_inputs": {"files": len(inputs), "sha256": inputs_sha},
@@ -374,22 +480,30 @@ def package(args: argparse.Namespace) -> dict:
         "checks": verification["checks"],
         "unsigned": verification["unsigned"],
         "artifacts": {
-            "application": {"archive_member": "nebulume.exe", **exe_record},
+            "application": {"archive_member": "Lumen.exe", **exe_record},
             "installer": {"filename": installer_name, **installer_record},
             "updater_signature": {"filename": signature_name, **signature_record},
             "portable_archive": {"filename": archive_name, **archive_record},
+            "macos_dmg": {"filename": macos_dmg_name, **macos_dmg_record},
+            "macos_updater_archive": {"filename": macos_updater_name, **macos_updater_record},
+            "macos_updater_signature": {"filename": macos_sig_name, **macos_sig_record},
         },
         "updater": {
             "signature_file": signature_name,
+            "windows_signature_file": signature_name,
+            "macos_signature_file": macos_sig_name,
             "latest_json_sha256": latest_record["sha256"],
         },
-        "not_verified": ["installation_and_uninstallation", "macos_linux_release_acceptance"],
+        "not_verified": ["installation_and_uninstallation", "linux_release_acceptance"],
     }
     exclusive_write(output / "manifest.json", json_bytes(manifest))
     upload_records = {
         installer_name: installer_record,
         signature_name: signature_record,
         archive_name: archive_record,
+        macos_dmg_name: macos_dmg_record,
+        macos_updater_name: macos_updater_record,
+        macos_sig_name: macos_sig_record,
         "latest.json": latest_record,
         "manifest.json": info(output / "manifest.json"),
     }
@@ -402,6 +516,9 @@ def package(args: argparse.Namespace) -> dict:
     require((output / "SHA256SUMS.txt").read_bytes() == sums, "Final checksum list changed")
     require(info(installer_source) == installer_record, "Installer source changed while packaging")
     require(info(signature_source) == signature_record, "Updater signature source changed while packaging")
+    require(info(macos_dmg_source) == macos_dmg_record, "macOS DMG source changed while packaging")
+    require(info(macos_updater_source) == macos_updater_record, "macOS updater archive source changed while packaging")
+    require(info(macos_sig_source) == macos_sig_record, "macOS updater signature source changed while packaging")
     require(notes_path.read_bytes() == notes_raw, "Release notes source changed while packaging")
     require(info(exe_source) == exe_record, "Application source changed while packaging")
     require(digest(validation_path) == validation_sha, "Validation changed while packaging")
@@ -416,6 +533,7 @@ def package(args: argparse.Namespace) -> dict:
         "unsigned": verification["unsigned"],
         "zip_crc_verified": True,
         "zip_member_sha256_verified": True,
+        "macos_updater_tar_verified": True,
         "upload_whitelist_verified": True,
         "upload_files": {**upload_records, "SHA256SUMS.txt": info(output / "SHA256SUMS.txt")},
     }
@@ -425,6 +543,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
     parser.add_argument("--target-dir", required=True, help="Cargo target directory, relative to repository root")
+    parser.add_argument("--macos-dir", required=True, help="Directory holding verified macOS Universal DMG and updater tar.gz")
     parser.add_argument("--output-dir", required=True, help="New, never previously created upload directory")
     parser.add_argument("--validation", required=True, help="Validation JSON for the exact HEAD and version")
     parser.add_argument("--notes-from", required=True, help="CHANGELOG.md holding a dated section for --version")

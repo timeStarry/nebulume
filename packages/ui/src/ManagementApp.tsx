@@ -16,19 +16,32 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import {
   chooseDirectory,
+  chooseExternalApp,
   chooseImage,
   desktop,
   execute,
+  openExternal,
   openViewerWindow,
   pregeneratePreviews,
+  revealInFolder,
   watchLibraries,
 } from './api';
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
+import ExportDialog from './ExportDialog';
+import type { ExportRecipe } from './export-presets';
 import AssetInspector from './AssetInspector';
-import LibrarySidebar, { type FolderAction } from './LibrarySidebar';
+import LibrarySidebar, {
+  readSidebarCollapsed,
+  writeSidebarCollapsed,
+  type FolderAction,
+} from './LibrarySidebar';
 import AppShell from './AppShell';
 import LibrariesOverview from './LibrariesOverview';
+import BatchDock from './BatchDock';
+import TaskPill from './TaskPill';
+import { createTaskCenter } from './tasks';
+import { chunkIds, createSelection } from './selection';
 import {
   Banner,
   Button,
@@ -66,9 +79,15 @@ import CaptureIndexControl from './CaptureIndexControl';
 import OverflowMenu from './OverflowMenu';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import JustifiedGrid, { type JustifiedGridApi } from './JustifiedGrid';
+import { buildBurstStacks } from './burst-stacks';
+import CommandPalette from './CommandPalette';
+import type { CommandAction } from './command-palette';
+import { CollectionEditorDialog, CollectionPickerDialog } from './library/CollectionDialogs';
+import LibraryFilterBar from './library/LibraryFilterBar';
+import DateScrubber from './wall/DateScrubber';
 import { fitRect, fly } from './zoom-transition';
 import { createFeedback, FeedbackStack } from './feedback';
-import { groupMarks, markHudText, type UndoEntry } from './undo';
+import { COLOR_LABEL_NAMES, groupMarks, keyToColorLabel, markHudText, type UndoEntry } from './undo';
 import { UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
@@ -76,8 +95,12 @@ import {
   isTextEntry,
   type Asset,
   type AssetFacets,
+  type AssetIdsResult,
   type AssetListOptions,
   type AssetListResult,
+  type Collection,
+  type ColorLabel,
+  type ColorLabelFilter,
   type Flag,
   type FlagFilter,
   type ImportBatch,
@@ -86,6 +109,7 @@ import {
   type ScanResult,
   type StorageConfig,
   type TrashResult,
+  type XmpSyncReport,
 } from './model';
 import {
   availabilityPresentation,
@@ -122,16 +146,69 @@ export default function ManagementApp() {
   }
   const [total, setTotal] = createSignal(0);
   const [fileTotal, setFileTotal] = createSignal<number>();
-  const [selectedId, setSelectedId] = createSignal<string>();
-  // Extra photos chosen with Ctrl/Cmd or Shift. The focused photo (selectedId)
-  // always counts as selected, so single selection keeps working unchanged.
-  const [picked, setPicked] = createSignal<ReadonlySet<string>>(new Set());
-  let selectionAnchor: string | undefined;
+  const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('captured_at');
+  const [direction, setDirection] =
+    createSignal<NonNullable<AssetListOptions['sort_direction']>>('desc');
+  const [burstStacks, setBurstStacks] = createSignal(readBurstStacks());
+  const [expandedStacks, setExpandedStacks] = createSignal<ReadonlySet<string>>(new Set());
+  function toggleBurstStacks(next?: boolean) {
+    const enabled = next ?? !burstStacks();
+    setBurstStacks(enabled);
+    if (!enabled) setExpandedStacks(new Set<string>());
+    try {
+      localStorage.setItem(BURST_STACKS_KEY, String(enabled));
+    } catch {
+      /* Preference applies to this session. */
+    }
+  }
+  function toggleStackExpanded(stackId: string) {
+    setExpandedStacks((prev) => {
+      const next = new Set(prev);
+      if (next.has(stackId)) next.delete(stackId);
+      else next.add(stackId);
+      return next;
+    });
+  }
+  const displayItems = createMemo(() =>
+    buildBurstStacks(assets(), expandedStacks(), burstStacks() && sort() === 'captured_at'),
+  );
+  const displayAssets = createMemo(() => displayItems().map((entry) => entry.asset));
+  const burstByAssetId = createMemo(
+    () => new Map(displayItems().map((entry) => [entry.asset.id, entry])),
+  );
+  const selection = createSelection(() => displayAssets().map((asset) => asset.id));
+  const {
+    selectedId,
+    setSelectedId,
+    picked,
+    setPicked,
+    selectedIds,
+    clearPicked,
+    select: selectAsset,
+  } = selection;
+  const tasks = createTaskCenter();
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(readSidebarCollapsed());
+  function toggleSidebar() {
+    const next = !sidebarCollapsed();
+    setSidebarCollapsed(next);
+    writeSidebarCollapsed(next);
+  }
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState>();
   const [query, setQuery] = createSignal('');
   const [rating, setRating] = createSignal(0);
   const [format, setFormat] = createSignal<NonNullable<AssetListOptions['format']>>('all');
   const [flag, setFlag] = createSignal<FlagFilter>('any');
+  const [colorLabel, setColorLabel] = createSignal<ColorLabelFilter>('any');
+  const [keyword, setKeyword] = createSignal('');
+  const [libraryKeywords, setLibraryKeywords] = createSignal<{ path: string; count: number }[]>([]);
+  const [collections, setCollections] = createSignal<Collection[]>([]);
+  const [collectionId, setCollectionId] = createSignal('');
+  const [collectionEditor, setCollectionEditor] = createSignal<{
+    kind: 'manual' | 'smart';
+    existing?: Collection;
+  } | null>(null);
+  const [collectingIds, setCollectingIds] = createSignal<string[] | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = createSignal(false);
   const [batchId, setBatchId] = createSignal('');
   const [camera, setCamera] = createSignal('');
   const [lens, setLens] = createSignal('');
@@ -151,9 +228,6 @@ export default function ManagementApp() {
   const [facets, setFacets] = createSignal<AssetFacets>();
   const [filtersOpen, setFiltersOpen] = createSignal(readFiltersOpen());
   const [batches, setBatches] = createSignal<ImportBatch[]>([]);
-  const [sort, setSort] = createSignal<NonNullable<AssetListOptions['sort_by']>>('captured_at');
-  const [direction, setDirection] =
-    createSignal<NonNullable<AssetListOptions['sort_direction']>>('desc');
   const [thumbSize, setThumbSize] = createSignal(readThumbSize());
   const [devicePixelRatio, setDevicePixelRatio] = createSignal(window.devicePixelRatio || 1);
   const [info, setInfo] = createSignal(false);
@@ -180,6 +254,7 @@ export default function ManagementApp() {
   const feedback = createFeedback();
   const { busy, setBusy, setError, setNotice, setSyncError, action } = feedback;
   const [dialog, setDialog] = createSignal<Dialog>(null);
+  const [exportDialogIds, setExportDialogIds] = createSignal<string[] | null>(null);
   const [editingSource, setEditingSource] = createSignal<StorageConfig>();
   const [editingLibrary, setEditingLibrary] = createSignal<Library>();
   const [removing, setRemoving] = createSignal<
@@ -221,8 +296,14 @@ export default function ManagementApp() {
   let registeringListener = false;
   let openAfterImport = false;
   const visibleLibraries = createMemo(() => libraries().filter((library) => !library.hidden));
+  const removableLibraries = createMemo(() =>
+    visibleLibraries().filter((library) => library.removable),
+  );
   const currentLibrary = createMemo(() =>
     libraries().find((library) => library.id === libraryId()),
+  );
+  const activeCollection = createMemo(() =>
+    collections().find((item) => item.id === collectionId()),
   );
   const selected = createMemo(() => assets().find((asset) => asset.id === selectedId()));
   const filtered = () =>
@@ -231,11 +312,14 @@ export default function ManagementApp() {
       rating() ||
       format() !== 'all' ||
       flag() !== 'any' ||
+      colorLabel() !== 'any' ||
+      keyword() ||
       batchId() ||
       camera() ||
       lens() ||
       capturedFrom() ||
-      capturedTo()
+      capturedTo() ||
+      extra()
     );
   const [detail, { mutate: mutateDetail, refetch: refetchDetail }] = createResource(
     () => info() && section() === 'libraries' && selected()?.id,
@@ -297,6 +381,9 @@ export default function ManagementApp() {
       rating: rating() || undefined,
       format: format(),
       flag: flag() === 'any' ? undefined : flag(),
+      color_label: colorLabel() === 'any' ? undefined : colorLabel(),
+      keyword: keyword() || undefined,
+      collection_id: collectionId() || undefined,
       import_batch_id: batchId() || undefined,
       camera: camera() || undefined,
       lens: lens() || undefined,
@@ -348,7 +435,21 @@ export default function ManagementApp() {
       setTotal(result.total);
       setFileTotal(result.file_total);
       dirtyLibraries.delete(id);
-      if (!next.some((item) => item.id === selectedId())) setSelectedId(next[0]?.id);
+      if (!append && !preserveLoaded) clearPicked();
+      else if (preserveLoaded && !selection.hasFullOrder()) {
+        selection.pruneTo(new Set(next.map((item) => item.id)));
+      }
+      if (!selection.hasFullOrder() && !next.some((item) => item.id === selectedId()))
+        setSelectedId(next[0]?.id);
+      if (preserveLoaded && selection.hasFullOrder() && result.total < selectedIds().length) {
+        void execute<AssetIdsResult>('asset.ids', { ...options })
+          .then((fresh) => {
+            if (token === request && id === libraryId() && fresh?.ids) {
+              selection.pruneTo(new Set(fresh.ids));
+            }
+          })
+          .catch(() => undefined);
+      }
       if (preserveLoaded && scrollElement && scrollTop !== undefined)
         queueMicrotask(() => {
           if (token === request && scrollElement.isConnected) scrollElement.scrollTop = scrollTop;
@@ -368,6 +469,9 @@ export default function ManagementApp() {
     rating();
     format();
     flag();
+    colorLabel();
+    keyword();
+    collectionId();
     batchId();
     camera();
     lens();
@@ -428,13 +532,17 @@ export default function ManagementApp() {
     request++;
     setAssets([]);
     setTotal(0);
-    setSelectedId(undefined);
-    setPicked(new Set<string>());
-    selectionAnchor = undefined;
+    selection.reset(undefined);
     setQuery('');
     setRating(0);
     setFormat('all');
     setFlag('any');
+    setColorLabel('any');
+    setKeyword('');
+    setLibraryKeywords([]);
+    setCollections([]);
+    setCollectionId('');
+    setExpandedStacks(new Set<string>());
     setBatchId('');
     setBatches([]);
     setFolder('');
@@ -443,6 +551,8 @@ export default function ManagementApp() {
     clearMetadataFilters();
     setFacets(undefined);
     void loadFacets(library.id);
+    void refreshCollections(library.id);
+    void refreshLibraryKeywords(library.id);
     setInfo(false);
     setLibraryId(library.id);
     if (desktop)
@@ -475,10 +585,17 @@ export default function ManagementApp() {
       chips.push({ label: `${'★'.repeat(rating())} 及以上`, clear: () => setRating(0) });
     if (flag() !== 'any')
       chips.push({ label: FLAG_LABELS[flag()] || flag(), clear: () => setFlag('any') });
+    if (colorLabel() !== 'any')
+      chips.push({
+        label: COLOR_LABEL_NAMES[colorLabel() as ColorLabel] || colorLabel(),
+        clear: () => setColorLabel('any'),
+      });
     if (format() !== 'all')
       chips.push({ label: format().toUpperCase(), clear: () => setFormat('all') });
     if (camera()) chips.push({ label: camera(), clear: () => setCamera('') });
     if (lens()) chips.push({ label: lens(), clear: () => setLens('') });
+    if (keyword())
+      chips.push({ label: `关键词：${keyword()}`, clear: () => setKeyword('') });
     if (capturedFrom() || capturedTo())
       chips.push({
         label: `${capturedFrom() || '…'} – ${capturedTo() || '…'}`,
@@ -495,6 +612,8 @@ export default function ManagementApp() {
   function clearAllFilters() {
     setRating(0);
     setFlag('any');
+    setColorLabel('any');
+    setKeyword('');
     setFormat('all');
     setBatchId('');
     setExtra(undefined);
@@ -513,6 +632,67 @@ export default function ManagementApp() {
     } catch {
       // Filters stay usable without suggestions; the date inputs still work.
     }
+  }
+  async function refreshCollections(id = libraryId()) {
+    if (!id) return;
+    try {
+      const list = await execute<Collection[]>('collection.list', { library_id: id });
+      if (libraryId() === id && Array.isArray(list)) setCollections(list);
+    } catch {
+      /* Collections remain optional if unavailable. */
+    }
+  }
+  async function refreshLibraryKeywords(id = libraryId()) {
+    if (!id) return;
+    try {
+      const list = await execute<{ path: string; count: number }[]>('library.keywords', {
+        library_id: id,
+      });
+      if (libraryId() === id && Array.isArray(list)) setLibraryKeywords(list);
+    } catch {
+      /* Keyword suggestions remain optional. */
+    }
+  }
+  async function deleteCollection(item: Collection) {
+    try {
+      await execute('collection.delete', { id: item.id });
+      setCollections((list) => list.filter((each) => each.id !== item.id));
+      if (collectionId() === item.id) setCollectionId('');
+      setNotice(`已删除精选集“${item.name}”，原始照片与评分保留不变。`);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function removeSelectedFromCollection(ids = selectedIds()) {
+    const active = activeCollection();
+    if (!active || active.kind !== 'manual' || !ids.length) return;
+    try {
+      const res = await execute<{ removed: number; collection: Collection }>(
+        'collection.remove_assets',
+        { id: active.id, asset_ids: ids },
+      );
+      setCollections((list) =>
+        list.map((each) => (each.id === res.collection.id ? res.collection : each)),
+      );
+      clearPicked();
+      await loadAssets();
+      setNotice(`已从“${active.name}”移出 ${res.removed} 张照片，原始文件保留不变。`);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function relocateLibrary(library: Library) {
+    const root = desktop ? await chooseDirectory(`重新定位“${library.name}”目录`) : null;
+    if (!root) return;
+    await action(`正在重定位 ${library.name}…`, async () => {
+      const updated = await execute<Library>('library.relocate', { id: library.id, root });
+      setLibraries((list) => list.map((item) => (item.id === updated.id ? updated : item)));
+      if (libraryId() === updated.id) {
+        await loadAssets();
+        void refreshFolders();
+      }
+      setNotice(`已将“${updated.name}”重新关联至 ${updated.root}，历史标记与精选集完整保留。`);
+    });
   }
   function newLibrary(source?: StorageConfig, prefix = '', root?: string) {
     setEditingLibrary(undefined);
@@ -571,26 +751,113 @@ export default function ManagementApp() {
     setEditingSource(source);
     setDialog('storage');
   }
-  /** Renders every selected photo with its crop to a chosen folder, one at a time. */
+  /** Renders every selected photo with its crop to a chosen folder in the background. */
   async function exportSelection(ids = selectedIds()) {
-    if (!ids.length || busy()) return;
+    if (!ids.length || tasks.isRunning('export')) return;
     const directory = desktop ? await chooseDirectory('选择导出文件夹') : '';
     if (desktop && !directory) return;
     setError('');
     setNotice('');
     try {
-      const result = await exportPhotos(
-        ids,
-        directory ?? '',
-        new Map(assets().map((item) => [item.id, item])),
-        (done, total) => setBusy(`正在导出 ${done} / ${total}…`),
+      const result = await tasks.run(
+        {
+          kind: 'export',
+          title: `导出 ${ids.length} 张照片`,
+          processed: 0,
+          total: ids.length,
+        },
+        ({ progress }) =>
+          exportPhotos(
+            ids,
+            directory ?? '',
+            new Map(assets().map((item) => [item.id, item])),
+            (done, count) => progress({ processed: done, total: count, detail: `${done} / ${count}` }),
+          ),
+        (res) =>
+          `已导出 ${res.exported} 张${res.failures.length ? `，${res.failures.length} 张失败` : ''}`,
       );
       const summary = exportSummary(result, directory ?? '', desktop);
       if (summary.error) setError(summary.error);
       else setNotice(summary.notice!);
-    } finally {
-      setBusy('');
+    } catch (e) {
+      setError(errorMessage(e));
     }
+  }
+  async function exportWithRecipe(ids: string[], recipe: ExportRecipe, directory: string) {
+    if (!ids.length || tasks.isRunning('export')) return;
+    setError('');
+    setNotice('');
+    try {
+      const result = await tasks.run(
+        {
+          kind: 'export',
+          title: `按预设导出 ${ids.length} 张照片`,
+          processed: 0,
+          total: ids.length,
+        },
+        ({ progress }) =>
+          exportPhotos(
+            ids,
+            directory,
+            new Map(assets().map((item) => [item.id, item])),
+            (done, count) => progress({ processed: done, total: count, detail: `${done} / ${count}` }),
+            recipe,
+          ),
+        (res) =>
+          `已导出 ${res.exported} 张${res.failures.length ? `，${res.failures.length} 张失败` : ''}`,
+      );
+      setExportDialogIds(null);
+      const summary = exportSummary(result, directory, desktop);
+      if (summary.error) setError(summary.error);
+      else setNotice(summary.notice!);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function syncXmp(
+    mode: 'write' | 'read',
+    target: { ids?: string[]; libraryId?: string; label?: string },
+  ) {
+    if (busy()) return;
+    const payload = target.libraryId ? { library_id: target.libraryId } : { ids: target.ids ?? [] };
+    await action(mode === 'write' ? '正在写入 .xmp 伴随文件…' : '正在读取 .xmp 伴随文件…', async () => {
+      const report = await execute<XmpSyncReport>(
+        mode === 'write' ? 'asset.xmp.write' : 'asset.xmp.read',
+        payload,
+      );
+      if (mode === 'read') {
+        const now = Date.now();
+        if (target.ids?.length) {
+          for (const id of target.ids) {
+            revisions.set(id, now);
+            recentUpdates.delete(id);
+          }
+        } else {
+          recentUpdates.clear();
+        }
+        if (!target.libraryId || target.libraryId === libraryId()) {
+          await loadAssets(false, true);
+          if (selectedId()) void refetchDetail();
+        }
+        setNotice(
+          report.updated
+            ? `已从 .xmp 同步 ${report.updated} 张照片的标记与裁剪。`
+            : '未检测到新的 .xmp 伴随变更。',
+        );
+      } else {
+        setNotice(
+          `已写入 ${report.written ?? 0} 个 .xmp 伴随文件${target.label ? `（${target.label}）` : ''}。`,
+        );
+      }
+      if (report.errors.length) {
+        setError(
+          report.errors
+            .slice(0, 3)
+            .map((item) => `${item.path}：${item.message}`)
+            .join('\n'),
+        );
+      }
+    });
   }
   /** Moves the selected photos to the system Trash; the toast offers to put them back. */
   async function trashSelection(ids = selectedIds()) {
@@ -638,17 +905,40 @@ export default function ManagementApp() {
       await loadAssets(false, true);
     }
   }
+  function runPregenerate(library: Library) {
+    if (tasks.isRunning('pregenerate', library.id)) return;
+    void tasks
+      .run(
+        {
+          kind: 'pregenerate',
+          libraryId: library.id,
+          title: `生成缩略图 · ${library.name}`,
+        },
+        () => pregeneratePreviews(library.id, gridTier(thumbSize(), devicePixelRatio())),
+        () => '缩略图已就绪',
+      )
+      .catch(() => undefined);
+  }
   async function scan(library: Library) {
-    await action(`正在扫描 ${library.name}…`, async () => {
-      const result = await execute<ScanResult>('library.scan', {
-        library_id: library.id,
-      }).finally(() => void refreshLibraries());
+    if (tasks.isRunning('scan', library.id)) return;
+    setError('');
+    try {
+      const result = await tasks.run(
+        {
+          kind: 'scan',
+          libraryId: library.id,
+          title: `扫描 ${library.name}`,
+        },
+        () =>
+          execute<ScanResult>('library.scan', {
+            library_id: library.id,
+          }).finally(() => void refreshLibraries()),
+        (res) => `索引 ${res.indexed} 项，跳过 ${res.skipped} 项`,
+      );
       if (library.id === libraryId()) await loadAssets();
       await refreshLibraries();
       // Render the grid's tier for new photos in the background; on-demand loading covers failures.
-      void pregeneratePreviews(library.id, gridTier(thumbSize(), devicePixelRatio())).catch(
-        () => undefined,
-      );
+      runPregenerate(library);
       setNotice(
         `扫描完成：索引 ${result.indexed} 项，跳过 ${result.skipped} 项${result.moved ? `，识别 ${result.moved} 张移动或改名的照片并保留标记` : ''}${result.errors.length ? `，${result.errors.length} 项异常` : ''}。`,
       );
@@ -659,16 +949,16 @@ export default function ManagementApp() {
             .map((item) => `${item.path}：${item.message}`)
             .join('\n'),
         );
-    });
+    } catch (e) {
+      setError(errorMessage(e));
+    }
   }
   async function scanReboundLibrary(library: Library) {
     const token = ++request;
     setAssets([]);
     setTotal(0);
     setFileTotal(undefined);
-    setSelectedId(undefined);
-    setPicked(new Set<string>());
-    selectionAnchor = undefined;
+    selection.reset(undefined);
     setInfo(false);
     mutateDetail({ asset: null, error: '' });
     setLoading(true);
@@ -700,71 +990,45 @@ export default function ManagementApp() {
     // asset fields themselves have already been patched successfully.
     if (libraryId() && dirtyLibraries.has(libraryId()!)) await loadAssets(false, true);
   }
-  const selectedIds = createMemo(() => {
-    const ids = new Set(picked());
-    if (selectedId()) ids.add(selectedId()!);
-    return assets()
-      .filter((asset) => ids.has(asset.id))
-      .map((asset) => asset.id);
-  });
-  function clearPicked() {
-    if (picked().size) setPicked(new Set<string>());
-  }
-  function selectAsset(
-    id: string,
-    event?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean },
-  ) {
-    const items = assets();
-    if (event?.shiftKey && (selectionAnchor ?? selectedId())) {
-      const anchor = selectionAnchor ?? selectedId()!;
-      const from = items.findIndex((asset) => asset.id === anchor);
-      const to = items.findIndex((asset) => asset.id === id);
-      if (from >= 0 && to >= 0) {
-        const [start, end] = from < to ? [from, to] : [to, from];
-        setPicked(new Set(items.slice(start, end + 1).map((asset) => asset.id)));
-        setSelectedId(id);
-        return;
-      }
-    }
-    if (event?.ctrlKey || event?.metaKey) {
-      const next = new Set(selectedIds());
-      if (next.has(id) && next.size > 1) {
-        next.delete(id);
-        setPicked(next);
-        if (selectedId() === id) setSelectedId([...next].at(-1));
-      } else {
-        next.add(id);
-        setPicked(next);
-        setSelectedId(id);
-      }
-      selectionAnchor = id;
-      return;
-    }
-    clearPicked();
-    selectionAnchor = id;
-    setSelectedId(id);
-  }
   /**
    * Rates or flags the selection. The grid updates at once; the catalog write follows and a
-   * failure restores the previous marks. Every mark is one undo step (Ctrl/⌘+Z), and a
-   * keyboard mark confirms itself in the HUD.
+   * failure restores the previous marks. Every mark is one undo step (Ctrl/⌘+Z) when all items
+   * are loaded, and unloaded IDs from full-filter `⌘A` are written in 1,000-asset chunks.
    */
-  async function markSelection(mark: { rating?: number; flag?: Flag }, fromKeyboard = false) {
+  async function markSelection(
+    mark: { rating?: number; flag?: Flag; color_label?: ColorLabel },
+    fromKeyboard = false,
+  ) {
     const ids = selectedIds();
-    if (!ids.length || busy()) return;
+    if (!ids.length) return;
     const byId = new Map(assets().map((item) => [item.id, item]));
+    const unloadedIds = ids.filter((id) => !byId.has(id));
     const previous = ids
       .map((id) => byId.get(id))
       .filter((item): item is Asset => !!item)
-      .map((item) => ({ id: item.id, rating: item.rating, flag: item.flag || 'none' }));
+      .map((item) => ({
+        id: item.id,
+        rating: item.rating,
+        flag: (item.flag || 'none') as Flag,
+        color_label: (item.color_label || 'none') as ColorLabel,
+      }));
     const changes = previous.filter(
       (item) =>
         (mark.rating !== undefined && item.rating !== mark.rating) ||
-        (mark.flag !== undefined && item.flag !== mark.flag),
+        (mark.flag !== undefined && item.flag !== mark.flag) ||
+        (mark.color_label !== undefined && item.color_label !== mark.color_label),
     );
-    if (fromKeyboard) feedback.hud.show(markHudText(mark), mark.flag ? 'flag' : 'star');
-    if (!changes.length) return;
-    const patch = (marks: { id: string; rating?: number; flag?: Flag | string }[]) => {
+    const writeIds = [...changes.map((item) => item.id), ...unloadedIds];
+    if (fromKeyboard)
+      feedback.hud.show(
+        markHudText(mark),
+        mark.flag || mark.color_label ? 'flag' : 'star',
+      );
+    if (!writeIds.length) return;
+    const patch = (
+      marks: { id: string; rating?: number; flag?: Flag | string; color_label?: ColorLabel | string }[],
+    ) => {
+      if (!marks.length) return;
       const values = new Map(marks.map((item) => [item.id, item]));
       setAssets((items) =>
         items.map((item) => {
@@ -774,6 +1038,7 @@ export default function ManagementApp() {
             ...item,
             ...(next.rating !== undefined ? { rating: next.rating } : {}),
             ...(next.flag !== undefined ? { flag: next.flag as Flag } : {}),
+            ...(next.color_label !== undefined ? { color_label: next.color_label as ColorLabel } : {}),
           };
         }),
       );
@@ -785,27 +1050,45 @@ export default function ManagementApp() {
             ...current,
             ...(own.rating !== undefined ? { rating: own.rating } : {}),
             ...(own.flag !== undefined ? { flag: own.flag as Flag } : {}),
+            ...(own.color_label !== undefined ? { color_label: own.color_label as ColorLabel } : {}),
           },
           error: '',
         });
     };
-    const write = async (groups: { ids: string[]; rating?: number; flag?: string }[]) => {
+    const write = async (
+      groups: { ids: string[]; rating?: number; flag?: string; color_label?: string }[],
+    ) => {
       let batched = false;
       for (const group of groups) {
-        if (group.ids.length === 1 && (group.rating === undefined) !== (group.flag === undefined)) {
+        const fields =
+          Number(group.rating !== undefined) +
+          Number(group.flag !== undefined) +
+          Number(group.color_label !== undefined);
+        if (group.ids.length === 1 && fields === 1) {
           const id = group.ids[0];
-          await acceptAsset(
-            group.flag !== undefined
-              ? await execute<Asset>('asset.flag', { id, flag: group.flag })
-              : await execute<Asset>('asset.rate', { id, rating: group.rating }),
-            group.flag !== undefined ? 'flag' : 'rating',
-          );
+          if (group.color_label !== undefined) {
+            await acceptAsset(
+              await execute<Asset>('asset.label', { id, color_label: group.color_label }),
+              'color_label',
+            );
+          } else if (group.flag !== undefined) {
+            await acceptAsset(
+              await execute<Asset>('asset.flag', { id, flag: group.flag }),
+              'flag',
+            );
+          } else {
+            await acceptAsset(
+              await execute<Asset>('asset.rate', { id, rating: group.rating }),
+              'rating',
+            );
+          }
         } else {
-          for (let start = 0; start < group.ids.length; start += 1000)
+          for (const chunk of chunkIds(group.ids))
             await execute('asset.mark_batch', {
-              ids: group.ids.slice(start, start + 1000),
+              ids: chunk,
               ...(group.rating !== undefined ? { rating: group.rating } : {}),
               ...(group.flag !== undefined ? { flag: group.flag } : {}),
+              ...(group.color_label !== undefined ? { color_label: group.color_label } : {}),
             });
           batched = true;
           if (libraryId()) dirtyLibraries.add(libraryId()!);
@@ -815,39 +1098,139 @@ export default function ManagementApp() {
       if (batched) await loadAssets(false, true);
     };
     patch(changes.map((item) => ({ id: item.id, ...mark })));
-    // Undo is available at once; reverting waits for this write so the two never race.
-    const forward = write([{ ids: changes.map((item) => item.id), ...mark }]);
-    const entry: UndoEntry = {
-      label: ids.length > 1 ? `标记 ${changes.length} 张照片` : markHudText(mark),
-      ids: changes.map((item) => item.id),
-      revert: async () => {
-        await forward;
-        patch(changes);
-        try {
-          await write(groupMarks(changes));
-        } catch (e) {
-          patch(changes.map((item) => ({ id: item.id, ...mark })));
-          throw e;
-        }
-      },
-    };
-    feedback.history.push(entry);
+    // Undo is available at once when previous marks are known; reverting waits for this write.
+    const forward = write([{ ids: writeIds, ...mark }]);
+    const entry: UndoEntry | undefined =
+      unloadedIds.length === 0
+        ? {
+            label: ids.length > 1 ? `标记 ${changes.length} 张照片` : markHudText(mark),
+            ids: changes.map((item) => item.id),
+            revert: async () => {
+              await forward;
+              patch(changes);
+              try {
+                await write(groupMarks(changes));
+              } catch (e) {
+                patch(changes.map((item) => ({ id: item.id, ...mark })));
+                throw e;
+              }
+            },
+          }
+        : undefined;
+    if (entry) feedback.history.push(entry);
     try {
       await forward;
     } catch (e) {
-      feedback.history.remove(entry);
+      if (entry) feedback.history.remove(entry);
       patch(changes);
       setError(`标记未保存：${errorMessage(e)}`);
       return;
     }
+    if (collections().some((item) => item.kind === 'smart')) void refreshCollections();
     if (ids.length > 1) setNotice(`已标记 ${ids.length} 张照片。`);
   }
   async function rate(value: number) {
-    if (!selected() || busy()) return;
-    const id = selected()!.id;
-    await action('保存评级…', async () => {
-      await acceptAsset(await execute<Asset>('asset.rate', { id, rating: value }), 'rating');
-    });
+    const target = selected();
+    if (!target) return;
+    try {
+      await acceptAsset(await execute<Asset>('asset.rate', { id: target.id, rating: value }), 'rating');
+      if (collections().some((item) => item.kind === 'smart')) void refreshCollections();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function setInspectorColorLabel(color: ColorLabel) {
+    const target = selected();
+    if (!target) return;
+    await markSelection({ color_label: color }, false);
+  }
+  async function onInspectorKeywordsUpdated(keywords: string[]) {
+    const target =
+      detail()?.asset?.id === selected()?.id ? detail()!.asset! : selected();
+    if (!target) return;
+    await acceptAsset({ ...target, keywords }, 'keywords');
+    void refreshLibraryKeywords();
+    if (collections().some((item) => item.kind === 'smart')) void refreshCollections();
+  }
+  function executeCommand(command: CommandAction) {
+    switch (command.type) {
+      case 'all-libraries':
+        setSection('libraries');
+        setAllLibraries(true);
+        break;
+      case 'select-library': {
+        const target = libraries().find((item) => item.id === command.libraryId);
+        if (target) enterLibrary(target);
+        break;
+      }
+      case 'library-overview':
+        setSection('libraries');
+        setAllLibraries(false);
+        setView('overview');
+        break;
+      case 'open-import':
+        navigate('cards');
+        break;
+      case 'open-storage':
+        navigate('sources');
+        break;
+      case 'open-settings': {
+        const tabMap = {
+          general: 'settings-appearance',
+          cache: 'settings-cache',
+          shortcuts: 'settings-shortcuts',
+          about: 'settings-about',
+        } as const;
+        history.replaceState(null, '', `#${tabMap[command.section]}`);
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+        navigate('settings');
+        break;
+      }
+      case 'select-collection':
+        setSection('libraries');
+        setAllLibraries(false);
+        setFolder('');
+        setCollectionId(command.collectionId);
+        setView('photos');
+        break;
+      case 'create-collection':
+        if (libraryId()) setCollectionEditor({ kind: command.kind });
+        break;
+      case 'select-folder':
+        setSection('libraries');
+        setAllLibraries(false);
+        setCollectionId('');
+        setFolder(command.path);
+        setView('photos');
+        break;
+      case 'filter-flag':
+        setSection('libraries');
+        setAllLibraries(false);
+        setView('photos');
+        setFlag(command.flag);
+        break;
+      case 'filter-rating':
+        setSection('libraries');
+        setAllLibraries(false);
+        setView('photos');
+        setRating(command.rating ?? 0);
+        break;
+      case 'filter-color':
+        setSection('libraries');
+        setAllLibraries(false);
+        setView('photos');
+        setColorLabel(command.colorLabel);
+        break;
+      case 'clear-filters':
+        setQuery('');
+        setFolder('');
+        setCollectionId('');
+        clearAllFilters();
+        break;
+      case 'toggle-burst-stacks':
+        toggleBurstStacks();
+        break;
+    }
   }
   async function resetCrop() {
     if (!selected()) return;
@@ -882,6 +1265,10 @@ export default function ManagementApp() {
     setOverlay({ id: asset.id, ids });
     if (image)
       fly(image, image.getBoundingClientRect(), () => {
+        const wrapRect = document
+          .querySelector('.viewer-overlay .photo-wrap')
+          ?.getBoundingClientRect();
+        if (wrapRect && wrapRect.width >= 2 && wrapRect.height >= 2) return wrapRect;
         const stage = document
           .querySelector('.viewer-overlay .photo-stage')
           ?.getBoundingClientRect();
@@ -900,7 +1287,7 @@ export default function ManagementApp() {
     const photo = document.querySelector<HTMLImageElement>('.viewer-overlay .main-photo');
     const from = photo?.getBoundingClientRect();
     setOverlay(undefined);
-    document.title = 'Nebulume — 影像管理';
+    document.title = 'Lumen';
     if (!id) return;
     // Come back to the photo the viewer ended on. The viewer hands focus back to
     // the tile it opened from as it unmounts, so move selection and focus after it.
@@ -981,6 +1368,22 @@ export default function ManagementApp() {
     input.value = '';
   }
   function keyboard(event: KeyboardEvent) {
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      event.key.toLowerCase() === 'k' &&
+      !dialog() &&
+      !exportDialogIds() &&
+      !removing() &&
+      !collectionEditor() &&
+      !collectingIds() &&
+      !overlay()
+    ) {
+      event.preventDefault();
+      setCommandPaletteOpen((open) => !open);
+      return;
+    }
     if (navigationOpen() && event.key === 'Escape') {
       event.preventDefault();
       closeNavigation();
@@ -1005,11 +1408,42 @@ export default function ManagementApp() {
       }
       return;
     }
-    if (dialog() || removing() || overlay() || isTextEntry(event.target) || event.defaultPrevented)
+    if (
+      dialog() ||
+      exportDialogIds() ||
+      removing() ||
+      collectionEditor() ||
+      collectingIds() ||
+      commandPaletteOpen() ||
+      overlay() ||
+      isTextEntry(event.target) ||
+      event.defaultPrevented
+    )
       return;
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.shiftKey &&
+      event.key.toLowerCase() === 'e' &&
+      section() === 'libraries' &&
+      selectedIds().length
+    ) {
+      event.preventDefault();
+      setExportDialogIds([...selectedIds()]);
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && libraryId()) {
       event.preventDefault();
       searchInput?.focus();
+      return;
+    }
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === 'b' &&
+      section() === 'libraries'
+    ) {
+      event.preventDefault();
+      toggleSidebar();
       return;
     }
     if (
@@ -1020,8 +1454,18 @@ export default function ManagementApp() {
       assets().length
     ) {
       event.preventDefault();
-      setPicked(new Set(assets().map((asset) => asset.id)));
-      if (!selectedId()) setSelectedId(assets()[0].id);
+      const targetLib = libraryId();
+      const opts = listOptions();
+      // Optimistically select loaded items at once, then upgrade to full-filter `asset.ids`.
+      selection.selectAll(assets().map((asset) => asset.id));
+      void execute<AssetIdsResult>('asset.ids', { ...opts })
+        .then((res) => {
+          if (libraryId() === targetLib && res?.ids?.length) {
+            selection.selectAll(res.ids);
+            feedback.hud.show(`已全选 ${res.ids.length.toLocaleString()} 张`, 'checks');
+          }
+        })
+        .catch(() => undefined);
       return;
     }
     if (
@@ -1066,23 +1510,39 @@ export default function ManagementApp() {
       view() === 'overview'
     )
       return;
-    const index = assets().findIndex((asset) => asset.id === selectedId());
+    const index = displayAssets().findIndex((asset) => asset.id === selectedId());
     const step = gridStep(event.key, index);
     if (step !== undefined) {
       event.preventDefault();
-      const next = assets()[step];
+      const next = displayAssets()[step];
       if (next && next.id !== selectedId()) {
         selectAsset(next.id, event.shiftKey ? { shiftKey: true } : undefined);
         focusThumbnail(next.id);
       }
     } else if (
-      event.key === 'Enter' &&
+      (event.key === 'Enter' || event.key === ' ') &&
+      !event.repeat &&
       selected() &&
-      !(event.target as HTMLElement).closest('button')
-    )
+      !(event.target as HTMLElement).closest('button, select, a')
+    ) {
+      event.preventDefault();
       void openAsset(selected()!);
+    }
     else if (event.key.toLowerCase() === 'i') setInfo((value) => !value);
     else if (/^[0-5]$/.test(event.key)) void markSelection({ rating: Number(event.key) }, true);
+    else if (/^[6-9]$/.test(event.key) && !event.repeat) {
+      const color = keyToColorLabel(event.key);
+      if (color) {
+        const byId = new Map(assets().map((item) => [item.id, item]));
+        const loadedSelected = selectedIds()
+          .map((id) => byId.get(id))
+          .filter((item): item is Asset => !!item);
+        const allSame =
+          loadedSelected.length > 0 &&
+          loadedSelected.every((item) => (item.color_label || 'none') === color);
+        void markSelection({ color_label: allSame ? 'none' : color }, true);
+      }
+    }
     else if (event.key.toLowerCase() === 'p' && !event.shiftKey)
       void markSelection({ flag: 'pick' }, true);
     else if (event.key.toLowerCase() === 'x') void markSelection({ flag: 'reject' }, true);
@@ -1104,7 +1564,6 @@ export default function ManagementApp() {
     const rateItems = [5, 4, 3, 2, 1, 0].map((value) => ({
       label: value ? `评为 ${'★'.repeat(value)}` : '清除评级',
       ariaLabel: value ? `将${subject}评为 ${value} 星` : `清除${subject}的评级`,
-      disabled: !!busy(),
       onSelect: () => void markSelection({ rating: value }),
     }));
     setContextMenu({
@@ -1132,23 +1591,39 @@ export default function ManagementApp() {
           : []),
         {
           label: '从此照片开始选图',
-          disabled: !!busy(),
           onSelect: () => void startCulling(),
         },
         'separator',
         ...rateItems,
         'separator',
-        { label: '留用', disabled: !!busy(), onSelect: () => void markSelection({ flag: 'pick' }) },
+        { label: '留用', onSelect: () => void markSelection({ flag: 'pick' }) },
         {
           label: '淘汰',
-          disabled: !!busy(),
           onSelect: () => void markSelection({ flag: 'reject' }),
         },
         {
           label: '清除旗标',
-          disabled: !!busy(),
           onSelect: () => void markSelection({ flag: 'none' }),
         },
+        'separator',
+        { label: '设为红色标', shortcut: '6', onSelect: () => void markSelection({ color_label: 'red' }) },
+        { label: '设为黄色标', shortcut: '7', onSelect: () => void markSelection({ color_label: 'yellow' }) },
+        { label: '设为绿色标', shortcut: '8', onSelect: () => void markSelection({ color_label: 'green' }) },
+        { label: '设为蓝色标', shortcut: '9', onSelect: () => void markSelection({ color_label: 'blue' }) },
+        { label: '清除色标', onSelect: () => void markSelection({ color_label: 'none' }) },
+        'separator',
+        {
+          label: count > 1 ? `将所选 ${count} 张加入精选集…` : '加入精选集…',
+          onSelect: () => setCollectingIds([...selectedIds()]),
+        },
+        ...(activeCollection()?.kind === 'manual'
+          ? [
+              {
+                label: '移出当前精选集',
+                onSelect: () => void removeSelectedFromCollection([...selectedIds()]),
+              },
+            ]
+          : []),
         'separator',
         {
           label: '显示详情',
@@ -1156,9 +1631,57 @@ export default function ManagementApp() {
         },
         {
           label: count > 1 ? `导出所选 ${count} 张为 JPEG…` : '导出为 JPEG…',
-          disabled: !!busy(),
+          disabled: tasks.isRunning('export'),
           onSelect: () => void exportSelection(),
         },
+        {
+          label: count > 1 ? `按预设导出所选 ${count} 张…` : '按预设导出…',
+          shortcut: '⌘⇧E',
+          disabled: tasks.isRunning('export'),
+          onSelect: () => setExportDialogIds([...selectedIds()]),
+        },
+        ...(desktop && !asset.source_key
+          ? [
+              {
+                label: '在文件夹中显示',
+                disabled: count > 1 || !asset.path,
+                onSelect: () =>
+                  void revealInFolder(asset.path).catch((e) => setError(errorMessage(e))),
+              },
+              {
+                label: '用默认应用打开',
+                disabled: count > 1 || !asset.path,
+                onSelect: () =>
+                  void openExternal({ id: asset.id, path: asset.path }).catch((e) =>
+                    setError(errorMessage(e)),
+                  ),
+              },
+              {
+                label: '选择外部精修软件打开…',
+                disabled: count > 1 || !asset.path,
+                onSelect: () =>
+                  void chooseExternalApp()
+                    .then((app) => {
+                      if (app) return openExternal({ id: asset.id, path: asset.path, appPath: app });
+                    })
+                    .catch((e) => setError(errorMessage(e))),
+              },
+            ]
+          : []),
+        ...(!asset.source_key
+          ? [
+              {
+                label: '写入 .xmp 伴随文件',
+                disabled: !!busy(),
+                onSelect: () => void syncXmp('write', { ids: [...selectedIds()] }),
+              },
+              {
+                label: '从 .xmp 重新读取标记',
+                disabled: !!busy(),
+                onSelect: () => void syncXmp('read', { ids: [...selectedIds()] }),
+              },
+            ]
+          : []),
         ...(currentLibrary()?.source_kind === 'local'
           ? [
               {
@@ -1228,7 +1751,7 @@ export default function ManagementApp() {
     return photoGrid?.columns() ?? 1;
   }
   function gridStep(key: string, index: number): number | undefined {
-    if (!assets().length) return undefined;
+    if (!displayAssets().length) return undefined;
     return photoGrid?.step(index, key);
   }
   function focusThumbnail(id: string) {
@@ -1237,7 +1760,7 @@ export default function ManagementApp() {
     const owned =
       collectionScroll?.contains(document.activeElement) ||
       document.activeElement === document.body;
-    photoGrid?.scrollToIndex(assets().findIndex((asset) => asset.id === id));
+    photoGrid?.scrollToIndex(displayAssets().findIndex((asset) => asset.id === id));
     // The target row may only mount after the scroll is measured.
     requestAnimationFrame(() => {
       const element = collectionScroll?.querySelector<HTMLElement>(
@@ -1305,6 +1828,7 @@ export default function ManagementApp() {
   function libraryMenu(library: Library): MenuEntry[] {
     const blocked = scanBlocked(library);
     const reason = blocked ? scanReason(library) : undefined;
+    const scanningThis = tasks.isRunning('scan', library.id);
     const open = (then: () => void) => () => {
       if (libraryId() !== library.id) enterLibrary(library);
       then();
@@ -1314,7 +1838,7 @@ export default function ManagementApp() {
         label: '图片库设置…',
         ariaLabel: `${library.name} 图片库设置`,
         icon: 'settings',
-        disabled: !!busy(),
+        disabled: scanningThis || !!busy(),
         onSelect: () => editLibrary(library),
       },
       ...(desktop
@@ -1322,34 +1846,48 @@ export default function ManagementApp() {
             {
               label: '扫描更新',
               icon: 'refresh',
-              disabled: !!busy() || blocked,
+              disabled: scanningThis || blocked,
               title: reason,
               onSelect: () => void scan(library),
             },
             {
               label: '预生成缩略图',
               icon: 'photo',
-              disabled: !!busy() || blocked,
+              disabled: tasks.isRunning('pregenerate', library.id) || blocked,
               title: reason,
               onSelect: () => {
-                void pregeneratePreviews(
-                  library.id,
-                  gridTier(thumbSize(), devicePixelRatio()),
-                ).catch((e) => setError(errorMessage(e)));
+                runPregenerate(library);
                 setNotice(`正在后台为 ${library.name} 生成缩略图。`);
               },
             },
             {
               label: '补全拍摄时间…',
               icon: 'clock',
-              disabled: !!busy(),
               onSelect: open(() => setSort('captured_at')),
             },
             {
               label: '内容指纹…',
               icon: 'shield-check',
-              disabled: !!busy(),
+              disabled: scanningThis || !!busy(),
               onSelect: () => editLibrary(library),
+            },
+          ] as MenuEntry[])
+        : []),
+      ...(!library.source_kind || library.source_kind === 'local'
+        ? ([
+            {
+              label: '导出整库 .xmp 伴随文件',
+              icon: 'file',
+              disabled: scanningThis || blocked || !!busy(),
+              title: reason,
+              onSelect: () => void syncXmp('write', { libraryId: library.id, label: library.name }),
+            },
+            {
+              label: '从 .xmp 同步外部修改',
+              icon: 'refresh',
+              disabled: scanningThis || blocked || !!busy(),
+              title: reason,
+              onSelect: () => void syncXmp('read', { libraryId: library.id, label: library.name }),
             },
           ] as MenuEntry[])
         : []),
@@ -1359,7 +1897,7 @@ export default function ManagementApp() {
         ariaLabel: `移除图片库 ${library.name}`,
         icon: 'trash',
         danger: true,
-        disabled: !!busy(),
+        disabled: scanningThis || !!busy(),
         onSelect: () => setRemoving({ kind: 'library', item: library }),
       },
     ];
@@ -1371,25 +1909,18 @@ export default function ManagementApp() {
     if (kind === 'cull') return setCullWhenLoaded(true);
     if (kind === 'scan') return void scan(library);
     if (kind === 'overview') return setView('overview');
-    // Every pick in the folder, not only the loaded page.
-    const ids: string[] = [];
-    for (let offset = 0; ; offset += 1000) {
-      const page = await execute<AssetListResult>('asset.list', {
-        library_id: library.id,
-        folder: path,
-        flag: 'pick',
-        limit: 1000,
-        offset,
-      }).catch((e) => {
-        setError(errorMessage(e));
-        return undefined;
-      });
-      if (!page) return;
-      ids.push(...page.items.map((item) => item.id));
-      if (ids.length >= page.total || !page.items.length) break;
-    }
-    if (!ids.length) return setNotice('这个文件夹里还没有留用的照片。');
-    await exportSelection(ids);
+    // Every pick in the folder via `asset.ids` in one lightweight call.
+    const matched = await execute<AssetIdsResult>('asset.ids', {
+      library_id: library.id,
+      folder: path,
+      flag: 'pick',
+    }).catch((e) => {
+      setError(errorMessage(e));
+      return undefined;
+    });
+    if (!matched?.ids) return;
+    if (!matched.ids.length) return setNotice('这个文件夹里还没有留用的照片。');
+    await exportSelection(matched.ids);
   }
   const watchKey = createMemo(() =>
     libraries()
@@ -1509,7 +2040,7 @@ export default function ManagementApp() {
       drawerButtonRef={(el) => (navigationButton = el)}
       railRef={(el) => (navigationElement = el)}
       sidebar={
-        section() === 'libraries' ? (
+        section() === 'libraries' && !sidebarCollapsed() ? (
           <LibrarySidebar
             libraries={visibleLibraries()}
             currentId={section() === 'libraries' && !allLibraries() ? libraryId() : undefined}
@@ -1520,6 +2051,8 @@ export default function ManagementApp() {
             }}
             folder={folder()}
             folders={folders()}
+            collections={collections()}
+            collectionId={collectionId()}
             usable={(library) => availabilityPresentation(library).usable}
             unavailableLabel={(library) => availabilityPresentation(library).label}
             location={libraryLocation}
@@ -1527,10 +2060,21 @@ export default function ManagementApp() {
             onLibrary={(library) => enterLibrary(library)}
             onFolder={(path) => {
               closeNavigation();
+              setCollectionId('');
               setFolder(path);
             }}
             onFolderAction={(kind, path) => void folderAction(kind, path)}
+            onCollection={(id) => {
+              closeNavigation();
+              if (id) setFolder('');
+              setCollectionId(id);
+            }}
+            onCreateCollection={(kind) => setCollectionEditor({ kind })}
+            onEditCollection={(item) => setCollectionEditor({ kind: item.kind, existing: item })}
+            onDeleteCollection={(item) => void deleteCollection(item)}
+            onCommandPalette={() => setCommandPaletteOpen(true)}
             onAddLibrary={() => newLibrary()}
+            onCollapse={toggleSidebar}
             libraryMenu={libraryMenu}
           />
         ) : undefined
@@ -1558,13 +2102,29 @@ export default function ManagementApp() {
       <Show when={contextMenu()}>
         {(menu) => <ContextMenu menu={menu()} onClose={() => setContextMenu(undefined)} />}
       </Show>
-      <main class="manager-workspace" aria-label="影像管理工作区">
+      <main
+        class={`manager-workspace${selectedIds().length > 1 ? ' has-batch-dock' : ''}`}
+        aria-label="影像管理工作区"
+      >
         <UpdatePrompt />
         <Show when={section() === 'libraries' && allLibraries()}>
           <LibrariesOverview
             libraries={visibleLibraries()}
             desktop={desktop}
+            leading={
+              sidebarCollapsed() ? (
+                <IconButton
+                  size="sm"
+                  icon="layout-sidebar-right"
+                  label="展开图片库侧栏（⌘B）"
+                  shortcut="Meta+B Control+B"
+                  onClick={toggleSidebar}
+                />
+              ) : undefined
+            }
+            extraActions={<TaskPill tasks={tasks} />}
             onOpen={(library) => enterLibrary(library)}
+            onRelocate={(library) => void relocateLibrary(library)}
             onCreate={() => {
               if (desktop) newLibrary();
               else {
@@ -1619,13 +2179,26 @@ export default function ManagementApp() {
             {(library) => (
               <section class="library-collection" aria-label={`${library().name} 照片`}>
                 <PageHeader
+                  leading={
+                    sidebarCollapsed() ? (
+                      <IconButton
+                        size="sm"
+                        icon="layout-sidebar-right"
+                        label="展开图片库侧栏（⌘B）"
+                        shortcut="Meta+B Control+B"
+                        onClick={toggleSidebar}
+                      />
+                    ) : undefined
+                  }
                   title={library().name}
                   subtitle={
-                    folder()
-                      ? folder().replaceAll('/', ' / ')
-                      : library().asset_count !== undefined
-                        ? `${library().asset_count!.toLocaleString()} 张`
-                        : undefined
+                    activeCollection()
+                      ? `精选集 · ${activeCollection()!.name}`
+                      : folder()
+                        ? folder().replaceAll('/', ' / ')
+                        : library().asset_count !== undefined
+                          ? `${library().asset_count!.toLocaleString()} 张`
+                          : undefined
                   }
                   center={(narrow) => (
                     <Segmented
@@ -1641,7 +2214,7 @@ export default function ManagementApp() {
                           icon: 'flag',
                           shortcut: 'Meta+2',
                           action: true,
-                          disabled: !assets().length || !!busy(),
+                          disabled: !assets().length,
                         },
                         { value: 'overview', label: '概览', icon: 'chart-bar', shortcut: 'Meta+3' },
                       ]}
@@ -1649,9 +2222,10 @@ export default function ManagementApp() {
                   )}
                   actions={
                     <>
+                      <TaskPill tasks={tasks} />
                       <Button
                         icon={desktop ? 'refresh' : 'plus'}
-                        disabled={!!busy() || scanBlocked(library())}
+                        disabled={tasks.isRunning('scan', library().id) || scanBlocked(library())}
                         title={scanBlocked(library()) ? scanReason(library()) : undefined}
                         onClick={() => (desktop ? scan(library()) : fileInput.click())}
                       >
@@ -1670,6 +2244,16 @@ export default function ManagementApp() {
                       detail={availabilityPresentation(library()).detail}
                       action={
                         <>
+                          <Show
+                            when={
+                              desktop &&
+                              (library().source_kind === 'local' || !library().source_kind)
+                            }
+                          >
+                            <Button size="sm" onClick={() => void relocateLibrary(library())}>
+                              重新定位目录…
+                            </Button>
+                          </Show>
                           <Show when={availabilityPresentation(library()).action}>
                             {(fix) => (
                               <Button size="sm" onClick={() => navigate(fix().section)}>
@@ -1681,7 +2265,6 @@ export default function ManagementApp() {
                             <Button
                               size="sm"
                               variant="ghost"
-                              disabled={!!busy()}
                               onClick={() => void refreshLibraries()}
                             >
                               重试
@@ -1732,13 +2315,38 @@ export default function ManagementApp() {
                     </For>
                   </span>
                   <Spacer />
-                  <span class="collection-status library-count" aria-live="polite">
+                  <span
+                    class="collection-status library-count"
+                    aria-live="polite"
+                    data-loaded={loading() ? undefined : assets().length}
+                    title={
+                      loading()
+                        ? undefined
+                        : `已载入 ${assets().length} / ${total()} 项${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()} 个匹配文件` : ''}`
+                    }
+                  >
                     {loading()
                       ? '正在读取索引…'
-                      : `已载入 ${assets().length} / ${total()} 项${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()} 个匹配文件` : ''}`}
+                      : `${total().toLocaleString()} 张${fileTotal() !== undefined && fileTotal() !== total() ? ` · ${fileTotal()!.toLocaleString()} 文件` : ''}`}
                   </span>
+                  <Show when={sort() === 'captured_at'}>
+                    <Toggle
+                      pressed={burstStacks()}
+                      title="按同机身与相邻拍摄时间（≤ 2 秒）自动折叠连拍组"
+                      onChange={(on) => toggleBurstStacks(on)}
+                      icon="copy"
+                    >
+                      折叠连拍
+                    </Toggle>
+                  </Show>
                   <Toggle
-                    pressed={flag() === 'not_reject'}
+                    pressed={flag() === 'not_reject' || flag() === 'pick' || flag() === 'none'}
+                    disabled={flag() === 'pick' || flag() === 'none'}
+                    title={
+                      flag() === 'pick' || flag() === 'none'
+                        ? '当前旗标筛选已排除淘汰照片'
+                        : '隐藏已标记为淘汰的照片'
+                    }
                     onChange={(on) => setFlag(on ? 'not_reject' : 'any')}
                     icon="eye-off"
                   >
@@ -1810,204 +2418,33 @@ export default function ManagementApp() {
                   />
                 </Toolbar>
                 <Show when={filtersOpen()}>
-                  <div
-                    class="filter-panel library-filters"
-                    id="collection-filters"
-                    role="group"
-                    aria-label="筛选条件"
-                  >
-                    <Select
-                      size="sm"
-                      aria-label="最低评级筛选"
-                      value={String(rating())}
-                      onChange={(value) => setRating(Number(value))}
-                      options={[
-                        { value: '0', label: '所有评级' },
-                        ...[1, 2, 3, 4, 5].map((value) => ({
-                          value: String(value),
-                          label: `${'★'.repeat(value)}${value < 5 ? ' 及以上' : ''}`,
-                        })),
-                      ]}
-                    />
-                    <Select
-                      size="sm"
-                      aria-label="旗标筛选"
-                      value={flag()}
-                      onChange={(value) => setFlag(value as FlagFilter)}
-                      options={[
-                        { value: 'any', label: '所有旗标' },
-                        { value: 'pick', label: '留用' },
-                        { value: 'none', label: '未标记' },
-                        { value: 'reject', label: '淘汰' },
-                        { value: 'not_reject', label: '隐藏淘汰' },
-                      ]}
-                    />
-                    <Select
-                      size="sm"
-                      aria-label="文件格式筛选"
-                      value={format()}
-                      onChange={(value) =>
-                        setFormat(value as NonNullable<AssetListOptions['format']>)
-                      }
-                      options={[
-                        { value: 'all', label: '所有格式' },
-                        { value: 'raw', label: 'RAW' },
-                        { value: 'jpeg', label: 'JPEG' },
-                      ]}
-                    />
-                    <Show when={facets()?.cameras.length}>
-                      <Select
-                        size="sm"
-                        aria-label="机身筛选"
-                        value={camera()}
-                        onChange={setCamera}
-                        options={[
-                          { value: '', label: '所有机身' },
-                          ...facets()!.cameras.map((item) => ({
-                            value: item.value,
-                            label: `${item.value}（${item.count}）`,
-                          })),
-                        ]}
-                      />
-                    </Show>
-                    <Show when={facets()?.lenses.length}>
-                      <Select
-                        size="sm"
-                        aria-label="镜头筛选"
-                        value={lens()}
-                        onChange={setLens}
-                        options={[
-                          { value: '', label: '所有镜头' },
-                          ...facets()!.lenses.map((item) => ({
-                            value: item.value,
-                            label: `${item.value}（${item.count}）`,
-                          })),
-                        ]}
-                      />
-                    </Show>
-                    <span class="library-dates" role="group" aria-label="拍摄日期范围">
-                      <TextInput
-                        size="sm"
-                        type="date"
-                        value={capturedFrom()}
-                        min={facets()?.captured.first ?? undefined}
-                        max={capturedTo() || facets()?.captured.last || undefined}
-                        onChange={(event) => setCapturedFrom(event.currentTarget.value)}
-                        aria-label="拍摄日期起"
-                      />
-                      <span aria-hidden="true">–</span>
-                      <TextInput
-                        size="sm"
-                        type="date"
-                        value={capturedTo()}
-                        min={capturedFrom() || facets()?.captured.first || undefined}
-                        max={facets()?.captured.last ?? undefined}
-                        onChange={(event) => setCapturedTo(event.currentTarget.value)}
-                        aria-label="拍摄日期止"
-                      />
-                    </span>
-                    <Show when={batches().length}>
-                      <Select
-                        size="sm"
-                        aria-label="导入批次"
-                        value={batchId()}
-                        onChange={setBatchId}
-                        options={[
-                          { value: '', label: '所有导入' },
-                          ...batches().map((batch) => ({
-                            value: batch.id,
-                            label: `${batch.started_at.slice(0, 16).replace('T', ' ')} · ${batch.asset_count} 张`,
-                          })),
-                        ]}
-                      />
-                    </Show>
-                    <Show when={activeFilters().length}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        class="filter-clear"
-                        onClick={clearAllFilters}
-                      >
-                        清除全部
-                      </Button>
-                    </Show>
-                  </div>
-                </Show>
-                <Show when={selectedIds().length > 1}>
-                  <Toolbar label="批量操作" class="library-batch">
-                    <b>已选 {selectedIds().length} 张</b>
-                    <span class="library-batch-group" role="group" aria-label="批量评级">
-                      <For each={[1, 2, 3, 4, 5]}>
-                        {(value) => (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={!!busy()}
-                            aria-label={`将所选照片评为 ${value} 星`}
-                            onClick={() => void markSelection({ rating: value })}
-                          >
-                            {value}★
-                          </Button>
-                        )}
-                      </For>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={!!busy()}
-                        aria-label="清除所选照片评级"
-                        onClick={() => void markSelection({ rating: 0 })}
-                      >
-                        0
-                      </Button>
-                    </span>
-                    <span class="library-batch-group" role="group" aria-label="批量旗标">
-                      <Button
-                        size="sm"
-                        disabled={!!busy()}
-                        onClick={() => void markSelection({ flag: 'pick' })}
-                      >
-                        留用
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={!!busy()}
-                        onClick={() => void markSelection({ flag: 'reject' })}
-                      >
-                        淘汰
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={!!busy()}
-                        onClick={() => void markSelection({ flag: 'none' })}
-                      >
-                        清除旗标
-                      </Button>
-                    </span>
-                    <Spacer />
-                    <Button
-                      size="sm"
-                      icon="export"
-                      disabled={!!busy()}
-                      onClick={() => void exportSelection()}
-                    >
-                      导出 JPEG…
-                    </Button>
-                    <Show when={library().source_kind === 'local' || !library().source_kind}>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        icon="trash"
-                        disabled={!!busy()}
-                        onClick={() => void trashSelection()}
-                      >
-                        移到废纸篓
-                      </Button>
-                    </Show>
-                    <Button size="sm" variant="ghost" onClick={clearPicked}>
-                      取消选择
-                    </Button>
-                  </Toolbar>
+                  <LibraryFilterBar
+                    rating={rating()}
+                    onRating={setRating}
+                    flag={flag()}
+                    onFlag={setFlag}
+                    colorLabel={colorLabel()}
+                    onColorLabel={setColorLabel}
+                    format={format()}
+                    onFormat={setFormat}
+                    facets={facets()}
+                    camera={camera()}
+                    onCamera={setCamera}
+                    lens={lens()}
+                    onLens={setLens}
+                    keywords={libraryKeywords()}
+                    keyword={keyword()}
+                    onKeyword={setKeyword}
+                    capturedFrom={capturedFrom()}
+                    onCapturedFrom={setCapturedFrom}
+                    capturedTo={capturedTo()}
+                    onCapturedTo={setCapturedTo}
+                    batches={batches()}
+                    batchId={batchId()}
+                    onBatchId={setBatchId}
+                    hasActiveFilters={activeFilters().length > 0}
+                    onClearAll={clearAllFilters}
+                  />
                 </Show>
                 <div class="collection-body">
                   <Show when={view() === 'overview'}>
@@ -2027,7 +2464,7 @@ export default function ManagementApp() {
                   </Show>
                   <div class="collection-scroll" ref={collectionScroll}>
                     <Show
-                      when={assets().length}
+                      when={displayAssets().length}
                       fallback={
                         <Show
                           when={!loading()}
@@ -2049,38 +2486,43 @@ export default function ManagementApp() {
                             title={
                               loading()
                                 ? '正在读取图片…'
-                                : filtered()
-                                  ? '没有匹配的照片'
-                                  : '图片库尚无照片'
+                                : activeCollection() && !filtered()
+                                  ? '此精选集尚无照片'
+                                  : filtered()
+                                    ? '没有匹配的照片'
+                                    : '图片库尚无照片'
                             }
                             description={
-                              filtered()
-                                ? '调整搜索词、评级、旗标或文件格式筛选。'
-                                : desktop
-                                  ? '扫描此目录建立索引，照片在原位置保留。'
-                                  : '选择本地图片开始体验。'
+                              activeCollection() && !filtered()
+                                ? activeCollection()!.kind === 'smart'
+                                  ? '符合智能筛选规则的照片会自动归集到此处。'
+                                  : '在照片网格中右键或使用批量操作坞即可将照片加入此精选集。'
+                                : filtered()
+                                  ? '调整搜索词、评级、旗标、色标或关键词筛选。'
+                                  : desktop
+                                    ? '扫描此目录建立索引，照片在原位置保留。'
+                                    : '选择本地图片开始体验。'
                             }
                             actions={
                               <Show when={!loading()}>
                                 <Button
                                   onClick={() =>
-                                    filtered()
-                                      ? (setQuery(''),
-                                        setRating(0),
-                                        setFormat('all'),
-                                        setFlag('any'),
-                                        setBatchId(''),
-                                        clearMetadataFilters())
-                                      : desktop
-                                        ? scan(library())
-                                        : fileInput.click()
+                                    activeCollection() && !filtered()
+                                      ? setCollectionId('')
+                                      : filtered()
+                                        ? (setQuery(''), clearAllFilters())
+                                        : desktop
+                                          ? scan(library())
+                                          : fileInput.click()
                                   }
                                 >
-                                  {filtered()
-                                    ? '清除筛选'
-                                    : desktop
-                                      ? '扫描图片库'
-                                      : '选择本地图片'}
+                                  {activeCollection() && !filtered()
+                                    ? '返回全部照片'
+                                    : filtered()
+                                      ? '清除筛选'
+                                      : desktop
+                                        ? '扫描图片库'
+                                        : '选择本地图片'}
                                 </Button>
                               </Show>
                             }
@@ -2089,52 +2531,85 @@ export default function ManagementApp() {
                       }
                     >
                       <JustifiedGrid
-                        items={assets()}
+                        items={displayAssets()}
                         measure={tileShape}
                         section={daySection}
                         rowHeight={thumbSize()}
                         scroller={() => collectionScroll}
                         ref={(api) => (photoGrid = api)}
                       >
-                        {(asset, size) => (
-                          <div class="asset-card tile-card">
-                            <Thumbnail
-                              tile
-                              asset={asset}
-                              tier={gridTier(Math.max(size.width, size.height), devicePixelRatio())}
-                              selected={selectedIds().includes(asset.id)}
-                              focused={selectedId() === asset.id}
-                              tabbable={
-                                selectedId() === asset.id ||
-                                (!selectedIds().length && asset.id === assets()[0]?.id)
-                              }
-                              onSelect={(event) => selectAsset(asset.id, event)}
-                              onOpen={() => openAsset(asset)}
-                              onMenu={(point) => openAssetMenu(asset, point)}
-                            />
-                            <Show when={asset.variants?.length}>
-                              <div class="asset-variants" aria-label={`${asset.filename} 配对文件`}>
-                                <For each={asset.variants}>
-                                  {(variant) => (
-                                    <button
-                                      class="button small"
-                                      aria-label={`打开 ${variant.filename} ${variant.kind === 'raw' ? 'RAW' : 'JPEG'}`}
-                                      title={variant.filename}
-                                      onClick={() =>
-                                        openAsset(
-                                          variant,
-                                          variantViewerIds(assets(), asset.id, variant.id),
-                                        )
-                                      }
-                                    >
-                                      {variant.kind === 'raw' ? 'RAW' : 'JPEG'}
-                                    </button>
-                                  )}
-                                </For>
-                              </div>
-                            </Show>
-                          </div>
-                        )}
+                        {(asset, size) => {
+                          const burst = () => burstByAssetId().get(asset.id);
+                          return (
+                            <div class="asset-card tile-card">
+                              <Thumbnail
+                                tile
+                                asset={asset}
+                                tier={gridTier(
+                                  Math.max(size.width, size.height),
+                                  devicePixelRatio(),
+                                )}
+                                selected={selectedIds().includes(asset.id)}
+                                focused={selectedId() === asset.id}
+                                tabbable={
+                                  selectedId() === asset.id ||
+                                  (!selectedIds().length && asset.id === displayAssets()[0]?.id)
+                                }
+                                onSelect={(event) => selectAsset(asset.id, event)}
+                                onOpen={() => openAsset(asset)}
+                                onMenu={(point) => openAssetMenu(asset, point)}
+                              />
+                              <Show when={burst() && burst()!.stackCount > 1}>
+                                <button
+                                  type="button"
+                                  class="tile-burst-badge"
+                                  aria-expanded={burst()!.isStackExpanded}
+                                  aria-label={
+                                    burst()!.isStackExpanded
+                                      ? `收起连拍组（共 ${burst()!.stackCount} 张）`
+                                      : `展开连拍组（共 ${burst()!.stackCount} 张）`
+                                  }
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    const sid = burst()!.stackId;
+                                    if (sid) toggleStackExpanded(sid);
+                                  }}
+                                >
+                                  <Icon name="copy" size={12} />
+                                  <span>
+                                    {burst()!.isStackExpanded
+                                      ? '收起连拍'
+                                      : `叠 ${burst()!.stackCount} 张`}
+                                  </span>
+                                </button>
+                              </Show>
+                              <Show when={asset.variants?.length}>
+                                <div
+                                  class="asset-variants"
+                                  aria-label={`${asset.filename} 配对文件`}
+                                >
+                                  <For each={asset.variants}>
+                                    {(variant) => (
+                                      <button
+                                        class="button small"
+                                        aria-label={`打开 ${variant.filename} ${variant.kind === 'raw' ? 'RAW' : 'JPEG'}`}
+                                        title={variant.filename}
+                                        onClick={() =>
+                                          openAsset(
+                                            variant,
+                                            variantViewerIds(assets(), asset.id, variant.id),
+                                          )
+                                        }
+                                      >
+                                        {variant.kind === 'raw' ? 'RAW' : 'JPEG'}
+                                      </button>
+                                    )}
+                                  </For>
+                                </div>
+                              </Show>
+                            </div>
+                          );
+                        }}
                       </JustifiedGrid>
                       <Show when={assets().length < total()}>
                         <div
@@ -2177,6 +2652,13 @@ export default function ManagementApp() {
                       </Show>
                     </Show>
                   </div>
+                  <Show when={view() === 'photos'}>
+                    <DateScrubber
+                      items={displayAssets()}
+                      sortBy={sort()}
+                      onJumpToIndex={(index) => photoGrid?.scrollToIndex(index)}
+                    />
+                  </Show>
                   <Show when={info() && selected()}>
                     <>
                       <Show when={!detail.loading && detail()?.error}>
@@ -2196,13 +2678,32 @@ export default function ManagementApp() {
                         busy={!!busy()}
                         onClose={() => setInfo(false)}
                         onRate={rate}
+                        onColorLabel={(color) => void setInspectorColorLabel(color)}
+                        onKeywordsUpdated={(keywords) => void onInspectorKeywordsUpdated(keywords)}
                         onResetCrop={resetCrop}
                         onCrop={() => openAsset(selected()!)}
-                        onExport={() => openAsset(selected()!)}
+                        onExport={() => selected() && setExportDialogIds([selected()!.id])}
                         onRefresh={desktop ? refreshOriginal : undefined}
                       />
                     </>
                   </Show>
+                  <BatchDock
+                    count={selectedIds().length}
+                    canTrash={library().source_kind === 'local' || !library().source_kind}
+                    exportBusy={tasks.isRunning('export')}
+                    trashBusy={!!busy()}
+                    onMark={(mark) => void markSelection(mark)}
+                    onCollect={() => setCollectingIds([...selectedIds()])}
+                    onRemoveFromCollection={
+                      activeCollection()?.kind === 'manual'
+                        ? () => void removeSelectedFromCollection()
+                        : undefined
+                    }
+                    onExport={() => void exportSelection()}
+                    onExportPreset={() => setExportDialogIds([...selectedIds()])}
+                    onTrash={() => void trashSelection()}
+                    onClear={clearPicked}
+                  />
                 </div>
               </section>
             )}
@@ -2211,6 +2712,8 @@ export default function ManagementApp() {
         <div class="persistent-workspace" hidden={section() !== 'sources'}>
           <StorageWorkspace
             sources={sources()}
+            removableLibraries={removableLibraries()}
+            onRelocateLibrary={(library) => void relocateLibrary(library)}
             onAdd={() => editSource()}
             onEdit={editSource}
             onUpdated={updateSource}
@@ -2310,11 +2813,23 @@ export default function ManagementApp() {
           }}
         />
       </Show>
+      <Show when={exportDialogIds()}>
+        {(ids) => (
+          <ExportDialog
+            count={ids().length}
+            sample={assets().find((item) => item.id === ids()[0])}
+            busy={tasks.isRunning('export')}
+            onClose={() => setExportDialogIds(null)}
+            onConfirm={(recipe, dir) => void exportWithRecipe(ids(), recipe, dir)}
+          />
+        )}
+      </Show>
       <Show when={overlay()}>
         {(context) => (
           <Viewer
             initialAssetId={context().id}
             initialAssetIds={context().ids}
+            initialAssets={assets()}
             initialMode={context().mode}
             initialQueue={context().queue}
             onClose={closeOverlay}
@@ -2327,8 +2842,71 @@ export default function ManagementApp() {
           />
         )}
       </Show>
+      <Show when={libraryId() ? collectionEditor() : null}>
+        {(state) => (
+          <CollectionEditorDialog
+            libraryId={libraryId()!}
+            initialKind={state().kind}
+            existing={state().existing}
+            seedAssetIds={
+              !state().existing && state().kind === 'manual' && selectedIds().length
+                ? [...selectedIds()]
+                : undefined
+            }
+            cameras={facets()?.cameras.map((item) => item.value)}
+            keywords={libraryKeywords().map((item) => item.path)}
+            onClose={() => setCollectionEditor(null)}
+            onSaved={(saved) => {
+              setCollectionEditor(null);
+              setCollections((list) => [...list.filter((item) => item.id !== saved.id), saved]);
+              setFolder('');
+              setCollectionId(saved.id);
+              void refreshCollections();
+              setNotice(`已保存${saved.kind === 'smart' ? '智能精选集' : '精选集'}“${saved.name}”。`);
+            }}
+          />
+        )}
+      </Show>
+      <Show when={libraryId() ? collectingIds() : null}>
+        {(ids) => (
+          <CollectionPickerDialog
+            libraryId={libraryId()!}
+            assetIds={ids()}
+            collections={collections()}
+            onClose={() => setCollectingIds(null)}
+            onPicked={(target, added) => {
+              setCollectingIds(null);
+              setCollections((list) => [...list.filter((item) => item.id !== target.id), target]);
+              void refreshCollections();
+              setNotice(`已将 ${added} 张照片加入“${target.name}”。`);
+            }}
+          />
+        )}
+      </Show>
+      <Show when={commandPaletteOpen()}>
+        <CommandPalette
+          source={{
+            libraries: visibleLibraries(),
+            activeLibrary: currentLibrary() ?? null,
+            collections: collections(),
+            folders: folders()?.folders ?? [],
+            burstStacksEnabled: burstStacks(),
+          }}
+          onClose={() => setCommandPaletteOpen(false)}
+          onSelect={executeCommand}
+        />
+      </Show>
     </AppShell>
   );
+}
+
+const BURST_STACKS_KEY = 'nebulume.burst-stacks';
+function readBurstStacks() {
+  try {
+    return localStorage.getItem(BURST_STACKS_KEY) === 'true';
+  } catch {
+    return false;
+  }
 }
 
 const FILTERS_OPEN_KEY = 'nebulume.filters-open';

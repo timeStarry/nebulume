@@ -1,14 +1,15 @@
-import { createSignal, For, Show } from 'solid-js';
+import { createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import {
   desktop,
+  execute,
   readPregenerate,
   writePregenerate,
   readWatchLibraries,
   watchLibraries,
   writeWatchLibraries,
 } from './api';
+import type { XmpPolicy } from './model';
 import {
-  Button,
   DataTable,
   Group,
   Kbd,
@@ -20,7 +21,12 @@ import {
   Switch,
 } from './ui';
 import { readAutoAdvance, writeAutoAdvance } from './culling';
-import { readOverlayFades, writeOverlayFades } from './overlay-layout';
+import {
+  readOverlayFades,
+  readToolbarAutoHide,
+  writeOverlayFades,
+  writeToolbarAutoHide,
+} from './overlay-layout';
 import { setThemePreference, themeNotice, themePreference, type ThemePreference } from './theme';
 import { motionPreference, setMotionPreference, type MotionPreference } from './motion';
 import CacheSettings from './CacheSettings';
@@ -32,7 +38,14 @@ function CullingSettings() {
   const [auto, setAuto] = createSignal(readAutoAdvance());
   const [pregenerate, setPregenerate] = createSignal(readPregenerate());
   const [watching, setWatching] = createSignal(readWatchLibraries());
+  const [toolbarAutoHide, setToolbarAutoHide] = createSignal(readToolbarAutoHide(localStorage));
   const [fades, setFades] = createSignal(readOverlayFades(localStorage));
+  const [xmpAutoWrite, setXmpAutoWrite] = createSignal(false);
+  onMount(() => {
+    void execute<XmpPolicy>('xmp.policy.get')
+      .then((res) => setXmpAutoWrite(!!res?.auto_write))
+      .catch(() => undefined);
+  });
   return (
     <Group title="浏览与选片">
       <ListRow
@@ -50,6 +63,20 @@ function CullingSettings() {
         }
       />
       <ListRow
+        title="自动隐藏查看器顶栏"
+        description="开启后窄顶栏半透明悬浮于画面顶部，鼠标离开顶部区域后自动隐去，靠近顶部即唤出；关闭时固定常驻且绝不遮挡图像。"
+        control={
+          <Switch
+            label="自动隐藏查看器顶栏"
+            checked={toolbarAutoHide()}
+            onChange={(value) => {
+              setToolbarAutoHide(value);
+              writeToolbarAutoHide(localStorage, value);
+            }}
+          />
+        }
+      />
+      <ListRow
         title="叠加信息随工具栏淡出"
         description="关闭时四角信息一直显示，按 D 隐藏或显示。"
         control={
@@ -59,6 +86,22 @@ function CullingSettings() {
             onChange={(value) => {
               setFades(value);
               writeOverlayFades(localStorage, value);
+            }}
+          />
+        }
+      />
+      <ListRow
+        title="自动同步 .xmp 伴随文件"
+        description="修改本地照片的星级、旗标或裁剪时自动无损更新同名 .xmp（完整保留 Lightroom / Camera Raw 原有显影参数，绝不改动原片）。"
+        control={
+          <Switch
+            label="自动同步 .xmp 伴随文件"
+            checked={xmpAutoWrite()}
+            onChange={(value) => {
+              setXmpAutoWrite(value);
+              void execute('xmp.policy.set', { auto_write: value }).catch(() =>
+                setXmpAutoWrite(!value),
+              );
             }}
           />
         }
@@ -101,33 +144,27 @@ const SETTINGS_SECTIONS = [
   { id: 'settings-appearance', label: '外观与浏览' },
   { id: 'settings-cache', label: '缓存与离线' },
   { id: 'settings-shortcuts', label: '快捷键' },
-  { id: 'settings-owners', label: '其他配置' },
   { id: 'settings-about', label: '关于' },
 ] as const;
 /** Settings holds only app-wide preferences and this machine's resources.
  *  Everything owned by a location, library, card or preset is edited where it lives. */
 export default function Settings(props: {
   system?: Record<string, unknown>;
-  onNavigate: (section: WorkspaceSection) => void;
+  onNavigate?: (section: WorkspaceSection) => void;
 }) {
   const fromHash = () =>
     SETTINGS_SECTIONS.find((section) => location.hash === `#${section.id}`)?.id ??
     SETTINGS_SECTIONS[0].id;
   const [current, setCurrent] = createSignal<string>(fromHash());
+  onMount(() => {
+    const syncHash = () => setCurrent(fromHash());
+    window.addEventListener('hashchange', syncHash);
+    onCleanup(() => window.removeEventListener('hashchange', syncHash));
+  });
   function choose(id: string) {
     setCurrent(id);
     history.replaceState(null, '', `#${id}`);
   }
-  const owners: { what: string; where: string; section: WorkspaceSection }[] = [
-    { what: '连接地址、凭据、证书信任、测试连接', where: '位置', section: 'sources' },
-    {
-      what: '图片库名称、目录、RAW + JPEG 合并、扫描',
-      where: '图片库 → 侧栏的“更多”',
-      section: 'libraries',
-    },
-    { what: '存储卡名称、绑定、默认导入方案', where: '导入', section: 'cards' },
-    { what: '导入方案：目标图片库、目录整理、去重', where: '导入', section: 'cards' },
-  ];
   return (
     <section class="settings-workspace" aria-label="设置工作区">
       <PageHeader
@@ -218,24 +255,6 @@ export default function Settings(props: {
                 </Group>
               )}
             </For>
-          </div>
-        </Show>
-        <Show when={current() === 'settings-owners'}>
-          <div id="settings-owners" class="settings-group">
-            <Group title="其他配置在哪里" meta="以下配置属于具体的位置、图片库或存储卡">
-              <For each={owners}>
-                {(owner) => (
-                  <ListRow
-                    title={owner.what}
-                    control={
-                      <Button size="sm" onClick={() => props.onNavigate(owner.section)}>
-                        {owner.where}
-                      </Button>
-                    }
-                  />
-                )}
-              </For>
-            </Group>
           </div>
         </Show>
         <Show when={current() === 'settings-about'}>

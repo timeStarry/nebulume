@@ -309,7 +309,7 @@ test('browser demonstration shows native-required state instead of simulating ce
 }) => {
   await page.goto('/');
   await openConnection(page, endpointA);
-  await expect(page.getByRole('status')).toContainText('需要 Nebulume 桌面版');
+  await expect(page.getByRole('status')).toContainText('需要 Lumen 桌面版');
   await page.getByRole('radio', { name: '信任此设备证书' }).check();
   await expect(page.getByRole('button', { name: '读取设备证书', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: '添加连接', exact: true })).toBeDisabled();

@@ -182,7 +182,7 @@ fn simultaneous_catalog_initialization_keeps_one_complete_schema() {
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        12
+        14
     );
 }
 
@@ -548,7 +548,7 @@ fn dng_fixture_is_sensor_decoded_not_an_embedded_jpeg() {
 }
 
 #[test]
-fn raw_grid_tier_prefers_embedded_preview() {
+fn raw_tiers_prefer_embedded_by_default_and_support_explicit_sensor_mode() {
     let (_temp, core, photos, library) = setup();
     let source = photos.join("embedded.dng");
     let mut embedded = Cursor::new(Vec::new());
@@ -574,11 +574,22 @@ fn raw_grid_tier_prefers_embedded_preview() {
     assert_eq!(grid.source, "embedded_jpeg");
     assert!(grid.jpeg.starts_with(&[0xff, 0xd8]));
     let viewer = core.preview_image(id, PreviewTier::P2560, false).unwrap();
-    assert_eq!(viewer.source, "raw_demosaic");
+    assert_eq!(viewer.source, "embedded_jpeg");
+    let sensor = core
+        .preview_image_with_mode(id, PreviewTier::P2560, false, true)
+        .unwrap();
+    assert_eq!(sensor.source, "raw_demosaic");
     let meta = core
         .dispatch("asset.preview", json!({"id":id,"tier":"t256"}))
         .unwrap();
     assert_eq!(meta["source"], "embedded_jpeg");
+    let raw_meta = core
+        .dispatch(
+            "asset.preview",
+            json!({"id":id,"tier":"full","prefer_raw":true}),
+        )
+        .unwrap();
+    assert_eq!(raw_meta["source"], "raw_demosaic");
     assert!(meta.get("data_url").is_none());
     assert!(core
         .dispatch("asset.preview", json!({"id":id,"tier":"t9999"}))

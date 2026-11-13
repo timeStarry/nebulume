@@ -1,0 +1,84 @@
+.export-dialog-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nl-s-4);
+}
+
+.export-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+}
+
+.export-preset-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.export-preset-save {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+  padding: var(--nl-s-2) var(--nl-s-3);
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-md);
+  background: var(--nl-raised);
+}
+
+.export-preset-save-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.export-quality-row {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-3);
+}
+
+.export-quality-row .nl-slider {
+  flex: 1;
+}
+
+.export-quality-badge {
+  min-width: 44px;
+  text-align: right;
+  font-family: var(--nl-mono);
+  font-size: var(--nl-t-12);
+  color: var(--nl-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.export-edge-row,
+.export-dest-row {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+}
+
+.export-dest-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.export-preview-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nl-s-1);
+  padding: var(--nl-s-3);
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-md);
+  background: var(--nl-raised);
+}
+
+.export-preview-box span {
+  font-size: var(--nl-t-11);
+  color: var(--nl-text-2);
+}
+
+.export-preview-box code {
+  font-family: var(--nl-mono);
+  font-size: var(--nl-t-12);
+  color: var(--nl-text);
+  word-break: break-all;
+}

@@ -19,11 +19,20 @@ export { default as Radio } from './Radio';
 export { default as Slider } from './Slider';
 export { Chip, Toggle, Badge, StatusDot } from './Chip';
 export type { Tone } from './Chip';
-export { Banner, Toast, Progress, EmptyState } from './Feedback';
+export { Banner, FieldHint, Toast, Progress, EmptyState } from './Feedback';
 export type { BannerTone } from './Feedback';
 export { Group, ListRow } from './Group';
 export { Dialog, Drawer } from './Dialog';
-export { PageHeader, Toolbar, Spacer, SinglePage, SplitPage, Steps, DataTable } from './Layout';
+export {
+  PageHeader,
+  Toolbar,
+  Spacer,
+  FloatingDock,
+  SinglePage,
+  SplitPage,
+  Steps,
+  DataTable,
+} from './Layout';
 export type { DataColumn } from './Layout';
 export { default as ContextMenu, MenuList } from './Menu';
 export type { ContextMenuState, OverflowItem, MenuEntry } from './Menu';

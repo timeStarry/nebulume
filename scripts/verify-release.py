@@ -50,25 +50,40 @@ def local_records(directory: Path) -> dict[str, dict]:
     return records
 
 
+REQUIRED_UPDATER_PLATFORMS = {"windows-x86_64", "darwin-aarch64", "darwin-x86_64"}
+
+
 def check_latest_json(directory: Path, names: set[str]) -> list[str]:
     path = directory / "latest.json"
     if not path.is_file():
         return ["downloaded release has no latest.json"]
     try:
         manifest = json.loads(path.read_bytes().decode("utf-8"))
-        platform = manifest["platforms"]["windows-x86_64"]
-        signature, url = platform["signature"], platform["url"]
+        platforms = manifest["platforms"]
+        if not isinstance(platforms, dict):
+            raise TypeError("platforms must be an object")
     except (ValueError, KeyError, TypeError) as error:
         return [f"latest.json is malformed: {error}"]
     problems = []
-    filename = PurePosixPath(unquote(urlparse(url).path)).name if isinstance(url, str) else ""
-    if filename not in names:
-        problems.append(f"latest.json URL names {filename!r}, which is not a release asset")
-    sig_path = directory / f"{filename}.sig"
-    if not sig_path.is_file():
-        problems.append(f"release lacks the signature file {sig_path.name!r}")
-    elif not isinstance(signature, str) or signature != sig_path.read_bytes().decode("ascii", "replace").strip():
-        problems.append(f"latest.json signature differs from {sig_path.name!r}")
+    missing_platforms = sorted(REQUIRED_UPDATER_PLATFORMS - set(platforms))
+    if missing_platforms:
+        problems.append(f"latest.json lacks required platforms: {', '.join(missing_platforms)}")
+    for platform_key, platform in sorted(platforms.items()):
+        if not isinstance(platform, dict):
+            problems.append(f"latest.json platform {platform_key!r} is not an object")
+            continue
+        signature = platform.get("signature")
+        url = platform.get("url")
+        filename = PurePosixPath(unquote(urlparse(url).path)).name if isinstance(url, str) else ""
+        if filename not in names:
+            problems.append(
+                f"latest.json ({platform_key}) URL names {filename!r}, which is not a release asset"
+            )
+        sig_path = directory / f"{filename}.sig"
+        if not sig_path.is_file():
+            problems.append(f"release lacks the signature file {sig_path.name!r} for {platform_key}")
+        elif not isinstance(signature, str) or signature != sig_path.read_bytes().decode("ascii", "replace").strip():
+            problems.append(f"latest.json ({platform_key}) signature differs from {sig_path.name!r}")
     return problems
 
 

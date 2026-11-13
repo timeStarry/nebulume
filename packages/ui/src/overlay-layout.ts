@@ -11,6 +11,7 @@ export const CORNER_LABELS: Record<Corner, string> = {
 };
 export const OVERLAY_KEY = 'nebulume.viewer.overlay';
 export const OVERLAY_FADES_KEY = 'nebulume.viewer.overlay-fades';
+export const TOOLBAR_AUTOHIDE_KEY = 'nebulume.viewer.toolbar-autohide';
 
 export const DEFAULT_OVERLAY: Readonly<OverlayLayout> = Object.freeze({
   tl: ['captured'],
@@ -118,6 +119,22 @@ export function readOverlayFades(storage: Pick<Storage, 'getItem'>): boolean {
 export function writeOverlayFades(storage: Pick<Storage, 'setItem'>, value: boolean) {
   try {
     storage.setItem(OVERLAY_FADES_KEY, String(value));
+  } catch {
+    /* Applies to this window only. */
+  }
+}
+
+export function readToolbarAutoHide(storage: Pick<Storage, 'getItem'>): boolean {
+  try {
+    return storage.getItem(TOOLBAR_AUTOHIDE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function writeToolbarAutoHide(storage: Pick<Storage, 'setItem'>, value: boolean) {
+  try {
+    storage.setItem(TOOLBAR_AUTOHIDE_KEY, String(value));
   } catch {
     /* Applies to this window only. */
   }

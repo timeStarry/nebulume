@@ -149,12 +149,12 @@ test('focus is detected automatically while display stays opt-in and follows zoo
 }) => {
   const calls = await viewerFixture(page);
   const focusCalls = () => calls.filter((call) => call.command === 'asset.focus');
-  const toggle = page.getByRole('button', { name: '显示对焦点（P）' });
+  const toggle = page.getByRole('button', { name: '显示对焦点（Shift+F）' });
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   expect(focusCalls()).toHaveLength(1);
   await expect(page.locator('.focus-overlay')).toHaveCount(0);
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await expect(page.locator('.focus-region')).toHaveCount(2);
   await expect(page.locator('.viewer-focus-status')).toHaveCount(0);
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
@@ -184,8 +184,8 @@ test('focus is detected automatically while display stays opt-in and follows zoo
   await expect(toggle).toHaveAttribute('aria-disabled', 'true');
   await expect(toggle).toHaveAttribute('title', '裁剪时暂不显示对焦点');
   await toggle.dispatchEvent('click');
-  await page.keyboard.press('p');
-  await page.getByLabel('左侧').press('p');
+  await page.keyboard.press('Shift+F');
+  await page.getByLabel('左侧').press('Shift+F');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   expect(focusCalls()).toHaveLength(1);
   await page.getByLabel('左侧').fill('25');
@@ -241,11 +241,11 @@ test('automatic detection rejects late image and revision responses while refres
       return focusInfo(0.5);
     },
   });
-  const toggle = page.getByRole('button', { name: '显示对焦点（P）' });
+  const toggle = page.getByRole('button', { name: '显示对焦点（Shift+F）' });
   await expect.poll(() => !!releaseFirst).toBe(true);
   await expect(toggle).toHaveAttribute('aria-disabled', 'true');
   await expect(toggle).toHaveAttribute('title', '正在检测对焦信息…');
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await toggle.dispatchEvent('click');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await page.keyboard.press('ArrowRight');
@@ -257,7 +257,7 @@ test('automatic detection rejects late image and revision responses while refres
   await page.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
   await page.getByRole('menuitem', { name: '重新读取原图' }).click();
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await expect(page.locator('.focus-region.selected')).toBeVisible();
   releaseOld!(focusInfo(0.1));
   await expect(page.locator('.focus-region.selected')).toHaveCSS('left', /./);
@@ -272,7 +272,7 @@ test('automatic detection rejects late image and revision responses while refres
   await expect(toggle).toHaveAttribute('aria-disabled', 'true');
   await expect(toggle).not.toHaveClass(/active/);
   await expect(page.locator('.focus-overlay')).toHaveCount(0);
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await toggle.dispatchEvent('click');
   releaseRefresh!(focusInfo(0.6));
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
@@ -342,7 +342,7 @@ test('missing, unsupported and incompatible coordinate metadata never creates a 
         };
     },
   });
-  const toggle = page.getByRole('button', { name: '显示对焦点（P）' });
+  const toggle = page.getByRole('button', { name: '显示对焦点（Shift+F）' });
   for (const [index, message] of [
     '未记录对焦区域',
     '尚不支持',
@@ -362,7 +362,7 @@ test('missing, unsupported and incompatible coordinate metadata never creates a 
     await expect(toggle).toBeFocused();
     const helpId = await toggle.getAttribute('aria-describedby');
     await expect(page.locator(`[id="${helpId}"]`)).toContainText(message);
-    await page.keyboard.press('p');
+    await page.keyboard.press('Shift+F');
     await toggle.dispatchEvent('click');
     await expect(toggle).toHaveAttribute('aria-pressed', 'false');
     await expect(page.locator('.viewer-focus-status')).toHaveCount(0);
@@ -384,16 +384,16 @@ test('focus stays disabled until the actual preview mapping arrives and then res
         });
     },
   });
-  const toggle = page.getByRole('button', { name: '显示对焦点（P）' });
+  const toggle = page.getByRole('button', { name: '显示对焦点（Shift+F）' });
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await expect(page.locator('.focus-overlay')).toBeVisible();
   await page.keyboard.press('ArrowRight');
   await expect.poll(() => !!releasePreview).toBe(true);
   await expect(toggle).toHaveAttribute('aria-disabled', 'true');
   await expect(toggle).toHaveAttribute('title', '正在校验预览坐标…');
   await expect(page.locator('.focus-overlay')).toHaveCount(0);
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await toggle.dispatchEvent('click');
   releasePreview!({
     tier: 'p2560' as const,
@@ -428,11 +428,11 @@ test('disabled missing and failed images retain the preference, reuse detections
       return focusInfo();
     },
   });
-  const toggle = page.getByRole('button', { name: '显示对焦点（P）' });
+  const toggle = page.getByRole('button', { name: '显示对焦点（Shift+F）' });
   const detections = () => calls.filter((call) => call.command === 'asset.focus');
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await expect(page.locator('.focus-overlay')).toBeVisible();
 
   for (const [filename, reason] of [
@@ -446,7 +446,7 @@ test('disabled missing and failed images retain the preference, reuse detections
     await expect(toggle).not.toHaveAttribute('title', /点位编号/);
     await expect(toggle).not.toHaveClass(/active/);
     await expect(page.locator('.focus-overlay')).toHaveCount(0);
-    await page.keyboard.press('p');
+    await page.keyboard.press('Shift+F');
     await toggle.dispatchEvent('click');
     await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   }
@@ -497,10 +497,10 @@ test('revisiting an externally replaced original detects new focus data even wit
       if (call.command === 'asset.focus') return focusInfo(originalChanged ? 0.6 : 0.25);
     },
   });
-  const toggle = page.getByRole('button', { name: '显示对焦点（P）' });
+  const toggle = page.getByRole('button', { name: '显示对焦点（Shift+F）' });
   const reads = () => calls.filter((call) => call.command === 'asset.focus');
   await expect(toggle).toHaveAttribute('aria-disabled', 'false');
-  await page.keyboard.press('p');
+  await page.keyboard.press('Shift+F');
   await expect
     .poll(() =>
       page.locator('.focus-region.selected').evaluate((node) => (node as HTMLElement).style.left),

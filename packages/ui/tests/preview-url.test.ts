@@ -16,7 +16,14 @@ describe('preview tiers', () => {
     expect(previewTier(257, 1)).toBe('t512');
     expect(previewTier(320, 2)).toBe('t1024');
     expect(previewTier(1200, 2)).toBe('p2560');
-    expect(TIER_PIXELS).toEqual({ t256: 256, t512: 512, t1024: 1024, p2560: 2560 });
+    expect(previewTier(4000, 2)).toBe('p2560');
+    expect(TIER_PIXELS).toEqual({
+      t256: 256,
+      t512: 512,
+      t1024: 1024,
+      p2560: 2560,
+      full: 9600,
+    });
   });
   it('gridTier caps at t1024', () => {
     expect(gridTier(320, 3)).toBe('t1024');
@@ -42,6 +49,9 @@ describe('previewUrl', () => {
     );
     expect(previewUrl({ id: 'a1' }, 'p2560', true)).toBe(
       'neb://localhost/' + encodeURIComponent('a1/p2560/1/0'),
+    );
+    expect(previewUrl({ id: 'a1', preview_revision: 3 }, 'full', false, true)).toBe(
+      'neb://localhost/' + encodeURIComponent('a1/full/0/3/raw'),
     );
   });
 });

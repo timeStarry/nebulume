@@ -83,8 +83,10 @@ test('auto-advance off keeps the photo and a failed mark rolls back', async ({ p
   await expect(hud(page)).toContainText('1 / 3');
 });
 
-test('mode switch restores ordinary viewer shortcuts', async ({ page }) => {
-  await fixture(page);
+test('mode switch restores ordinary viewer shortcuts and plain viewer supports P/X/U flags with undo', async ({
+  page,
+}) => {
+  const { assets } = await fixture(page);
   await page.goto('/?viewer=1');
   await expect(hud(page)).toBeVisible();
   await page.keyboard.press('Shift+C');
@@ -93,7 +95,15 @@ test('mode switch restores ordinary viewer shortcuts', async ({ page }) => {
     'true',
   );
   await expect(hud(page)).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '显示对焦点（P）' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '显示对焦点（Shift+F）' })).toBeVisible();
+  await page.keyboard.press('p');
+  await expect.poll(() => assets.get('photo-1')!.flag).toBe('pick');
+  await page.keyboard.press('x');
+  await expect.poll(() => assets.get('photo-1')!.flag).toBe('reject');
+  await page.keyboard.press('u');
+  await expect.poll(() => assets.get('photo-1')!.flag).toBe('none');
+  await page.keyboard.press('Control+z');
+  await expect.poll(() => assets.get('photo-1')!.flag).toBe('reject');
 });
 
 test('culling shows progress and marks beside the photo, then finishes with export and Trash', async ({

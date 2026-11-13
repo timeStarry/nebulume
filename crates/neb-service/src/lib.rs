@@ -12,7 +12,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Condvar, Mutex, RwLock,
     },
 };
@@ -84,10 +84,41 @@ fn process_scoped_lock(
     Ok(ProcessCatalogGuard(file))
 }
 
+#[derive(Default)]
+struct ImportProgressTracker {
+    active: AtomicBool,
+    cancel: AtomicBool,
+    state: Mutex<Option<neb_ingest::ImportProgress>>,
+}
+
+struct ActiveImportGuard<'a>(&'a ImportProgressTracker);
+
+impl<'a> ActiveImportGuard<'a> {
+    fn acquire(tracker: &'a ImportProgressTracker) -> Result<Self> {
+        tracker
+            .active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| anyhow!("E_IN_USE: Another import is already running"))?;
+        tracker.cancel.store(false, Ordering::Release);
+        if let Ok(mut state) = tracker.state.lock() {
+            *state = None;
+        }
+        Ok(Self(tracker))
+    }
+}
+
+impl Drop for ActiveImportGuard<'_> {
+    fn drop(&mut self) {
+        self.0.cancel.store(false, Ordering::Release);
+        self.0.active.store(false, Ordering::Release);
+    }
+}
+
 pub struct Service {
     core: Arc<Core>,
     storage: Arc<Mutex<StorageRegistry>>,
     ingest: Mutex<IngestService>,
+    import_progress: ImportProgressTracker,
     cache_root: PathBuf,
     cache: Arc<CacheManager>,
     asset_operations: AssetOperations,
@@ -204,6 +235,10 @@ fn string<'a>(params: &'a Value, name: &str) -> Result<&'a str> {
 }
 
 impl Service {
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
         let data_dir = data_dir.as_ref();
         std::fs::create_dir_all(data_dir).context("Create application data directory")?;
@@ -212,6 +247,7 @@ impl Service {
             core: Arc::new(Core::open(data_dir.join("catalog"))?),
             storage: Arc::new(Mutex::new(StorageRegistry::open(data_dir.join("storage"))?)),
             ingest: Mutex::new(IngestService::open(data_dir.join("ingest"))?),
+            import_progress: ImportProgressTracker::default(),
             cache_root: data_dir.join("remote-cache"),
             cache: Arc::new(CacheManager::open(
                 data_dir.join("catalog/catalog.sqlite3"),
@@ -255,15 +291,27 @@ impl Service {
             });
         }
         let structural_write =
-            matches!(command, "library.add" | "library.update" | "library.remove")
-                || matches!(command, "storage.add" | "storage.remove" | "file.open")
+            matches!(
+                command,
+                "library.add" | "library.update" | "library.relocate" | "library.remove"
+            ) || matches!(command, "storage.add" | "storage.remove" | "file.open")
                 || matches!(
                     command,
-                    "card.register" | "card.bind" | "card.remove" | "preset.remove"
+                    "card.register"
+                        | "card.bind"
+                        | "card.remove"
+                        | "preset.remove"
+                        | "xmp.policy.set"
+                        | "collection.create"
+                        | "collection.update"
+                        | "collection.delete"
                 );
         // Long operations hold only their own library lease. A slow remote file
         // or scan cannot monopolize the catalog for unrelated local libraries.
-        let _process_library = if matches!(command, "library.update" | "library.remove") {
+        let _process_library = if matches!(
+            command,
+            "library.update" | "library.relocate" | "library.remove"
+        ) {
             Some(
                 process_library_lock(
                     &self.data_dir,
@@ -274,7 +322,7 @@ impl Service {
             )
         } else if matches!(
             command,
-            "asset.mark_batch" | "asset.trash" | "asset.restore"
+            "asset.mark_batch" | "asset.keywords.set" | "asset.trash" | "asset.restore"
         ) {
             // Every id must belong to one library so a single lease covers the batch.
             let ids: Vec<String> = params
@@ -292,8 +340,36 @@ impl Service {
                 process_library_lock(&self.data_dir, &library, false)
                     .map_err(CommandError::from)?,
             )
+        } else if matches!(command, "asset.xmp.write" | "asset.xmp.read") {
+            if let Some(library_id) = params
+                .get("library_id")
+                .and_then(Value::as_str)
+                .filter(|v| !v.trim().is_empty())
+            {
+                Some(
+                    process_library_lock(&self.data_dir, library_id, false)
+                        .map_err(CommandError::from)?,
+                )
+            } else if let Some(ids) = params
+                .get("ids")
+                .and_then(|ids| serde_json::from_value::<Vec<String>>(ids.clone()).ok())
+            {
+                if let Ok(library) = self.core.mark_batch_library(&ids) {
+                    Some(
+                        process_library_lock(&self.data_dir, &library, false)
+                            .map_err(CommandError::from)?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else if command.starts_with("asset.")
-            && !matches!(command, "asset.list" | "asset.facets" | "asset.stats")
+            && !matches!(
+                command,
+                "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+            )
         {
             let asset = self
                 .core
@@ -310,8 +386,18 @@ impl Service {
             None
         };
         let _process_catalog = if structural_write
-            || matches!(command, "asset.list" | "asset.facets" | "asset.stats")
-        {
+            || matches!(
+                command,
+                "asset.list"
+                    | "asset.ids"
+                    | "asset.facets"
+                    | "asset.stats"
+                    | "collection.list"
+                    | "collection.get"
+                    | "collection.add_assets"
+                    | "collection.remove_assets"
+                    | "library.keywords"
+            ) {
             Some(
                 process_catalog_lock(&self.data_dir, structural_write)
                     .map_err(CommandError::from)?,
@@ -331,7 +417,16 @@ impl Service {
         };
         // Lists need a coherent catalog snapshot. Long asset I/O uses the
         // per-library lease above without occupying this global lock.
-        let _catalog_read = if matches!(command, "asset.list" | "asset.facets" | "asset.stats") {
+        let _catalog_read = if matches!(
+            command,
+            "asset.list"
+                | "asset.ids"
+                | "asset.facets"
+                | "asset.stats"
+                | "collection.list"
+                | "collection.get"
+                | "library.keywords"
+        ) {
             Some(self.catalog_operations.read().map_err(|_| CommandError {
                 code: "E_OPERATION",
                 message: "Catalog operation state is unavailable".into(),
@@ -350,8 +445,18 @@ impl Service {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<Arc<PreviewImage>, CommandError> {
+        self.preview_image_with_mode(id, tier, uncropped, false)
+    }
+
+    pub fn preview_image_with_mode(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<Arc<PreviewImage>, CommandError> {
         self.preview_entry(id, || {
-            self.render_preview(&self.preview_asset(id)?, tier, uncropped)
+            self.render_preview_with_mode(&self.preview_asset(id)?, tier, uncropped, prefer_raw)
         })
     }
 
@@ -363,9 +468,26 @@ impl Service {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<String, CommandError> {
+        self.preview_etag_with_mode(id, tier, uncropped, false)
+    }
+
+    pub fn preview_etag_with_mode(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<String, CommandError> {
         // No local re-inspection: the key's file stamp already tracks changes.
         self.preview_entry(id, || {
-            self.preview_etag_for(&self.core.asset(id)?, tier, uncropped)
+            self.preview_etag_for(&self.core.asset(id)?, tier, uncropped, prefer_raw)
+        })
+    }
+
+    pub fn flush_xmp_for_external(&self, id: &str) -> Result<(), CommandError> {
+        self.preview_entry(id, || {
+            let _ = self.core.flush_asset_xmp_for_handoff(id)?;
+            Ok(())
         })
     }
 
@@ -454,6 +576,7 @@ impl Service {
         source: &StorageConfig,
         params: &Value,
     ) -> Result<Value> {
+        let _active_guard = ActiveImportGuard::acquire(&self.import_progress)?;
         let writer = {
             let storage = self
                 .storage
@@ -471,12 +594,29 @@ impl Service {
             .get("include_likely_duplicates")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let selected_sources = parse_selected_sources(params)?;
+        let backup_destination = parse_backup_destination(params);
+        let progress_cb = |progress: neb_ingest::ImportProgress| {
+            if let Ok(mut guard) = self.import_progress.state.lock() {
+                *guard = Some(progress);
+            }
+        };
         let outcome = {
             let mut ingest = self
                 .ingest
                 .lock()
                 .map_err(|_| anyhow!("Import state unavailable"))?;
-            ingest.execute_remote(string(params, "plan_id")?, &writer, include_likely)?
+            ingest.execute_remote_with_options(
+                string(params, "plan_id")?,
+                &writer,
+                neb_ingest::ExecuteOptions {
+                    selected_sources,
+                    backup_destination,
+                    include_likely_duplicates: include_likely,
+                    progress: Some(&progress_cb),
+                    cancel: Some(&self.import_progress.cancel),
+                },
+            )?
         };
         let mut result = serde_json::to_value(&outcome)?;
         result["library_id"] = json!(library.id);
@@ -617,6 +757,17 @@ impl Service {
         };
         value["connected"] = json!(availability == "online");
         value["availability"] = json!(availability);
+        if source.as_ref().is_none_or(|s| s.kind == "local") {
+            let (removable, volume_label, relocatable_path) =
+                detect_removable_library_mount(&library.root, availability == "online");
+            value["removable"] = json!(removable);
+            if let Some(label) = volume_label {
+                value["volume_label"] = json!(label);
+            }
+            if let Some(candidate) = relocatable_path {
+                value["relocatable_path"] = json!(candidate);
+            }
+        }
         Ok(value)
     }
 
@@ -907,18 +1058,45 @@ impl Service {
     fn dispatch(&self, command: &str, params: Value) -> Result<Value> {
         if matches!(
             command,
-            "asset.mark_batch" | "asset.trash" | "asset.restore"
+            "asset.mark_batch"
+                | "asset.keywords.set"
+                | "asset.trash"
+                | "asset.restore"
+                | "asset.xmp.write"
+                | "asset.xmp.read"
+                | "xmp.policy.get"
+                | "xmp.policy.set"
+                | "collection.list"
+                | "collection.get"
+                | "collection.create"
+                | "collection.update"
+                | "collection.delete"
+                | "collection.add_assets"
+                | "collection.remove_assets"
+                | "library.keywords"
         ) {
-            return self.core.dispatch(command, params);
+            let mut value = self.core.dispatch(command, params)?;
+            if let Some(obj) = value.as_object_mut() {
+                obj.remove("crop_changed_ids");
+            }
+            return Ok(value);
         }
         if command.starts_with("asset.")
-            && !matches!(command, "asset.list" | "asset.facets" | "asset.stats")
+            && !matches!(
+                command,
+                "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+            )
         {
             return self.asset_dispatch(command, params);
         }
         if matches!(
             command,
-            "asset.list" | "asset.facets" | "asset.stats" | "file.open" | "file.siblings"
+            "asset.list"
+                | "asset.ids"
+                | "asset.facets"
+                | "asset.stats"
+                | "file.open"
+                | "file.siblings"
         ) {
             return self.core.dispatch(command, params);
         }
@@ -929,6 +1107,12 @@ impl Service {
             "library.list" => self.library_list(),
             "library.add" => self.add_library(&params),
             "library.update" => self.update_library(params),
+            "library.relocate" => {
+                let id = string(&params, "id")?;
+                let root = string(&params, "root")?;
+                let relocated = self.core.relocate_local_library(id, Path::new(root))?;
+                self.library_value(&relocated)
+            }
             "library.remove" => {
                 let id = string(&params, "id")?;
                 Ok(json!({"id":id,"removed_assets":self.core.remove_library(id)?}))
@@ -949,7 +1133,7 @@ impl Service {
             "library.capture_index.cancel" => self
                 .cancel_capture_index(string(&params, "library_id")?, string(&params, "job_id")?),
             "system.info" => Ok(json!({
-                "name": "Nebulume", "version": env!("CARGO_PKG_VERSION"), "api_version": 1,
+                "name": "Lumen", "version": env!("CARGO_PKG_VERSION"), "api_version": 1,
                 "platform": std::env::consts::OS,
                 "storage": ["local", "webdav", "s3"],
                 "storage_transport": {"lan_http": true, "tls": ["public_ca", "lan_certificate_sha256"]},
@@ -1091,6 +1275,7 @@ impl Service {
                     .get("deduplicate")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
+                let backup_destination = parse_backup_destination(&params);
                 // A remote library is addressed by id; local targets keep `destination`.
                 if let Some(target) = self.remote_import_target(&params)? {
                     let (library, source) = target;
@@ -1108,13 +1293,14 @@ impl Service {
                             },
                         )
                         .collect();
-                    let mut plan = serde_json::to_value(ingest.plan_remote(
+                    let mut plan = serde_json::to_value(ingest.plan_remote_with_options(
                         string(&params, "source")?,
                         &source.id,
                         &library.source_prefix,
                         &rules,
                         deduplicate,
                         &known,
+                        backup_destination.as_deref(),
                     )?)?;
                     plan["library_id"] = json!(library.id);
                     plan["write_capability"] = json!(self
@@ -1125,11 +1311,12 @@ impl Service {
                         .as_str());
                     return Ok(plan);
                 }
-                Ok(serde_json::to_value(ingest.plan_with_rules(
+                Ok(serde_json::to_value(ingest.plan_with_options(
                     string(&params, "source")?,
                     string(&params, "destination")?,
                     &rules,
                     deduplicate,
+                    backup_destination.as_deref(),
                 )?)?)
             }
             "import.execute" if self.remote_import_target(&params)?.is_some() => {
@@ -1139,13 +1326,30 @@ impl Service {
                 self.execute_remote_import(&library, &source, &params)
             }
             "import.execute" => {
-                let mut ingest = self
-                    .ingest
-                    .lock()
-                    .map_err(|_| anyhow!("Import state unavailable"))?;
-                let mut result =
-                    serde_json::to_value(ingest.execute(string(&params, "plan_id")?)?)?;
-                drop(ingest);
+                let _active_guard = ActiveImportGuard::acquire(&self.import_progress)?;
+                let selected_sources = parse_selected_sources(&params)?;
+                let backup_destination = parse_backup_destination(&params);
+                let progress_cb = |progress: neb_ingest::ImportProgress| {
+                    if let Ok(mut guard) = self.import_progress.state.lock() {
+                        *guard = Some(progress);
+                    }
+                };
+                let mut result = {
+                    let mut ingest = self
+                        .ingest
+                        .lock()
+                        .map_err(|_| anyhow!("Import state unavailable"))?;
+                    serde_json::to_value(ingest.execute_with_options(
+                        string(&params, "plan_id")?,
+                        neb_ingest::ExecuteOptions {
+                            selected_sources,
+                            backup_destination,
+                            include_likely_duplicates: false,
+                            progress: Some(&progress_cb),
+                            cancel: Some(&self.import_progress.cancel),
+                        },
+                    )?)?
+                };
                 if let Some(destination) = result
                     .get("destination")
                     .and_then(Value::as_str)
@@ -1179,6 +1383,36 @@ impl Service {
                     }
                 }
                 Ok(result)
+            }
+            "import.status" => {
+                let active = self.import_progress.active.load(Ordering::Acquire);
+                let cancelling = self.import_progress.cancel.load(Ordering::Acquire);
+                let progress = self
+                    .import_progress
+                    .state
+                    .lock()
+                    .map_err(|_| anyhow!("Import progress state unavailable"))?
+                    .clone();
+                Ok(json!({
+                    "active": active,
+                    "cancelling": cancelling,
+                    "progress": progress,
+                }))
+            }
+            "import.cancel" => {
+                let active = self.import_progress.active.load(Ordering::Acquire);
+                if active {
+                    self.import_progress.cancel.store(true, Ordering::Release);
+                    if let Ok(mut guard) = self.import_progress.state.lock() {
+                        if let Some(state) = guard.as_mut() {
+                            state.cancelling = true;
+                        }
+                    }
+                }
+                Ok(json!({
+                    "active": active,
+                    "cancelling": active,
+                }))
             }
             "import.history" => {
                 let ingest = self
@@ -1217,6 +1451,66 @@ impl Read for BoundedImageReader {
         self.remaining -= read;
         Ok(read)
     }
+}
+
+fn parse_selected_sources(params: &Value) -> Result<Option<HashSet<String>>> {
+    let Some(raw) = params.get("selected_sources").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let list: Vec<String> = serde_json::from_value(raw.clone())
+        .context("E_INVALID: selected_sources must be an array of source paths")?;
+    ensure!(
+        list.len() <= 100_000,
+        "E_LIMIT: selected_sources exceeds 100000 items"
+    );
+    Ok(Some(list.into_iter().collect()))
+}
+
+fn parse_backup_destination(params: &Value) -> Option<PathBuf> {
+    params
+        .get("backup_destination")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+fn detect_removable_library_mount(
+    root: &str,
+    online: bool,
+) -> (bool, Option<String>, Option<String>) {
+    let path = Path::new(root);
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect();
+    if components.len() >= 2 && matches!(components[0].as_str(), "Volumes" | "media" | "mnt") {
+        let mount_base = Path::new("/").join(&components[0]);
+        let volume_label = components[1].clone();
+        let relative: PathBuf = components[2..].iter().collect();
+        let relocatable = if !online && !relative.as_os_str().is_empty() && mount_base.is_dir() {
+            fs::read_dir(&mount_base)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .take(64)
+                .filter_map(|entry| {
+                    let candidate = entry.path().join(&relative);
+                    candidate
+                        .is_dir()
+                        .then(|| candidate.to_string_lossy().into_owned())
+                })
+                .next()
+        } else {
+            None
+        };
+        return (true, Some(volume_label), relocatable);
+    }
+    (false, None, None)
 }
 
 fn location_of(source: &StorageConfig) -> neb_core::Location {

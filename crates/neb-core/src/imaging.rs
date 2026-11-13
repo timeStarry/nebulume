@@ -63,17 +63,31 @@ fn extension(path: &Path) -> String {
 }
 
 pub fn read_exif(path: &Path) -> BTreeMap<String, String> {
-    let Ok(file) = File::open(path) else {
-        return BTreeMap::new();
-    };
-    read_exif_from(file)
+    read_parsed_exif(path)
+        .map(|exif| exif_metadata(&exif))
+        .unwrap_or_default()
 }
 
-fn read_exif_from<R: Read + Seek>(input: R) -> BTreeMap<String, String> {
-    let Ok(exif) = exif::Reader::new().read_from_container(&mut BufReader::new(input)) else {
-        return BTreeMap::new();
-    };
-    exif_metadata(&exif)
+fn read_parsed_exif(path: &Path) -> Option<exif::Exif> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if let Ok(Some(merged)) = crate::cr3::merged_exif_tiff(&mut file, len) {
+        return exif::Reader::new()
+            .continue_on_error(true)
+            .read_raw(merged)
+            .or_else(|e| e.distill_partial_result(|_| {}))
+            .ok();
+    }
+    file.seek(SeekFrom::Start(0)).ok()?;
+    exif::Reader::new()
+        .continue_on_error(true)
+        .read_from_container(&mut BufReader::new(file))
+        .or_else(|e| e.distill_partial_result(|_| {}))
+        .ok()
+}
+
+fn is_file_adobe_rgb(path: &Path) -> bool {
+    read_parsed_exif(path).is_some_and(|exif| crate::icc::is_adobe_rgb_exif(&exif))
 }
 
 fn exif_metadata(exif: &exif::Exif) -> BTreeMap<String, String> {
@@ -140,29 +154,43 @@ fn format_exif_field(field: &exif::Field, exif: &exif::Exif, limit: usize) -> Op
 
 pub fn inspect(path: &Path) -> Result<Inspection> {
     check_file(path)?;
-    let mut metadata = read_exif(path);
+    let parsed_exif = read_parsed_exif(path);
+    let adobe_rgb = parsed_exif
+        .as_ref()
+        .is_some_and(crate::icc::is_adobe_rgb_exif);
+    let mut metadata = parsed_exif.as_ref().map(exif_metadata).unwrap_or_default();
     let extension = extension(path);
     metadata.insert("Format".into(), extension.to_ascii_uppercase());
+    if adobe_rgb {
+        metadata
+            .entry("Color Profile".into())
+            .or_insert_with(|| "Adobe RGB (1998)".into());
+    }
     let (mut width, mut height, orientation) = if kind(&extension) == Some("raw") {
         let raw = match raw_header(path) {
             Ok(raw) => raw,
             Err(raw_error) => {
-                let preview = crate::embedded_preview::read(path).with_context(|| {
+                let preview = crate::embedded_preview::read_embedded(path).with_context(|| {
                     format!("RAW metadata unavailable ({raw_error:#}); embedded preview fallback failed")
                 })?;
+                if preview.icc.is_some() {
+                    metadata
+                        .entry("Color Profile".into())
+                        .or_insert_with(|| "Embedded ICC".into());
+                }
                 metadata.insert("Decoder".into(), "相机内嵌预览 · RAW 原始解码不可用".into());
                 metadata.insert("Preview Source".into(), "embedded_jpeg".into());
                 metadata.insert(
                     "Preview Dimensions".into(),
-                    format!("{} × {}", preview.width(), preview.height()),
+                    format!("{} × {}", preview.image.width(), preview.image.height()),
                 );
                 metadata.insert(
                     "Decode Status".into(),
                     format!("RAW 原始解码不可用：{raw_error:#}"),
                 );
                 return Ok(Inspection {
-                    width: preview.width(),
-                    height: preview.height(),
+                    width: preview.image.width(),
+                    height: preview.image.height(),
                     metadata,
                 });
             }
@@ -190,11 +218,41 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 .unwrap_or(Orientation::NoTransforms),
         )
     } else {
+        #[cfg(target_os = "macos")]
+        if matches!(extension.as_str(), "heic" | "heif" | "avif") {
+            let (w, h, orient, profile) = crate::macos_imageio::inspect(path)?;
+            metadata.insert("Decoder".into(), "macOS ImageIO".into());
+            if let Some(profile) = profile {
+                metadata.insert("Color Profile".into(), profile);
+            }
+            let orientation = Orientation::from_exif(orient).unwrap_or(Orientation::NoTransforms);
+            let (mut width, mut height) = (w, h);
+            check_dimensions(width, height)?;
+            if matches!(
+                orientation,
+                Orientation::Rotate90
+                    | Orientation::Rotate270
+                    | Orientation::Rotate90FlipH
+                    | Orientation::Rotate270FlipH
+            ) {
+                std::mem::swap(&mut width, &mut height);
+            }
+            return Ok(Inspection {
+                width,
+                height,
+                metadata,
+            });
+        }
         let mut decoder = image_reader(path)?
             .into_decoder()
             .context("E_UNSUPPORTED_CODEC: Image header cannot be decoded")?;
         let dims = decoder.dimensions();
         let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+        if decoder.icc_profile().ok().flatten().is_some() {
+            metadata
+                .entry("Color Profile".into())
+                .or_insert_with(|| "Embedded ICC".into());
+        }
         metadata.insert(
             "Pixel Format".into(),
             format!("{:?}", decoder.original_color_type()),
@@ -269,7 +327,7 @@ pub fn render(
     crop: Option<Crop>,
     max_side: Option<u32>,
 ) -> Result<(DynamicImage, &'static str)> {
-    let frame = render_frame(path, crop, max_side, false)?;
+    let frame = render_frame(path, crop, max_side, max_side.is_some(), false)?;
     Ok((frame.image, frame.source))
 }
 
@@ -290,39 +348,72 @@ struct RenderedFrame {
     icc: Option<Vec<u8>>,
 }
 
+fn scaled_decode_limit(max_side: Option<u32>, crop: Option<Crop>) -> Option<u32> {
+    max_side.map(|limit| {
+        let fraction = crop.map(|crop| crop.width.min(crop.height)).unwrap_or(1.0);
+        (f64::from(limit) / fraction.max(1e-9))
+            .ceil()
+            .min(f64::from(u32::MAX)) as u32
+    })
+}
+
 fn render_frame(
     path: &Path,
     crop: Option<Crop>,
     max_side: Option<u32>,
     prefers_embedded: bool,
+    force_raw_sensor: bool,
 ) -> Result<RenderedFrame> {
     check_file(path)?;
-    let (image, source, orientation, icc) = if kind(&extension(path)) == Some("raw") {
+    let ext = extension(path);
+    let (image, source, orientation, icc) = if kind(&ext) == Some("raw") {
         // Keep enough full-frame pixels that a small saved crop can still fill
         // the requested preview. Exports pass None and render all sensor pixels.
-        let raw_limit = max_side.map(|limit| {
-            let fraction = crop.map(|crop| crop.width.min(crop.height)).unwrap_or(1.0);
-            (f64::from(limit) / fraction.max(1e-9))
-                .ceil()
-                .min(f64::from(u32::MAX)) as u32
-        });
-        // Grid thumbnails read the camera JPEG first; it is far cheaper than
-        // demosaicing and exports (max_side None) never use it.
-        let embedded = if prefers_embedded && max_side.is_some() {
-            crate::embedded_preview::read_with_orientation(path).ok()
+        let raw_limit = scaled_decode_limit(max_side, crop);
+        if force_raw_sensor {
+            let (image, orientation) = render_sensor(path, raw_limit)
+                .context("此 RAW 格式暂不支持传感器原始显影，请使用相机内嵌预览模式查看。")?;
+            return finish_frame(image, "raw_demosaic", orientation, crop, None);
+        }
+        let mut embedded = if prefers_embedded && max_side.is_some() {
+            crate::embedded_preview::read_embedded(path).ok()
         } else {
             None
         };
-        if let Some((preview, orientation)) = embedded {
-            (preview, "embedded_jpeg", orientation, None)
+        // If a RAW file only embeds a tiny thumbnail (e.g. 160x120 or half-size)
+        // while sensor decoding is available at much higher resolution, upgrade
+        // viewer/full tiers to sensor development automatically.
+        if let (Some(emb), Some(limit)) = (&embedded, max_side) {
+            if limit > 1024 {
+                let min_emb = if limit > 2560 { 2560 } else { 1280 };
+                let emb_long = emb.image.width().max(emb.image.height());
+                if emb_long < min_emb {
+                    if let Ok(raw_hdr) = raw_header(path) {
+                        if let Ok((sw, sh)) = raw_dimensions(&raw_hdr) {
+                            if sw.max(sh) > emb_long.saturating_mul(2) {
+                                embedded = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(emb) = embedded {
+            let icc = emb
+                .icc
+                .or_else(|| is_file_adobe_rgb(path).then(crate::icc::adobe_rgb_1998_icc));
+            (emb.image, "embedded_jpeg", emb.orientation, icc)
         } else {
             match render_sensor(path, raw_limit) {
                 Ok((image, orientation)) => (image, "raw_demosaic", orientation, None),
                 Err(raw_error) if max_side.is_some() => {
-                    let (preview, orientation) = crate::embedded_preview::read_with_orientation(path).with_context(|| {
-                    format!("RAW sensor decoding unavailable ({raw_error:#}); embedded preview fallback failed")
-                })?;
-                    (preview, "embedded_jpeg", orientation, None)
+                    let emb = crate::embedded_preview::read_embedded(path).with_context(|| {
+                        format!("RAW sensor decoding unavailable ({raw_error:#}); embedded preview fallback failed")
+                    })?;
+                    let icc = emb
+                        .icc
+                        .or_else(|| is_file_adobe_rgb(path).then(crate::icc::adobe_rgb_1998_icc));
+                    (emb.image, "embedded_jpeg", emb.orientation, icc)
                 }
                 Err(error) => {
                     return Err(error.context(
@@ -332,13 +423,24 @@ fn render_frame(
             }
         }
     } else {
+        #[cfg(target_os = "macos")]
+        if matches!(ext.as_str(), "heic" | "heif" | "avif") {
+            let decode_limit = scaled_decode_limit(max_side, crop);
+            let (image, orientation, icc) = crate::macos_imageio::decode(path, decode_limit)?;
+            let icc = icc.or_else(|| is_file_adobe_rgb(path).then(crate::icc::adobe_rgb_1998_icc));
+            return finish_frame(image, "raster", orientation, crop, icc);
+        }
         let mut decoder = image_reader(path)?
             .into_decoder()
             .context("E_UNSUPPORTED_CODEC: Image codec unavailable or invalid file")?;
         let (width, height) = decoder.dimensions();
         check_dimensions(width, height)?;
         let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-        let icc = decoder.icc_profile().ok().flatten();
+        let icc = decoder
+            .icc_profile()
+            .ok()
+            .flatten()
+            .or_else(|| is_file_adobe_rgb(path).then(crate::icc::adobe_rgb_1998_icc));
         let mut image =
             DynamicImage::from_decoder(decoder).context("E_DECODE: Image decoding failed")?;
         image.apply_orientation(orientation);
@@ -546,8 +648,24 @@ fn develop_raw(raw: &rawloader::RawImage, max_side: Option<u32>) -> Result<Dynam
     Ok(image)
 }
 
+#[cfg(test)]
 pub fn preview(path: &Path, crop: Option<Crop>, tier: PreviewTier) -> Result<PreviewImage> {
-    let frame = render_frame(path, crop, Some(tier.pixels()), tier.prefers_embedded())?;
+    preview_with_options(path, crop, tier, false)
+}
+
+pub fn preview_with_options(
+    path: &Path,
+    crop: Option<Crop>,
+    tier: PreviewTier,
+    prefer_raw: bool,
+) -> Result<PreviewImage> {
+    let frame = render_frame(
+        path,
+        crop,
+        Some(tier.pixels()),
+        !prefer_raw && tier.prefers_embedded(),
+        prefer_raw,
+    )?;
     encode_preview(frame, tier.pixels())
 }
 
@@ -611,17 +729,33 @@ pub fn remote_preview<R: Read + Seek>(
     tier: PreviewTier,
 ) -> Result<PreviewImage> {
     input.seek(SeekFrom::Start(0))?;
-    let (image, orientation) = crate::embedded_preview::read_from(&mut *input, length)?;
+    let embedded = crate::embedded_preview::read_embedded_from(&mut *input, length)?;
     // Decode first: an EXIF parser's optional failure must never swallow a broken
     // transport or cause a malformed range response to become a full download.
-    let mut metadata = crate::remote_exif::read(input, length)?
-        .map(|exif| exif_metadata(&exif))
-        .unwrap_or_default();
+    let parsed_exif = crate::remote_exif::read(input, length)?;
+    let icc = embedded.icc.or_else(|| {
+        parsed_exif
+            .as_ref()
+            .is_some_and(crate::icc::is_adobe_rgb_exif)
+            .then(crate::icc::adobe_rgb_1998_icc)
+    });
+    let mut metadata = parsed_exif.as_ref().map(exif_metadata).unwrap_or_default();
+    if icc.is_some() {
+        metadata
+            .entry("Color Profile".into())
+            .or_insert_with(|| "Adobe RGB (1998)".into());
+    }
     metadata.insert("Preview Source".into(), "remote_embedded_jpeg".into());
     metadata.insert("Decoder".into(), "相机内嵌预览".into());
-    let width = image.width();
-    let height = image.height();
-    let frame = finish_frame(image, "remote_embedded_jpeg", orientation, crop, None)?;
+    let width = embedded.image.width();
+    let height = embedded.image.height();
+    let frame = finish_frame(
+        embedded.image,
+        "remote_embedded_jpeg",
+        embedded.orientation,
+        crop,
+        icc,
+    )?;
     let histogram = histogram_image(frame.image.clone(), frame.source)?;
     let mut preview = encode_preview(frame, tier.pixels())?;
     preview.extras.insert(
@@ -640,12 +774,73 @@ fn downsample(image: DynamicImage, max_side: u32) -> DynamicImage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportColorSpace {
+    #[default]
+    Preserve,
+    Srgb,
+    DisplayP3,
+    AdobeRgb,
+}
+
+impl ExportColorSpace {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Preserve => "preserve",
+            Self::Srgb => "srgb",
+            Self::DisplayP3 => "display_p3",
+            Self::AdobeRgb => "adobe_rgb",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExportOptions {
+    pub max_edge: Option<u32>,
+    pub quality: u8,
+    pub color_space: ExportColorSpace,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            max_edge: None,
+            quality: 95,
+            color_space: ExportColorSpace::Preserve,
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Value> {
+    export_with_options(path, crop, destination, ExportOptions::default())
+}
+
+pub fn export_with_options(
+    path: &Path,
+    crop: Option<Crop>,
+    destination: &Path,
+    options: ExportOptions,
+) -> Result<Value> {
     ensure!(
         matches!(extension(destination).as_str(), "jpg" | "jpeg"),
         "E_INVALID: Export destination must end in .jpg or .jpeg"
     );
-    ensure!(!destination.exists(), "E_EXISTS: Export destination already exists; originals and previous exports are never overwritten");
+    ensure!(
+        (30..=100).contains(&options.quality),
+        "E_INVALID: Export JPEG quality must be between 30 and 100"
+    );
+    if let Some(edge) = options.max_edge {
+        ensure!(
+            (256..=16_384).contains(&edge),
+            "E_INVALID: Export max_edge must be between 256 and 16384"
+        );
+    }
+    ensure!(
+        !destination.exists(),
+        "E_EXISTS: Export destination already exists; originals and previous exports are never overwritten"
+    );
     let parent = destination
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -654,13 +849,42 @@ pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Val
         parent.is_dir(),
         "E_NOT_FOUND: Export destination folder does not exist"
     );
-    let frame = render_frame(path, crop, None, false)?;
+    let frame = render_frame(path, crop, None, false, false)?;
+    let resized = match options.max_edge {
+        Some(edge) if frame.image.width() > edge || frame.image.height() > edge => frame
+            .image
+            .resize(edge, edge, image::imageops::FilterType::Lanczos3),
+        _ => frame.image,
+    };
+    let mut rgb = resized.to_rgb8();
+    let out_icc = match options.color_space {
+        ExportColorSpace::Preserve => frame.icc,
+        target => {
+            let target_gamut = match target {
+                ExportColorSpace::Srgb => crate::icc::KnownGamut::Srgb,
+                ExportColorSpace::DisplayP3 => crate::icc::KnownGamut::DisplayP3,
+                ExportColorSpace::AdobeRgb => crate::icc::KnownGamut::AdobeRgb,
+                ExportColorSpace::Preserve => unreachable!(),
+            };
+            if let Some(source_gamut) = crate::icc::detect_gamut(frame.icc.as_deref()) {
+                crate::icc::convert_rgb_image(&mut rgb, source_gamut, target_gamut);
+            }
+            Some(match target_gamut {
+                crate::icc::KnownGamut::Srgb => crate::icc::srgb_icc(),
+                crate::icc::KnownGamut::DisplayP3 => crate::icc::display_p3_icc(),
+                crate::icc::KnownGamut::AdobeRgb => crate::icc::adobe_rgb_1998_icc(),
+            })
+        }
+    };
+
+    let width = rgb.width();
+    let height = rgb.height();
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    let mut encoder = JpegEncoder::new_with_quality(temp.as_file_mut(), 95);
-    if let Some(icc) = frame.icc {
+    let mut encoder = JpegEncoder::new_with_quality(temp.as_file_mut(), options.quality);
+    if let Some(icc) = out_icc {
         encoder.set_icc_profile(icc)?;
     }
-    encoder.encode_image(&frame.image.to_rgb8())?;
+    encoder.encode_image(&rgb)?;
     temp.as_file().sync_all()?;
     // This atomic no-clobber commit also closes the check-then-write race above.
     temp.persist_noclobber(destination).map_err(|e| {
@@ -669,7 +893,13 @@ pub fn export(path: &Path, crop: Option<Crop>, destination: &Path) -> Result<Val
             e.error
         )
     })?;
-    Ok(json!({"path": dunce::canonicalize(destination)?.to_string_lossy()}))
+    Ok(json!({
+        "path": dunce::canonicalize(destination)?.to_string_lossy(),
+        "width": width,
+        "height": height,
+        "quality": options.quality,
+        "color_space": options.color_space.as_str(),
+    }))
 }
 
 #[cfg(test)]

@@ -1,0 +1,51 @@
+.batch-dock-count {
+  padding-left: var(--nl-s-1);
+  color: var(--nl-text);
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.batch-dock-sep {
+  flex: none;
+  width: 1px;
+  height: var(--nl-s-4);
+  background: var(--nl-line);
+}
+.batch-dock .library-batch-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.batch-color-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--nl-r-pill);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--nl-d-fast) var(--nl-ease);
+}
+.batch-color-btn:hover,
+.batch-color-btn:focus-visible {
+  background: var(--nl-hover);
+}
+.batch-color-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--nl-r-pill);
+}
+.batch-color-swatch[data-color='red'] {
+  background: var(--nl-label-red);
+}
+.batch-color-swatch[data-color='yellow'] {
+  background: var(--nl-label-yellow);
+}
+.batch-color-swatch[data-color='green'] {
+  background: var(--nl-label-green);
+}
+.batch-color-swatch[data-color='blue'] {
+  background: var(--nl-label-blue);
+}

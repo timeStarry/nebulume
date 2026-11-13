@@ -20,8 +20,8 @@ export function PageHeader(props: {
   });
   return (
     <header ref={header} class={`nl-page-header${props.class ? ` ${props.class}` : ''}`}>
-      {props.leading}
       <div class="nl-page-title">
+        {props.leading}
         <h1>{props.title}</h1>
         <Show when={props.subtitle}>
           <span class="nl-page-subtitle">{props.subtitle}</span>
@@ -50,6 +50,24 @@ export function Toolbar(props: { children: JSX.Element; label?: string; class?: 
 
 export function Spacer() {
   return <span class="nl-spacer" />;
+}
+
+/** Bottom-centred glass action dock that floats over a scroll viewport without shifting layout. */
+export function FloatingDock(props: {
+  label: string;
+  inline?: boolean;
+  class?: string;
+  children: JSX.Element;
+}) {
+  return (
+    <div
+      class={`nl-floating-dock${props.inline ? ' nl-floating-dock--inline' : ''}${props.class ? ` ${props.class}` : ''}`}
+      role="toolbar"
+      aria-label={props.label}
+    >
+      {props.children}
+    </div>
+  );
 }
 
 /** One centred column, at most 760px wide. */

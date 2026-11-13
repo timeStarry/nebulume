@@ -60,6 +60,21 @@ export function storageErrorPresentation(error: unknown): StorageErrorPresentati
     summary = '连接超时。请检查网络、设备地址与服务状态后重试。';
   else if (/dns error|failed to lookup|name or service not known|No such host/i.test(raw))
     summary = '无法找到设备地址。请检查域名，或使用设备在局域网中的 IP 地址。';
+  else if (
+    /limited to LAN addresses|requires a LAN (?:HTTPS )?endpoint|approved LAN addresses/i.test(raw)
+  )
+    summary =
+      '明文 HTTP 与设备证书信任仅支持本机、局域网（192.168.x.x / 10.x.x.x）及组网内网（100.64.x.x–100.127.x.x）地址。';
+  else if (/Cannot resolve the LAN endpoint/i.test(raw))
+    summary = '无法解析该服务端地址。请检查主机名，或改用设备 IP 地址。';
+  else if (/\b404\b|Not Found/i.test(raw))
+    summary = '未找到目标目录（404）。请核对服务端地址、端口与根目录路径是否正确。';
+  else if (/\b405\b|Method Not Allowed/i.test(raw))
+    summary = '服务器不支持该目录访问方式（405）。请确认 NAS 已开启 WebDAV 服务并填写了正确的端口与路径。';
+  else if (/HTTP 5\d\d|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout/i.test(raw))
+    summary = '存储服务端返回错误。请稍后重试，或检查 NAS 上的 WebDAV / S3 服务状态。';
+  else if (/TLS server did not provide a certificate|Invalid TLS certificate/i.test(raw))
+    summary = '服务端未返回有效的 HTTPS 证书。请确认该端口提供的是 HTTPS 服务，或改用 HTTP 端口。';
   else if (/hard.?links?|hard_link/i.test(raw))
     summary = '目标文件系统不支持安全保存此副本。请换用支持硬链接的本地目录；原始文件保持不变。';
   else if (/[\u3400-\u9fff]/.test(raw) && raw.length <= 220 && !raw.includes('\n'))

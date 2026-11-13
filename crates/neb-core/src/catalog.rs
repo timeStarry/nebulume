@@ -1,7 +1,6 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fs,
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, SystemTime},
@@ -12,32 +11,36 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
-use walkdir::WalkDir;
 
 use crate::{
     capture_time::{self, CaptureStatus, CaptureTime},
-    imaging,
-    model::{ScanError, ScanReport},
-    Asset, Crop, Library, Location, PreviewImage, PreviewMemory, PreviewTier,
+    imaging, Asset, Crop, Library, Location, PreviewImage, PreviewMemory, PreviewTier,
 };
+
+mod collections;
+mod query;
+mod scan;
+mod xmp_sync;
+
+use query::ListMemo;
 
 pub struct Core {
     database: Mutex<Connection>,
     // Bounded memory cache, keyed by current source fingerprint and crop recipe.
     // The disk catalog never contains preview data or credentials.
     previews: PreviewMemory,
-    // Recent `asset.list` snapshots, valid while `catalog_revision` is unchanged.
+    // Recent `asset.list` / `asset.ids` snapshots, valid while their revision holds.
     list_memo: Mutex<Vec<ListMemo>>,
 }
 
-const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key";
+const LEGACY_V8_ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key";
+pub(super) const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key,color_label";
 const LIBRARY_COLUMNS: &str =
     "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg,location_id";
 // Bump when inspection semantics change. This lives only in the private cache
 // fingerprint, so old catalogs upgrade on access without rewriting user EXIF.
-const INSPECTION_VERSION: &str = "inspect-v2";
+pub(super) const INSPECTION_VERSION: &str = "inspect-v2";
 const PREVIEW_MEMORY_ENTRIES: usize = 256;
 const PREVIEW_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 
@@ -47,12 +50,12 @@ impl Core {
         let mut database = Connection::open(data_dir.as_ref().join("catalog.sqlite3"))?;
         database.busy_timeout(Duration::from_secs(5))?;
         database.execute_batch(
-            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
         )?;
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            (0..=12).contains(&version),
+            (0..=14).contains(&version),
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         // The preview branch used 9/10 for import options and search indexes;
@@ -76,7 +79,7 @@ impl Core {
         );
         if version >= 8 {
             migration
-                .prepare(&format!("SELECT {ASSET_COLUMNS},path_key,modified_stamp,import_batch_id,sha256 FROM assets LIMIT 0"))
+                .prepare(&format!("SELECT {LEGACY_V8_ASSET_COLUMNS},path_key,modified_stamp,import_batch_id,sha256 FROM assets LIMIT 0"))
                 .context("E_SCHEMA: Unrecognized catalog asset schema; catalog unchanged")?;
             migration
                 .prepare(&format!(
@@ -100,6 +103,21 @@ impl Core {
                 has_column(&migration, "assets", "trashed_at")?
                     && has_column(&migration, "assets", "trash_path")?,
                 "E_SCHEMA: Unrecognized catalog trash schema; catalog unchanged"
+            );
+        }
+        if version >= 13 {
+            ensure!(
+                has_any_column(&migration, "assets", "camera")?
+                    && has_column(&migration, "catalog_revision", "structural_value")?,
+                "E_SCHEMA: Unrecognized catalog v13 schema; catalog unchanged"
+            );
+        }
+        if version >= 14 {
+            ensure!(
+                has_column(&migration, "assets", "color_label")?
+                    && has_column(&migration, "collections", "id")?
+                    && has_column(&migration, "keywords", "id")?,
+                "E_SCHEMA: Unrecognized catalog v14 schema; catalog unchanged"
             );
         }
         if version == 0 {
@@ -287,7 +305,7 @@ impl Core {
             // so list snapshots can be reused until something they depend on changes.
             migration.execute_batch(
   "CREATE TABLE IF NOT EXISTS catalog_revision(id INTEGER PRIMARY KEY CHECK(id=1),value INTEGER NOT NULL);
-          INSERT OR IGNORE INTO catalog_revision VALUES(1,0);
+          INSERT OR IGNORE INTO catalog_revision(id,value) VALUES(1,0);
           CREATE TRIGGER IF NOT EXISTS assets_revision_insert AFTER INSERT ON assets BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
    CREATE TRIGGER IF NOT EXISTS assets_revision_update AFTER UPDATE ON assets BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
           CREATE TRIGGER IF NOT EXISTS assets_revision_delete AFTER DELETE ON assets BEGIN UPDATE catalog_revision SET value=value+1 WHERE id=1; END;
@@ -307,9 +325,164 @@ impl Core {
             )?;
         }
 
-        // A distinct version makes the two historical lineages converge. Keep
-        // preview-only data intact: these are additive repairs, not table rebuilds.
-        migration.execute_batch("PRAGMA user_version=12;")?;
+        // Schema v13: stop rebuilding FTS5 on rating/flag/crop/trash updates, track
+        // structural vs mark revisions so culling does not flush unfiltered list memos,
+        // and add indexed virtual EXIF columns for O(log N) filter/facet queries.
+        if version < 13 {
+            if !has_column(&migration, "catalog_revision", "structural_value")? {
+                migration.execute_batch(
+                    "ALTER TABLE catalog_revision ADD COLUMN structural_value INTEGER NOT NULL DEFAULT 0;
+                     UPDATE catalog_revision SET structural_value=value;",
+                )?;
+            }
+            for (column, definition) in [
+                (
+                    "camera",
+                    "TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.Camera')) VIRTUAL",
+                ),
+                (
+                    "lens",
+                    "TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.Lens')) VIRTUAL",
+                ),
+                (
+                    "focal_length_mm",
+                    "REAL GENERATED ALWAYS AS (CAST(json_extract(metadata_json,'$.\"Focal Length\"') AS REAL)) VIRTUAL",
+                ),
+                (
+                    "iso_value",
+                    "REAL GENERATED ALWAYS AS (CAST(json_extract(metadata_json,'$.ISO') AS REAL)) VIRTUAL",
+                ),
+            ] {
+                if !has_any_column(&migration, "assets", column)? {
+                    migration.execute_batch(&format!(
+                        "ALTER TABLE assets ADD COLUMN {column} {definition};"
+                    ))?;
+                }
+            }
+            migration.execute_batch(
+                "DROP TRIGGER IF EXISTS assets_au;
+                 CREATE TRIGGER assets_au AFTER UPDATE OF filename,metadata_json ON assets BEGIN
+                     INSERT INTO assets_fts(assets_fts,rowid,filename,metadata_json) VALUES('delete',old.rowid,old.filename,old.metadata_json);
+                     INSERT INTO assets_fts(rowid,filename,metadata_json) VALUES(new.rowid,new.filename,new.metadata_json);
+                 END;
+                 DROP TRIGGER IF EXISTS assets_revision_insert;
+                 DROP TRIGGER IF EXISTS assets_revision_update;
+                 DROP TRIGGER IF EXISTS assets_revision_delete;
+                 DROP TRIGGER IF EXISTS assets_structural_update;
+                 DROP TRIGGER IF EXISTS libraries_revision_insert;
+                 DROP TRIGGER IF EXISTS libraries_revision_update;
+                 DROP TRIGGER IF EXISTS libraries_revision_delete;
+                 CREATE TRIGGER assets_revision_insert AFTER INSERT ON assets BEGIN
+                     UPDATE catalog_revision SET value=value+1,structural_value=structural_value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER assets_revision_update AFTER UPDATE ON assets BEGIN
+                     UPDATE catalog_revision
+                     SET value=value+1,
+                         structural_value=structural_value + CASE
+                             WHEN old.library_id IS NOT new.library_id
+                               OR old.path IS NOT new.path
+                               OR old.path_key IS NOT new.path_key
+                               OR old.filename IS NOT new.filename
+                               OR old.extension IS NOT new.extension
+                               OR old.kind IS NOT new.kind
+                               OR old.size IS NOT new.size
+                               OR old.modified_at IS NOT new.modified_at
+                               OR old.modified_stamp IS NOT new.modified_stamp
+                               OR old.metadata_json IS NOT new.metadata_json
+                               OR old.availability IS NOT new.availability
+                             THEN 1 ELSE 0 END
+                     WHERE id=1;
+                 END;
+                 CREATE TRIGGER assets_revision_delete AFTER DELETE ON assets BEGIN
+                     UPDATE catalog_revision SET value=value+1,structural_value=structural_value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER libraries_revision_insert AFTER INSERT ON libraries BEGIN
+                     UPDATE catalog_revision SET value=value+1,structural_value=structural_value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER libraries_revision_update AFTER UPDATE ON libraries BEGIN
+                     UPDATE catalog_revision SET value=value+1,structural_value=structural_value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER libraries_revision_delete AFTER DELETE ON libraries BEGIN
+                     UPDATE catalog_revision SET value=value+1,structural_value=structural_value+1 WHERE id=1;
+                 END;
+                 CREATE INDEX IF NOT EXISTS assets_library_camera ON assets(library_id,camera,availability);
+                 CREATE INDEX IF NOT EXISTS assets_library_lens ON assets(library_id,lens,availability);
+                 CREATE INDEX IF NOT EXISTS assets_library_focal ON assets(library_id,focal_length_mm);
+                 CREATE INDEX IF NOT EXISTS assets_library_iso ON assets(library_id,iso_value);
+                 PRAGMA user_version=13;",
+            )?;
+        }
+        if version < 14 {
+            if !has_column(&migration, "assets", "color_label")? {
+                migration.execute_batch(
+                    "ALTER TABLE assets ADD COLUMN color_label TEXT NOT NULL DEFAULT 'none' CHECK(color_label IN ('none','red','yellow','green','blue'));",
+                )?;
+            }
+            migration.execute_batch(
+                "CREATE INDEX IF NOT EXISTS assets_library_color_label ON assets(library_id,color_label);
+                 CREATE TABLE IF NOT EXISTS collections(
+                     id TEXT PRIMARY KEY NOT NULL,
+                     library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+                     name TEXT NOT NULL,
+                     kind TEXT NOT NULL CHECK(kind IN ('manual','smart')),
+                     rules_json TEXT,
+                     created_at TEXT NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS collections_library ON collections(library_id,created_at);
+                 CREATE TABLE IF NOT EXISTS collection_items(
+                     collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                     asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                     added_at TEXT NOT NULL,
+                     PRIMARY KEY(collection_id,asset_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS collection_items_asset ON collection_items(asset_id);
+                 CREATE TABLE IF NOT EXISTS keywords(
+                     id TEXT PRIMARY KEY NOT NULL,
+                     library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+                     path TEXT NOT NULL,
+                     created_at TEXT NOT NULL,
+                     UNIQUE(library_id,path)
+                 );
+                 CREATE TABLE IF NOT EXISTS asset_keywords(
+                     asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                     keyword_id TEXT NOT NULL REFERENCES keywords(id) ON DELETE CASCADE,
+                     PRIMARY KEY(asset_id,keyword_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS asset_keywords_keyword ON asset_keywords(keyword_id);
+                 CREATE TABLE IF NOT EXISTS library_volumes(
+                     library_id TEXT PRIMARY KEY NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+                     volume_label TEXT,
+                     mount_root TEXT,
+                     relative_root TEXT NOT NULL DEFAULT '',
+                     updated_at TEXT NOT NULL
+                 );
+                 CREATE TRIGGER IF NOT EXISTS collections_revision_update AFTER UPDATE ON collections BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS collections_revision_delete AFTER DELETE ON collections BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS collection_items_revision_insert AFTER INSERT ON collection_items BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS collection_items_revision_delete AFTER DELETE ON collection_items BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS asset_keywords_revision_insert AFTER INSERT ON asset_keywords BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS asset_keywords_revision_delete AFTER DELETE ON asset_keywords BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 PRAGMA user_version=14;",
+            )?;
+        }
+        migration.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_settings(
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            );",
+        )?;
         migration.commit()?;
         database.execute(
      "DELETE FROM assets WHERE trashed_at IS NOT NULL AND trashed_at < datetime('now','-30 days')",
@@ -365,6 +538,18 @@ impl Core {
                     None,
                 )?)?)
             }
+            "library.relocate" => {
+                #[derive(Deserialize)]
+                struct Relocate {
+                    id: String,
+                    root: String,
+                }
+                let args: Relocate = parse(params)?;
+                Ok(serde_json::to_value(self.relocate_local_library(
+                    &args.id,
+                    Path::new(&args.root),
+                )?)?)
+            }
             "library.remove" => {
                 let id = id(&params)?;
                 Ok(json!({"id":id,"removed_assets":self.remove_library(&id)?}))
@@ -378,6 +563,7 @@ impl Core {
                 Ok(serde_json::to_value(self.scan(&args.library_id)?)?)
             }
             "asset.list" => self.list_assets(parse(params)?),
+            "asset.ids" => self.asset_ids(parse(params)?),
             "asset.stats" => self.asset_stats(parse(params)?),
             "file.siblings" => {
                 #[derive(Deserialize)]
@@ -432,6 +618,7 @@ impl Core {
                         params![args.rating, member],
                     )?;
                 }
+                self.sync_xmp_if_enabled(&members);
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.flag" => {
@@ -454,6 +641,30 @@ impl Core {
                     )?;
                 }
                 ensure!(changed >= 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(&members);
+                Ok(serde_json::to_value(self.asset(&args.id)?)?)
+            }
+            "asset.label" => {
+                #[derive(Deserialize)]
+                struct LabelArgs {
+                    id: String,
+                    color_label: String,
+                }
+                let args: LabelArgs = parse(params)?;
+                ensure!(
+                    valid_color_label(&args.color_label),
+                    "E_INVALID: Color label must be none, red, yellow, green or blue"
+                );
+                let members = self.with_pair_members(std::slice::from_ref(&args.id))?;
+                let mut changed = 0;
+                for member in &members {
+                    changed += self.db()?.execute(
+                        "UPDATE assets SET color_label=?1 WHERE id=?2",
+                        params![args.color_label, member],
+                    )?;
+                }
+                ensure!(changed >= 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(&members);
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.trash" | "asset.restore" => {
@@ -490,6 +701,7 @@ impl Core {
                     params![serde_json::to_string(&args.crop)?, args.id],
                 )?;
                 ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(std::slice::from_ref(&args.id));
                 Ok(serde_json::to_value(self.asset(&args.id)?)?)
             }
             "asset.reset_crop" => {
@@ -498,6 +710,7 @@ impl Core {
                     .db()?
                     .execute("UPDATE assets SET crop_json=NULL WHERE id=?1", [&id])?;
                 ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(std::slice::from_ref(&id));
                 Ok(serde_json::to_value(self.asset(&id)?)?)
             }
             "asset.preview" => {
@@ -508,10 +721,14 @@ impl Core {
                     max_size: Option<u32>,
                     #[serde(default)]
                     uncropped: bool,
+                    #[serde(default)]
+                    prefer_raw: bool,
                 }
                 let args: Preview = parse(params)?;
                 let tier = preview_tier(args.tier.as_deref(), args.max_size)?;
-                Ok(self.preview_image(&args.id, tier, args.uncropped)?.meta())
+                Ok(self
+                    .preview_image_with_mode(&args.id, tier, args.uncropped, args.prefer_raw)?
+                    .meta())
             }
             "asset.histogram" => {
                 let asset = self.asset(&id(&params)?)?;
@@ -528,13 +745,40 @@ impl Core {
                 struct Export {
                     id: String,
                     destination: String,
+                    max_edge: Option<u32>,
+                    quality: Option<u8>,
+                    #[serde(default)]
+                    color_space: imaging::ExportColorSpace,
                 }
                 let args: Export = parse(params)?;
                 let asset = self.asset(&args.id)?;
                 let path = self.checked_asset_path(&asset)?;
-                imaging::export(&path, asset.crop, Path::new(&args.destination))
+                imaging::export_with_options(
+                    &path,
+                    asset.crop,
+                    Path::new(&args.destination),
+                    imaging::ExportOptions {
+                        max_edge: args.max_edge,
+                        quality: args.quality.unwrap_or(95),
+                        color_space: args.color_space,
+                    },
+                )
             }
-            _ => bail!("E_NOT_FOUND: Unknown core command {command}"),
+            "xmp.policy.get" => Ok(json!({"auto_write": self.xmp_auto_write()?})),
+            "xmp.policy.set" => {
+                #[derive(Deserialize)]
+                struct Policy {
+                    auto_write: bool,
+                }
+                let args: Policy = parse(params)?;
+                Ok(json!({"auto_write": self.set_xmp_auto_write(args.auto_write)?}))
+            }
+            "asset.xmp.write" => self.write_xmp_sidecars(parse(params)?),
+            "asset.xmp.read" => self.read_xmp_sidecars(parse(params)?),
+            other => match self.dispatch_collection_or_keyword(other, params)? {
+                Some(value) => Ok(value),
+                None => bail!("E_NOT_FOUND: Unknown core command {command}"),
+            },
         }
     }
 
@@ -742,6 +986,106 @@ impl Core {
         self.update_library_binding(id, name, pair_raw_jpeg, Some((root, None, "")))
     }
 
+    /// Relocates a local folder library (e.g. an external SSD mounted at a new path)
+    /// while preserving 100% of asset IDs, stars, flags, color labels, crops, collections, and keywords.
+    pub fn relocate_local_library(&self, id: &str, new_root: &Path) -> Result<Library> {
+        let canonical = dunce::canonicalize(new_root)
+            .context("E_NOT_FOUND: Relocated directory is unavailable")?;
+        ensure!(
+            canonical.is_dir(),
+            "E_INVALID: Relocated path must be a directory"
+        );
+        let new_root_str = canonical
+            .to_str()
+            .context("E_INVALID: Relocated path must be valid Unicode")?
+            .to_owned();
+        let new_root_key = path_key(&new_root_str);
+
+        let mut db = self.db()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut library = tx
+            .query_row(
+                &format!("SELECT {LIBRARY_COLUMNS} FROM libraries WHERE id=?1"),
+                [id],
+                library_row,
+            )
+            .optional()?
+            .context("E_NOT_FOUND: Library does not exist")?;
+        ensure!(
+            library.storage_id.is_none(),
+            "E_INVALID: Only local or external folder libraries can be relocated"
+        );
+        let conflict: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM libraries WHERE root_key=?1 AND id<>?2)",
+            params![new_root_key, id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !conflict,
+            "E_CONFLICT: Another library already uses this directory"
+        );
+
+        let old_root = Path::new(&library.root).to_path_buf();
+        let rows: Vec<(String, String, Option<String>, bool)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id,path,key,trashed_at IS NOT NULL FROM assets WHERE library_id=?1 AND source_key IS NULL",
+            )?;
+            let mapped = stmt.query_map([id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        {
+            let mut upd = tx.prepare_cached(
+                "UPDATE assets SET path=?1,path_key=?2,key=?3,availability=?4 WHERE id=?5",
+            )?;
+            for (asset_id, old_path, old_key, trashed) in rows {
+                let rel_opt = Path::new(&old_path)
+                    .strip_prefix(&old_root)
+                    .ok()
+                    .map(Path::to_path_buf)
+                    .or_else(|| {
+                        old_key
+                            .as_deref()
+                            .map(|k| PathBuf::from(k.trim_start_matches('/')))
+                    });
+                let Some(rel) = rel_opt else {
+                    continue;
+                };
+                let candidate = canonical.join(&rel);
+                let resolved =
+                    dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+                let next_path_str = resolved.to_string_lossy().into_owned();
+                let next_key =
+                    location_key(&library.source_prefix, &canonical, &resolved).or(old_key);
+                let availability = if !trashed && resolved.is_file() {
+                    "available"
+                } else {
+                    "missing"
+                };
+                upd.execute(params![
+                    next_path_str,
+                    path_key(&next_path_str),
+                    next_key,
+                    availability,
+                    asset_id,
+                ])?;
+            }
+        }
+
+        library.root = new_root_str;
+        library.location_id = Some(implicit_location(&tx, &library)?);
+        tx.execute(
+            "UPDATE libraries SET root=?1,root_key=?2,location_id=?3 WHERE id=?4",
+            params![library.root, new_root_key, library.location_id, id],
+        )?;
+        tx.commit()?;
+        drop(db);
+        self.previews.clear();
+        Ok(library)
+    }
+
     fn update_library_binding(
         &self,
         id: &str,
@@ -770,6 +1114,7 @@ impl Core {
         if let Some(pair) = pair_raw_jpeg {
             library.pair_raw_jpeg = pair;
         }
+        let previous_prefix = library.source_prefix.clone();
         let mut changed_binding = false;
         if let Some((root, source, prefix)) = binding {
             ensure!(
@@ -809,6 +1154,22 @@ impl Core {
         }
         if changed_binding {
             transaction.execute("DELETE FROM assets WHERE library_id=?1", [id])?;
+        } else if previous_prefix != library.source_prefix && library.storage_id.is_none() {
+            let rows: Vec<(String, String)> = {
+                let mut stmt = transaction.prepare(
+                    "SELECT id,path FROM assets WHERE library_id=?1 AND source_key IS NULL",
+                )?;
+                let mapped = stmt.query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                mapped.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let mut upd = transaction.prepare("UPDATE assets SET key=?1 WHERE id=?2")?;
+            let lib_root = Path::new(&library.root);
+            for (asset_id, asset_path) in rows {
+                upd.execute(params![
+                    location_key(&library.source_prefix, lib_root, Path::new(&asset_path)),
+                    asset_id
+                ])?;
+            }
         }
         transaction.execute("UPDATE libraries SET name=?1,pair_raw_jpeg=?2,root=?3,root_key=?4,storage_id=?5,source_prefix=?6,location_id=?7 WHERE id=?8", params![library.name,library.pair_raw_jpeg,library.root,path_key(&library.root),library.storage_id,library.source_prefix,library.location_id,id])?;
         if library.storage_id.is_none() {
@@ -935,13 +1296,12 @@ impl Core {
         };
         self.index_file(&library, &path, kind, &extension, None)?;
         let key = path_key(&path.to_string_lossy());
-        self.db()?
-            .query_row(
-                &format!("SELECT {ASSET_COLUMNS} FROM assets WHERE library_id=?1 AND path_key=?2"),
-                params![library.id, key],
-                asset_row,
-            )
-            .map_err(Into::into)
+        let asset_id: String = self.db()?.query_row(
+            "SELECT id FROM assets WHERE library_id=?1 AND path_key=?2",
+            params![library.id, key],
+            |row| row.get(0),
+        )?;
+        self.asset(&asset_id)
     }
 
     pub fn refresh_asset(&self, id: &str) -> Result<Asset> {
@@ -1176,6 +1536,12 @@ impl Core {
                 expected_fingerprint
             ],
         )?;
+        if changed > 0 {
+            transaction.execute(
+                "UPDATE catalog_revision SET structural_value=structural_value+1 WHERE id=1",
+                [],
+            )?;
+        }
         transaction.commit()?;
         Ok(changed == 1)
     }
@@ -1346,10 +1712,16 @@ impl Core {
             source_key.is_some(),
             "E_INVALID: Source creation time requires a remote asset"
         );
-        database.execute(
+        let changed = database.execute(
             "UPDATE assets SET created_at=?1,created_at_checked=1 WHERE id=?2 AND (created_at<>?1 OR created_at_checked=0)",
             params![created_at, id],
         )?;
+        if changed > 0 {
+            database.execute(
+                "UPDATE catalog_revision SET structural_value=structural_value+1 WHERE id=1",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -1377,14 +1749,17 @@ impl Core {
     }
 
     pub fn asset(&self, id: &str) -> Result<Asset> {
-        self.db()?
+        let db = self.db()?;
+        let mut asset = db
             .query_row(
                 &format!("SELECT {ASSET_COLUMNS} FROM assets WHERE id=?1"),
                 [id],
                 asset_row,
             )
             .optional()?
-            .context("E_NOT_FOUND: Asset does not exist")
+            .context("E_NOT_FOUND: Asset does not exist")?;
+        asset.keywords = collections::load_keywords_for_asset(&db, id)?;
+        Ok(asset)
     }
 
     fn checked_asset_path(&self, asset: &Asset) -> Result<PathBuf> {
@@ -1410,337 +1785,7 @@ impl Core {
         Ok(path)
     }
 
-    pub fn scan(&self, library_id: &str) -> Result<ScanReport> {
-        let library = self.library(library_id)?;
-        let root = Path::new(&library.root);
-        // A disconnected volume is not an empty library. Preserve the catalog.
-        ensure!(
-            root.is_dir(),
-            "E_OFFLINE: Library root is disconnected or unavailable"
-        );
-        let canonical_root = dunce::canonicalize(root)?;
-        ensure!(
-            path_key(&canonical_root.to_string_lossy()) == path_key(&library.root),
-            "E_PATH: Library root now resolves to a different directory"
-        );
-        let mut report = ScanReport::default();
-        // Rows that exist before this scan; anything else was indexed by it.
-        let existing: HashSet<String> = {
-            let db = self.db()?;
-            let mut statement = db.prepare("SELECT id FROM assets WHERE library_id=?1")?;
-            let ids = statement
-                .query_map([library_id], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<HashSet<_>>>()?;
-            ids
-        };
-        for entry in WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|entry| {
-                entry.depth() == 0
-                    || !entry.file_type().is_dir()
-                    || !entry.file_name().to_string_lossy().starts_with('.')
-            })
-        {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    report.errors.push(ScanError {
-                        path: error.path().unwrap_or(root).to_string_lossy().into(),
-                        message: error.to_string(),
-                    });
-                    continue;
-                }
-            };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let path = entry.path();
-            let extension = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let Some(kind) = imaging::kind(&extension) else {
-                report.skipped += 1;
-                continue;
-            };
-            match self.index_file(&library, path, kind, &extension, None) {
-                Ok((false, _)) => report.skipped += 1,
-                Ok((true, error)) => {
-                    report.indexed += 1;
-                    if let Some(message) = error {
-                        report.errors.push(ScanError {
-                            path: path.to_string_lossy().into(),
-                            message,
-                        });
-                    }
-                }
-                Err(error) => report.errors.push(ScanError {
-                    path: path.to_string_lossy().into(),
-                    message: format!("{error:#}"),
-                }),
-            }
-        }
-        // Keep missing assets (including their edits) so reconnecting is lossless.
-        // Permission errors are not treated as deletion.
-        let known = {
-            let db = self.db()?;
-            let mut statement = db.prepare(
-                "SELECT id,path,size,quick_hash FROM assets WHERE library_id=?1 AND source_key IS NULL AND trashed_at IS NULL",
-            )?;
-            let rows = statement
-                .query_map([library_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, u64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
-        };
-        let mut missing: Vec<(String, u64, Option<String>)> = Vec::new();
-        for (id, path, size, hash) in &known {
-            match fs::metadata(path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    self.db()?
-                        .execute("UPDATE assets SET availability='missing' WHERE id=?1", [id])?;
-                    missing.push((id.clone(), *size, hash.clone()));
-                }
-                _ => {}
-            }
-        }
-        // A missing photo whose size and quick_hash match exactly one photo first
-        // indexed by this scan was moved or renamed. Keep the original asset (id,
-        // rating, flag, crop, batch) and point it at the new file.
-        if !missing.is_empty() {
-            const FILE_COLUMNS: &str = "path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked,key,quick_hash,sha256";
-            let mut db = self.db()?;
-            let transaction = db.transaction()?;
-            for (old_id, size, hash) in &missing {
-                let Some(hash) = hash else { continue };
-                let candidates: Vec<String> = {
-                    let mut find = transaction.prepare_cached(
-                        "SELECT id FROM assets WHERE library_id=?1 AND size=?2 AND quick_hash=?3 AND availability<>'missing' AND source_key IS NULL",
-                    )?;
-                    let ids = find
-                        .query_map(params![library_id, size, hash], |row| {
-                            row.get::<_, String>(0)
-                        })?
-                        .collect::<rusqlite::Result<Vec<_>>>()?;
-                    ids
-                };
-                let fresh: Vec<&String> = candidates
-                    .iter()
-                    .filter(|id| !existing.contains(*id))
-                    .collect();
-                // Two copies of the same file are ambiguous; leave both untouched.
-                let [new_id] = fresh.as_slice() else { continue };
-                let values: Vec<rusqlite::types::Value> = transaction.query_row(
-                    &format!("SELECT {FILE_COLUMNS} FROM assets WHERE id=?1"),
-                    [new_id],
-                    |row| (0..19).map(|index| row.get(index)).collect(),
-                )?;
-                transaction.execute("DELETE FROM assets WHERE id=?1", [new_id])?;
-                let assignments = FILE_COLUMNS
-                    .split(',')
-                    .enumerate()
-                    .map(|(index, column)| format!("{column}=?{}", index + 1))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let mut bound: Vec<&dyn rusqlite::ToSql> = values
-                    .iter()
-                    .map(|value| value as &dyn rusqlite::ToSql)
-                    .collect();
-                bound.push(old_id);
-                transaction.execute(
-                    &format!("UPDATE assets SET {assignments} WHERE id=?20"),
-                    bound.as_slice(),
-                )?;
-                report.moved += 1;
-            }
-            transaction.commit()?;
-        }
-        Ok(report)
-    }
-
-    fn index_file(
-        &self,
-        library: &Library,
-        path: &Path,
-        kind: &str,
-        extension: &str,
-        registered_asset: Option<&Asset>,
-    ) -> Result<(bool, Option<String>)> {
-        let path = dunce::canonicalize(path)?;
-        ensure!(
-            path_is_within(&path, Path::new(&library.root))
-                || registered_asset
-                    .filter(|asset| asset.source_key.is_some())
-                    .is_some_and(|asset| {
-                        self.db()
-                            .ok()
-                            .and_then(|database| {
-                                crate::cache::resolve_asset_path(&database, &asset.id)
-                                    .ok()
-                                    .flatten()
-                            })
-                            .is_some_and(|managed| managed == path)
-                    }),
-            "E_PATH: File resolves outside the library root"
-        );
-        let info = fs::metadata(&path)?;
-        let modified = info.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let modified_nanos = modified
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let stamp = format!("{INSPECTION_VERSION}:{modified_nanos}");
-        // A remote placeholder was registered before its file existed. On Windows
-        // canonicalization may add a verbatim prefix only after that long cache
-        // file exists. Keep the registered identity (including a refreshed cache
-        // filename), while all inspection uses the checked canonical I/O path.
-        let registered_remote = registered_asset.filter(|asset| asset.source_key.is_some());
-        let path_string = match registered_remote {
-            Some(asset) => asset.path.clone(),
-            None => path
-                .to_str()
-                .context("E_INVALID: Image path is not valid Unicode")?
-                .to_owned(),
-        };
-        let key = path_key(&path_string);
-        let old: Option<(String, u64, String, String, bool, bool)> = if let Some(asset) =
-            registered_remote
-        {
-            Some(self.db()?.query_row(
-                "SELECT id,size,modified_stamp,availability,captured_at_checked,quick_hash IS NULL FROM assets WHERE id=?1 AND library_id=?2 AND path=?3 AND source_key=?4",
-                params![asset.id, library.id, path_string, asset.source_key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-            ).optional()?.context("E_CONFLICT: Remote cache changed while reading; retry the image")?)
-        } else {
-            self.db()?.query_row(
-                "SELECT id,size,modified_stamp,availability,captured_at_checked,quick_hash IS NULL FROM assets WHERE library_id=?1 AND path_key=?2",
-                params![library.id, key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-            ).optional()?
-        };
-        if let Some((old_id, size, old_stamp, availability, capture_checked, hash_missing)) = &old {
-            if *size == info.len()
-                && *old_stamp == stamp
-                && matches!(availability.as_str(), "available" | "unsupported")
-            {
-                if registered_remote.is_none() {
-                    let created_at = file_created_at(&info);
-                    self.db()?.execute(
-                        "UPDATE assets SET created_at=?1,created_at_checked=1 WHERE id=?2 AND source_key IS NULL AND (created_at<>?1 OR created_at_checked=0)",
-                        params![created_at, old_id],
-                    )?;
-                }
-                if *hash_missing && registered_remote.is_none() {
-                    // One-time backfill for assets indexed before v9, so moves of
-                    // existing photos can be recognised on later scans.
-                    if let Some(hash) = quick_hash(&path, info.len()) {
-                        self.db()?.execute(
-                            "UPDATE assets SET quick_hash=?1 WHERE id=?2 AND quick_hash IS NULL",
-                            params![hash, old_id],
-                        )?;
-                    }
-                }
-                if !capture_checked {
-                    // Upgrade old unchanged inspections with a bounded EXIF-only
-                    // read outside the DB mutex. An IO/limit failure stays pending
-                    // and does not prevent normal viewing or refresh.
-                    if let Ok(capture) = capture_time::read_path(&path) {
-                        self.record_capture_time(old_id, old_stamp, &capture)?;
-                    }
-                }
-                return Ok((false, None));
-            }
-        }
-        let id = old
-            .map(|row| row.0)
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let inspection = imaging::inspect(&path);
-        let (width, height, mut metadata, availability, error) = match inspection {
-            Ok(info) => (
-                Some(info.width),
-                Some(info.height),
-                info.metadata,
-                "available",
-                None,
-            ),
-            Err(error) => {
-                let error = format!("{error:#}");
-                let metadata = if info.len() <= imaging::MAX_FILE_BYTES {
-                    imaging::read_exif(&path)
-                } else {
-                    BTreeMap::new()
-                };
-                (None, None, metadata, "unsupported", Some(error))
-            }
-        };
-        if let Some(error) = &error {
-            metadata.insert("Decode Status".into(), error.clone());
-        }
-        let inspected_capture = capture_time::from_metadata(&metadata);
-        let capture = if matches!(inspected_capture.status, CaptureStatus::Missing) {
-            // General inspection can omit EXIF when pixels are unsupported or
-            // its optional EXIF reader fails. Independently check only capture
-            // tags before claiming that an original has no shooting date.
-            capture_time::read_path(&path).ok()
-        } else {
-            Some(inspected_capture)
-        };
-        let capture_checked = capture.is_some();
-        if let Some(capture) = &capture {
-            for key in ["Captured", "Capture Subsecond", "Capture Time Zone"] {
-                if let Some(value) = capture.metadata.get(key) {
-                    metadata.insert(key.to_owned(), value.clone());
-                }
-            }
-        }
-        let captured_at = capture.map(|value| value.captured_at).unwrap_or_default();
-        let filename = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        let modified_at: DateTime<Utc> = modified.into();
-        if let Some(asset) = registered_remote {
-            // A scan can replace this cache revision while image inspection runs.
-            // Update only the captured remote record, never create a local shadow
-            // row or attach the old file's metadata to a newer cache revision.
-            let source_key = asset.source_key.as_deref().expect("remote asset has a key");
-            let changed = self.db()?.execute(
-                "UPDATE assets SET filename=?1,extension=?2,kind=?3,size=?4,modified_at='',modified_stamp=?5,width=?6,height=?7,metadata_json=?8,availability=?9,captured_at=?14,captured_at_checked=?15
-                 WHERE id=?10 AND library_id=?11 AND path=?12 AND source_key=?13",
-                params![source_key.rsplit('/').next().unwrap_or(source_key), extension, kind, info.len(), stamp, width, height, serde_json::to_string(&metadata)?, availability, asset.id, library.id, path_string, source_key, captured_at, capture_checked],
-            )?;
-            ensure!(
-                changed == 1,
-                "E_CONFLICT: Remote cache changed while reading; retry the image"
-            );
-            return Ok((true, error));
-        }
-        self.db()?.execute(
-            "INSERT INTO assets(id,library_id,path,path_key,filename,extension,kind,size,modified_at,modified_stamp,width,height,metadata_json,availability,created_at,created_at_checked,captured_at,captured_at_checked,key,quick_hash)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,?18,?19)
-             ON CONFLICT(library_id,path_key) DO UPDATE SET path=excluded.path,key=excluded.key,
-             sha256=CASE WHEN assets.size=excluded.size AND assets.modified_stamp=excluded.modified_stamp THEN assets.sha256 ELSE NULL END,
-             quick_hash=CASE WHEN assets.size=excluded.size AND assets.modified_stamp=excluded.modified_stamp THEN assets.quick_hash ELSE excluded.quick_hash END,
-             filename=excluded.filename,extension=excluded.extension,
-             kind=excluded.kind,size=excluded.size,modified_at=excluded.modified_at,modified_stamp=excluded.modified_stamp,
-             width=excluded.width,height=excluded.height,metadata_json=excluded.metadata_json,availability=excluded.availability,
-             captured_at=excluded.captured_at,captured_at_checked=excluded.captured_at_checked,
-             created_at=CASE WHEN assets.source_key IS NULL THEN excluded.created_at ELSE assets.created_at END,
-             created_at_checked=CASE WHEN assets.source_key IS NULL THEN 1 ELSE assets.created_at_checked END,
-      trashed_at=NULL,trash_path=NULL",
-            params![id, library.id, path_string, key, filename, extension, kind, info.len(), modified_at.to_rfc3339(), stamp, width, height, serde_json::to_string(&metadata)?, availability, file_created_at(&info), captured_at, capture_checked, location_key(&library.source_prefix, Path::new(&library.root), &path), quick_hash(&path, info.len())],
-        )?;
-        Ok((true, error))
-    }
-
-    fn backfill_created_at(&self, library_id: Option<&str>) -> Result<()> {
+    pub(super) fn backfill_created_at(&self, library_id: Option<&str>) -> Result<()> {
         // Read only thin candidates under the DB mutex. Filesystems (including
         // disconnected local volumes) must never hold up unrelated DB access.
         let candidates = {
@@ -1797,6 +1842,10 @@ impl Core {
                     created_at, id, library_id, path, root, storage_id, prefix
                 ])?;
             }
+            transaction.execute(
+                "UPDATE catalog_revision SET structural_value=structural_value+1 WHERE id=1",
+                [],
+            )?;
         }
         transaction.commit()?;
         Ok(())
@@ -1808,8 +1857,8 @@ impl Core {
             "E_INVALID: A batch must contain 1 to 1000 assets"
         );
         ensure!(
-            args.rating.is_some() || args.flag.is_some(),
-            "E_INVALID: A batch must set a rating or a flag"
+            args.rating.is_some() || args.flag.is_some() || args.color_label.is_some(),
+            "E_INVALID: A batch must set a rating, flag or color label"
         );
         ensure!(
             args.rating.is_none_or(|rating| rating <= 5),
@@ -1819,20 +1868,26 @@ impl Core {
             args.flag.as_deref().is_none_or(valid_flag),
             "E_INVALID: Flag must be none, pick or reject"
         );
+        ensure!(
+            args.color_label.as_deref().is_none_or(valid_color_label),
+            "E_INVALID: Color label must be none, red, yellow, green or blue"
+        );
         let ids = self.with_pair_members(&args.ids)?;
         let mut db = self.db()?;
         let transaction = db.transaction()?;
         let mut updated = 0;
         for id in &ids {
             let changed = transaction.execute(
-                "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag) WHERE id=?3",
-                params![args.rating, args.flag, id],
+                "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),color_label=COALESCE(?3,color_label) WHERE id=?4",
+                params![args.rating, args.flag, args.color_label, id],
             )?;
             // Dropping the transaction rolls back every earlier mark in this batch.
             ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
             updated += changed;
         }
         transaction.commit()?;
+        drop(db);
+        self.sync_xmp_if_enabled(&ids);
         Ok(updated)
     }
 
@@ -2035,452 +2090,6 @@ impl Core {
         Ok(summaries)
     }
 
-    /// Camera models and lenses present in a library, most common first, for filter menus.
-    fn asset_facets(&self, library_id: &str) -> Result<Value> {
-        self.library(library_id)?;
-        let db = self.db()?;
-        let facet = |key: &str| -> Result<Vec<Value>> {
-            let mut statement = db.prepare(&format!(
-                "SELECT json_extract(metadata_json,'$.{key}') AS value,COUNT(*) FROM assets WHERE library_id=?1 AND availability<>'missing' AND value IS NOT NULL AND value<>'' GROUP BY value ORDER BY COUNT(*) DESC,value LIMIT 200"
-            ))?;
-            let rows = statement
-                .query_map([library_id], |row| {
-                    Ok(json!({"value": row.get::<_, String>(0)?, "count": row.get::<_, i64>(1)?}))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        };
-        let cameras = facet("Camera")?;
-        let lenses = facet("Lens")?;
-        let (first, last): (Option<String>, Option<String>) = db.query_row(
-            "SELECT MIN(substr(captured_at,1,10)),MAX(substr(captured_at,1,10)) FROM assets WHERE library_id=?1 AND captured_at<>'' AND availability<>'missing'",
-            [library_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        Ok(
-            json!({"cameras": cameras, "lenses": lenses, "captured": {"first": first, "last": last}}),
-        )
-    }
-
-    /// Validates an asset filter and builds its WHERE and ORDER BY clauses.
-    fn query_parts(&self, args: &AssetQuery) -> Result<QueryParts> {
-        ensure!(
-            valid_day(&args.captured_from) && valid_day(&args.captured_to),
-            "E_INVALID: captured_from and captured_to must be YYYY-MM-DD dates"
-        );
-        ensure!(
-            args.rating.is_none_or(|rating| rating <= 5),
-            "E_INVALID: Rating must be from 0 to 5"
-        );
-        let query = args.query.clone().unwrap_or_default();
-        ensure!(
-            query.chars().count() <= 256,
-            "E_INVALID: Search query is too long"
-        );
-        let format = args.format.as_deref().unwrap_or("all");
-        ensure!(
-            ["all", "raw", "jpeg"].contains(&format),
-            "E_INVALID: Unknown image format filter"
-        );
-        let sort = match args.sort_by.as_deref().unwrap_or("captured_at") {
-            "captured_at" => "captured_at",
-            "modified_at" => "modified_at",
-            "created_at" => "created_at",
-            "filename" => "filename",
-            "rating" => "rating",
-            _ => bail!("E_INVALID: Unknown asset sort field"),
-        };
-        let flag = args.flag.as_deref().unwrap_or("any");
-        ensure!(
-            ["any", "pick", "none", "reject", "not_reject"].contains(&flag),
-            "E_INVALID: Unknown flag filter"
-        );
-        let direction = match args.sort_direction.as_deref().unwrap_or("desc") {
-            "asc" => "ASC",
-            "desc" => "DESC",
-            _ => bail!("E_INVALID: Unknown asset sort direction"),
-        };
-        if sort == "created_at" {
-            self.backfill_created_at(args.library_id.as_deref())?;
-        }
-        let order = if matches!(sort, "created_at" | "captured_at") {
-            format!("({sort}='') ASC,{sort} {direction},path ASC,id ASC")
-        } else {
-            format!("{sort} {direction},path ASC,id ASC")
-        };
-        // Quote all user terms: FTS operators cannot escape into the expression.
-        let search = query
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|word| !word.is_empty())
-            .map(|word| format!("\"{word}\"*"))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        let scope_sql = "trashed_at IS NULL AND (?1 IS NULL OR library_id=?1) AND (?1 IS NOT NULL OR library_id IN (SELECT id FROM libraries WHERE hidden=0))";
-        let where_sql = format!("{scope_sql} AND (?2 IS NULL OR rating>=?2) AND (?3='' OR rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?4)) AND (?5='all' OR (?5='raw' AND kind='raw') OR (?5='jpeg' AND lower(extension) IN ('jpg','jpeg'))) AND (?6='any' OR (?6='not_reject' AND flag<>'reject') OR flag=?6) AND (?7 IS NULL OR import_batch_id=?7) AND (?8 IS NULL OR json_extract(metadata_json,'$.Camera')=?8) AND (?9 IS NULL OR json_extract(metadata_json,'$.Lens')=?9) AND (?10 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)>=?10)) AND (?11 IS NULL OR (captured_at<>'' AND substr(captured_at,1,10)<=?11)) AND (?12 IS NULL OR key=?12 OR key LIKE ?13 ESCAPE '\\') AND (?14 IS NULL OR rating<=?14) AND (?15 IS NULL OR CAST(json_extract(metadata_json,'$.\"Focal Length\"') AS REAL)>=?15) AND (?16 IS NULL OR CAST(json_extract(metadata_json,'$.\"Focal Length\"') AS REAL)<=?16) AND (?17 IS NULL OR CAST(json_extract(metadata_json,'$.ISO') AS REAL)>=?17) AND (?18 IS NULL OR CAST(json_extract(metadata_json,'$.ISO') AS REAL)<=?18)");
-        Ok(QueryParts {
-            search,
-            format: format.to_owned(),
-            flag: flag.to_owned(),
-            sort,
-            direction,
-            order,
-            scope_sql,
-            where_sql,
-        })
-    }
-
-    fn list_assets(&self, args: AssetQuery) -> Result<Value> {
-        let limit = args.limit.unwrap_or(200);
-        ensure!(
-            (1..=1000).contains(&limit),
-            "E_INVALID: Query limit must be between 1 and 1000"
-        );
-        let QueryParts {
-            search,
-            format,
-            flag,
-            sort,
-            direction,
-            order,
-            scope_sql,
-            where_sql,
-        } = self.query_parts(&args)?;
-        let (format, flag) = (format.as_str(), flag.as_str());
-        let db = self.db()?;
-        // One read snapshot, so the revision and the rows it describes cannot disagree.
-        let read = db.unchecked_transaction()?;
-        let revision: i64 =
-            read.query_row("SELECT value FROM catalog_revision WHERE id=1", [], |row| {
-                row.get(0)
-            })?;
-        let memo_key = serde_json::to_string(&(
-            &args.library_id,
-            args.rating,
-            &search,
-            format,
-            flag,
-            &args.import_batch_id,
-            &args.camera,
-            &args.lens,
-            &args.captured_from,
-            &args.captured_to,
-            (
-                &args.folder,
-                args.rating_max,
-                args.focal_min,
-                args.focal_max,
-                args.iso_min,
-                args.iso_max,
-            ),
-            sort,
-            direction,
-        ))?;
-        let cached = self.list_memo.lock().ok().and_then(|memo| {
-            memo.iter()
-                .find(|entry| entry.revision == revision && entry.key == memo_key)
-                .map(|entry| Arc::clone(&entry.snapshot))
-        });
-        let snapshot = match cached {
-            Some(snapshot) => snapshot,
-            None => {
-                let snapshot = Arc::new(Self::list_snapshot(
-                    &read, &args, &search, format, flag, scope_sql, &where_sql, &order,
-                )?);
-                if let Ok(mut memo) = self.list_memo.lock() {
-                    memo.retain(|entry| entry.revision == revision && entry.key != memo_key);
-                    memo.push(ListMemo {
-                        key: memo_key,
-                        revision,
-                        snapshot: Arc::clone(&snapshot),
-                    });
-                    if memo.len() > LIST_MEMO_ENTRIES {
-                        memo.remove(0);
-                    }
-                }
-                snapshot
-            }
-        };
-        let file_total = snapshot.file_total;
-        let total = snapshot.displayed.len();
-        let page: Vec<&String> = snapshot
-            .displayed
-            .iter()
-            .skip(args.offset.unwrap_or(0) as usize)
-            .take(limit as usize)
-            .collect();
-        let mut items = Vec::with_capacity(page.len());
-        if !page.is_empty() {
-            let placeholders = vec!["?"; page.len()].join(",");
-            let mut statement = read.prepare(&format!(
-                "SELECT {ASSET_COLUMNS} FROM assets WHERE id IN ({placeholders})"
-            ))?;
-            let assets = statement
-                .query_map(rusqlite::params_from_iter(page.iter().copied()), asset_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut assets: HashMap<_, _> = assets
-                .into_iter()
-                .map(|asset| (asset.id.clone(), asset))
-                .collect();
-            for id in page {
-                let asset = assets
-                    .remove(id)
-                    .context("E_CONFLICT: Asset list changed while reading")?;
-                let mut value = serde_json::to_value(asset)?;
-                if let Some(pair) = snapshot.pairs.get(id.as_str()) {
-                    value["variants"] = serde_json::to_value(&**pair)?;
-                }
-                items.push(value);
-            }
-        }
-        Ok(json!({"items": items, "total": total, "file_total":file_total}))
-    }
-
-    /// Overview numbers for the same filter the grid shows. Photo counts collapse
-    /// RAW + JPEG pairs like the grid; `bytes` counts every file.
-    fn asset_stats(&self, args: AssetQuery) -> Result<Value> {
-        let parts = self.query_parts(&args)?;
-        let db = self.db()?;
-        let read = db.unchecked_transaction()?;
-        let snapshot = Self::list_snapshot(
-            &read,
-            &args,
-            &parts.search,
-            &parts.format,
-            &parts.flag,
-            parts.scope_sql,
-            &parts.where_sql,
-            &parts.order,
-        )?;
-        let shown: HashSet<&str> = snapshot.displayed.iter().map(String::as_str).collect();
-        let mut statement = read.prepare(&format!(
-     "SELECT id,rating,flag,size,substr(captured_at,1,10),json_extract(metadata_json,'$.Camera'),json_extract(metadata_json,'$.Lens'),CAST(json_extract(metadata_json,'$.\"Focal Length\"') AS REAL),CAST(json_extract(metadata_json,'$.ISO') AS REAL) FROM assets WHERE {}",
-     parts.where_sql
- ))?;
-        let mut rows = statement.query(rusqlite::params_from_iter(filter_params(
-            &args,
-            &parts.search,
-            &parts.format,
-            &parts.flag,
-        )))?;
-        let (mut photos, mut picks, mut rejects, mut rated, mut bytes, mut undated) =
-            (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-        let mut days: BTreeMap<String, u64> = BTreeMap::new();
-        let mut cameras: HashMap<String, u64> = HashMap::new();
-        let mut lenses: HashMap<String, u64> = HashMap::new();
-        let mut focal = Vec::new();
-        let mut iso = Vec::new();
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            bytes += row.get::<_, i64>(3)?.max(0) as u64;
-            if !shown.contains(id.as_str()) {
-                continue;
-            }
-            photos += 1;
-            let rating: i64 = row.get(1)?;
-            match row.get::<_, String>(2)?.as_str() {
-                "pick" => picks += 1,
-                "reject" => rejects += 1,
-                _ if rating > 0 => rated += 1,
-                _ => {}
-            }
-            match row.get::<_, Option<String>>(4)? {
-                Some(day) if day.len() == 10 => *days.entry(day).or_default() += 1,
-                _ => undated += 1,
-            }
-            for (column, counts) in [(5, &mut cameras), (6, &mut lenses)] {
-                if let Some(name) = row
-                    .get::<_, Option<String>>(column)?
-                    .filter(|name| !name.trim().is_empty())
-                {
-                    *counts.entry(name).or_default() += 1;
-                }
-            }
-            if let Some(value) = row.get::<_, Option<f64>>(7)?.filter(|value| *value > 0.0) {
-                focal.push(value);
-            }
-            if let Some(value) = row.get::<_, Option<f64>>(8)?.filter(|value| *value > 0.0) {
-                iso.push(value);
-            }
-        }
-        let ranked = |counts: HashMap<String, u64>| {
-            let mut rows: Vec<_> = counts.into_iter().collect();
-            rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            rows.truncate(12);
-            rows.into_iter()
-                .map(|(name, count)| json!({"name": name, "count": count}))
-                .collect::<Vec<_>>()
-        };
-        // Inclusive bounds, so each bin is also a valid focal_min/focal_max or iso_min/iso_max filter.
-        let bins = |values: &[f64], edges: &[(&str, f64, Option<f64>)]| {
-            edges
-                .iter()
-                .map(|(label, min, max)| {
-                    let count = values
-                        .iter()
-                        .filter(|value| **value >= *min && max.is_none_or(|max| **value <= max))
-                        .count();
-                    json!({"label": label, "min": min, "max": max, "count": count})
-                })
-                .collect::<Vec<_>>()
-        };
-        Ok(json!({
-               "photos": photos,
-        "files": snapshot.file_total,
-        "bytes": bytes,
-        "picks": picks,
-               "rejects": rejects,
-               "rated": rated,
-        "unprocessed": photos - picks - rejects - rated,
-        "undated": undated,
-        "days": days.into_iter().map(|(day, count)| json!({"day": day, "count": count})).collect::<Vec<_>>(),
-        "cameras": ranked(cameras),
-               "lenses": ranked(lenses),
-        "focal": bins(&focal, &[("≤23", 0.0, Some(23.99)), ("24–35", 24.0, Some(35.99)), ("36–50", 36.0, Some(50.99)), ("51–85", 51.0, Some(85.99)), ("86–135", 86.0, Some(135.99)), ("136+", 136.0, None)]),
-               "iso": bins(&iso, &[("≤100", 0.0, Some(100.0)), ("200", 101.0, Some(200.0)), ("400", 201.0, Some(400.0)), ("800", 401.0, Some(800.0)), ("1600", 801.0, Some(1600.0)), ("3200", 1601.0, Some(3200.0)), ("6400+", 3201.0, None)]),
-           }))
-    }
-
-    /// A library's folders, nested, with photo counts that match the grid
-    /// (a RAW + JPEG pair counts once). `path` is what `asset.list` takes as `folder`.
-    fn library_folders(&self, library_id: &str) -> Result<Value> {
-        self.library(library_id)?;
-        let args: AssetQuery = serde_json::from_value(json!({"library_id": library_id}))?;
-        let parts = self.query_parts(&args)?;
-        let db = self.db()?;
-        let read = db.unchecked_transaction()?;
-        let snapshot = Self::list_snapshot(
-            &read,
-            &args,
-            &parts.search,
-            &parts.format,
-            &parts.flag,
-            parts.scope_sql,
-            &parts.where_sql,
-            &parts.order,
-        )?;
-        let shown: HashSet<&str> = snapshot.displayed.iter().map(String::as_str).collect();
-        let mut statement = read.prepare("SELECT id,key FROM assets WHERE library_id=?1 AND trashed_at IS NULL AND key IS NOT NULL")?;
-        let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-        for row in statement.query_map([library_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })? {
-            let (id, key) = row?;
-            if !shown.contains(id.as_str()) {
-                continue;
-            }
-            let segments: Vec<&str> = key.split('/').collect();
-            for depth in 1..segments.len() {
-                *counts.entry(segments[..depth].join("/")).or_default() += 1;
-            }
-        }
-        fn nest(parent: &str, counts: &BTreeMap<String, u64>) -> Vec<Value> {
-            counts
-         .iter()
-         .filter(|(path, _)| path.rsplit_once('/').map_or("", |(head, _)| head) == parent)
-         .map(|(path, count)| {
-      json!({"path": path, "name": path.rsplit('/').next().unwrap_or(path), "count": count, "children": nest(path, counts)})
-         })
-         .collect()
-        }
-        Ok(
-            json!({"library_id": library_id, "total": snapshot.displayed.len(), "folders": nest("", &counts)}),
-        )
-    }
-
-    /// The ordered, pair-collapsed ID list of one query. Recomputed only when the
-    /// catalog revision or the query changes, so paging costs one page of rows.
-    #[allow(clippy::too_many_arguments)]
-    fn list_snapshot(
-        db: &Connection,
-        args: &AssetQuery,
-        search: &str,
-        format: &str,
-        flag: &str,
-        scope_sql: &str,
-        where_sql: &str,
-        order: &str,
-    ) -> Result<ListSnapshot> {
-        // Determine ambiguity from the unfiltered library. Only thin identity
-        // fields are read globally; large metadata blobs are loaded for the page.
-        let mut groups: HashMap<(String, String, String), Vec<PairVariant>> = HashMap::new();
-        let mut grouping = db.prepare(&format!("SELECT id,library_id,COALESCE(source_key,path),filename,extension,kind FROM assets WHERE {scope_sql} AND library_id IN (SELECT id FROM libraries WHERE pair_raw_jpeg=1) AND (kind='raw' OR lower(extension) IN ('jpg','jpeg'))"))?;
-        let members = grouping.query_map([&args.library_id], |row| {
-            Ok((
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                PairVariant {
-                    id: row.get(0)?,
-                    filename: row.get(3)?,
-                    extension: row.get(4)?,
-                    kind: row.get(5)?,
-                },
-            ))
-        })?;
-        for member in members {
-            let (library, location, variant) = member?;
-            let location = Path::new(&location);
-            if let (Some(directory), Some(stem)) = (
-                location.parent(),
-                location.file_stem().and_then(|s| s.to_str()),
-            ) {
-                groups
-                    .entry((
-                        library,
-                        directory.to_string_lossy().into_owned(),
-                        stem.to_string(),
-                    ))
-                    .or_default()
-                    .push(variant);
-            }
-        }
-        let mut pairs: HashMap<String, [PairVariant; 2]> = HashMap::new();
-        for mut members in groups.into_values() {
-            if members.len() != 2 || members.iter().filter(|m| m.kind == "raw").count() != 1 {
-                continue;
-            }
-            members.sort_by_key(|member| member.kind != "raw");
-            let pair = [members.remove(0), members.remove(0)];
-            pairs.insert(pair[0].id.clone(), pair.clone());
-            pairs.insert(pair[1].id.clone(), pair);
-        }
-        let mut statement = db.prepare(&format!(
-            "SELECT id FROM assets WHERE {where_sql} ORDER BY {order}"
-        ))?;
-        let ids = statement
-            .query_map(
-                rusqlite::params_from_iter(filter_params(args, search, format, flag)),
-                |row| row.get::<_, String>(0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let file_total = ids.len();
-        let matches: HashSet<_> = ids.iter().collect();
-        let displayed: Vec<String> = ids
-            .iter()
-            .filter(|id| {
-                pairs.get(*id).is_none_or(|pair| {
-                    let representative = if matches.contains(&pair[1].id) {
-                        &pair[1].id
-                    } else {
-                        &pair[0].id
-                    };
-                    *id == representative
-                })
-            })
-            .cloned()
-            .collect();
-        let mut representatives = HashMap::new();
-        for id in &displayed {
-            if let Some(pair) = pairs.get(id) {
-                representatives.insert(id.clone(), Arc::new(pair.clone()));
-            }
-        }
-        Ok(ListSnapshot {
-            displayed,
-            file_total,
-            pairs: representatives,
-        })
-    }
-
     /// Source fingerprint and crop recipe of a preview, without decoding pixels.
     pub fn preview_fingerprint(&self, id: &str, uncropped: bool) -> Result<String> {
         let asset = self.asset(id)?;
@@ -2494,10 +2103,21 @@ impl Core {
         tier: PreviewTier,
         uncropped: bool,
     ) -> Result<Arc<PreviewImage>> {
+        self.preview_image_with_mode(id, tier, uncropped, false)
+    }
+
+    pub fn preview_image_with_mode(
+        &self,
+        id: &str,
+        tier: PreviewTier,
+        uncropped: bool,
+        prefer_raw: bool,
+    ) -> Result<Arc<PreviewImage>> {
         let asset = self.asset(id)?;
         let path = self.checked_asset_path(&asset)?;
+        let suffix = if prefer_raw { ":raw" } else { "" };
         let key = format!(
-            "{}:{}",
+            "{}:{}{suffix}",
             self.fingerprint(&asset, &path, uncropped)?,
             tier.as_str()
         );
@@ -2505,7 +2125,9 @@ impl Core {
             return Ok(image);
         }
         let crop = if uncropped { None } else { asset.crop };
-        let image = Arc::new(imaging::preview(&path, crop, tier)?);
+        let image = Arc::new(imaging::preview_with_options(
+            &path, crop, tier, prefer_raw,
+        )?);
         self.previews.put(key, Arc::clone(&image));
         Ok(image)
     }
@@ -2527,43 +2149,6 @@ impl Core {
     }
 }
 
-#[derive(Deserialize)]
-struct AssetQuery {
-    library_id: Option<String>,
-    query: Option<String>,
-    rating: Option<u8>,
-    limit: Option<u32>,
-    offset: Option<u32>,
-    format: Option<String>,
-    sort_by: Option<String>,
-    sort_direction: Option<String>,
-    flag: Option<String>,
-    import_batch_id: Option<String>,
-    /// Exact EXIF camera model, as listed by `asset.facets`.
-    camera: Option<String>,
-    /// Exact EXIF lens, as listed by `asset.facets`.
-    lens: Option<String>,
-    /// Inclusive capture-date bounds, `YYYY-MM-DD`, compared with the camera's local date.
-    captured_from: Option<String>,
-    captured_to: Option<String>,
-    /// Library-relative folder (`a/b`); photos in it and its subfolders.
-    #[serde(default)]
-    folder: Option<String>,
-    /// Highest rating to include, for "not yet rated".
-    #[serde(default)]
-    rating_max: Option<u8>,
-    /// Inclusive focal length range in mm, from EXIF `Focal Length`.
-    #[serde(default)]
-    focal_min: Option<f64>,
-    #[serde(default)]
-    focal_max: Option<f64>,
-    /// Inclusive ISO range.
-    #[serde(default)]
-    iso_min: Option<f64>,
-    #[serde(default)]
-    iso_max: Option<f64>,
-}
-
 fn has_column(db: &Connection, table: &str, column: &str) -> Result<bool> {
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
@@ -2572,67 +2157,13 @@ fn has_column(db: &Connection, table: &str, column: &str) -> Result<bool> {
     )?)
 }
 
-/// Positional values for the asset filter's `?1`..`?18`, shared by every query that uses it.
-fn filter_params(
-    args: &AssetQuery,
-    search: &str,
-    format: &str,
-    flag: &str,
-) -> Vec<rusqlite::types::Value> {
-    use rusqlite::types::Value as V;
-    let text = |value: &Option<String>| value.clone().map(V::Text).unwrap_or(V::Null);
-    let real = |value: Option<f64>| value.map(V::Real).unwrap_or(V::Null);
-    let folder = args
-        .folder
-        .as_deref()
-        .map(|folder| folder.trim_matches('/'))
-        .filter(|folder| !folder.is_empty());
-    vec![
-        text(&args.library_id),
-        args.rating
-            .map(|rating| V::Integer(rating.into()))
-            .unwrap_or(V::Null),
-        V::Text(search.to_owned()),
-        V::Text(if search.is_empty() {
-            "\"__nebulume_no_query__\"".to_owned()
-        } else {
-            search.to_owned()
-        }),
-        V::Text(format.to_owned()),
-        V::Text(flag.to_owned()),
-        text(&args.import_batch_id),
-        text(&args.camera),
-        text(&args.lens),
-        text(&args.captured_from),
-        text(&args.captured_to),
-        folder
-            .map(|folder| V::Text(folder.to_owned()))
-            .unwrap_or(V::Null),
-        folder
-            .map(|folder| {
-                V::Text(format!(
-                    "{}/%",
-                    folder
-                        .replace('\\', "\\\\")
-                        .replace('%', "\\%")
-                        .replace('_', "\\_")
-                ))
-            })
-            .unwrap_or(V::Null),
-        args.rating_max
-            .map(|rating| V::Integer(rating.into()))
-            .unwrap_or(V::Null),
-        real(args.focal_min),
-        real(args.focal_max),
-        real(args.iso_min),
-        real(args.iso_max),
-    ]
-}
-
-fn valid_day(day: &Option<String>) -> bool {
-    day.as_deref().is_none_or(|day| {
-        day.len() == 10 && chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok()
-    })
+/// Includes SQLite generated (`VIRTUAL` / `STORED`) columns hidden from `pragma_table_info`.
+fn has_any_column(db: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo(?1) WHERE name=?2)",
+        params![table, column],
+        |row| row.get(0),
+    )?)
 }
 
 #[derive(Deserialize)]
@@ -2640,44 +2171,16 @@ struct MarkBatch {
     ids: Vec<String>,
     rating: Option<u8>,
     flag: Option<String>,
+    #[serde(default)]
+    color_label: Option<String>,
 }
 
 fn valid_flag(flag: &str) -> bool {
     matches!(flag, "none" | "pick" | "reject")
 }
 
-const LIST_MEMO_ENTRIES: usize = 2;
-
-struct ListSnapshot {
-    displayed: Vec<String>,
-    file_total: usize,
-    /// Pair variants by the representative that is displayed.
-    pairs: HashMap<String, Arc<[PairVariant; 2]>>,
-}
-
-struct QueryParts {
-    search: String,
-    format: String,
-    flag: String,
-    sort: &'static str,
-    direction: &'static str,
-    order: String,
-    scope_sql: &'static str,
-    where_sql: String,
-}
-
-struct ListMemo {
-    key: String,
-    revision: i64,
-    snapshot: Arc<ListSnapshot>,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct PairVariant {
-    id: String,
-    filename: String,
-    extension: String,
-    kind: String,
+fn valid_color_label(label: &str) -> bool {
+    matches!(label, "none" | "red" | "yellow" | "green" | "blue")
 }
 
 /// `tier` wins; legacy `max_size` maps to the smallest covering tier.
@@ -2712,7 +2215,7 @@ fn id(params: &Value) -> Result<String> {
 
 /// A location-relative key: the library prefix plus the path under the library root,
 /// joined with `/`. None when the path is not plainly inside the root.
-fn location_key(prefix: &str, root: &Path, path: &Path) -> Option<String> {
+pub(super) fn location_key(prefix: &str, root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
     let parts = relative
         .components()
@@ -2792,29 +2295,6 @@ fn location_row(row: &Row<'_>) -> rusqlite::Result<Location> {
     })
 }
 
-/// SHA-256 of the first 64 KiB + last 64 KiB + file size as LE bytes.
-/// For files smaller than 128 KiB, hashes the full content + size.
-/// Returns None on any I/O error (the file may be locked or gone).
-fn quick_hash(path: &Path, size: u64) -> Option<String> {
-    const CHUNK: u64 = 64 * 1024;
-    let mut file = fs::File::open(path).ok()?;
-    let mut hasher = Sha256::new();
-    if size <= CHUNK * 2 {
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).ok()?;
-        hasher.update(&buf);
-    } else {
-        let mut buf = [0u8; 64 * 1024];
-        let n = file.read(&mut buf).ok()?;
-        hasher.update(&buf[..n]);
-        file.seek(SeekFrom::End(-(CHUNK as i64))).ok()?;
-        let n = file.read(&mut buf).ok()?;
-        hasher.update(&buf[..n]);
-    }
-    hasher.update(size.to_le_bytes());
-    Some(hex::encode(hasher.finalize()))
-}
-
 pub(crate) fn path_key(path: &str) -> String {
     if cfg!(windows) {
         path.to_lowercase()
@@ -2823,7 +2303,7 @@ pub(crate) fn path_key(path: &str) -> String {
     }
 }
 
-fn file_created_at(metadata: &fs::Metadata) -> String {
+pub(super) fn file_created_at(metadata: &fs::Metadata) -> String {
     metadata
         .created()
         .ok()
@@ -2835,7 +2315,7 @@ fn file_created_at(metadata: &fs::Metadata) -> String {
 // simplify the I/O path: long Windows paths still need their verbatim prefix.
 // Only the drive/UNC prefix representation is equivalent; all remaining path
 // components retain their exact comparison and component boundaries.
-fn path_is_within(path: &Path, root: &Path) -> bool {
+pub(super) fn path_is_within(path: &Path, root: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::path::{Component, Prefix};
@@ -2891,7 +2371,7 @@ fn json_column<T: serde::de::DeserializeOwned>(row: &Row<'_>, index: usize) -> r
     })
 }
 
-fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
+pub(super) fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
     let captured_at: String = row.get(16)?;
     let capture_checked: bool = row.get(17)?;
     let capture_status = if !captured_at.is_empty() {
@@ -2934,6 +2414,8 @@ fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
         captured_at,
         capture_status,
         flag: row.get(18)?,
+        color_label: row.get(20)?,
+        keywords: Vec::new(),
         key: row.get(19)?,
     })
 }

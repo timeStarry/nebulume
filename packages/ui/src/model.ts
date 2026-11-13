@@ -18,6 +18,11 @@ export interface Library {
   latest_capture?: string | null;
   /** Up to four recent photos for the overview card. */
   cover_asset_ids?: string[];
+  /** True when backed by an external / removable volume. */
+  removable?: boolean;
+  volume_label?: string | null;
+  /** Suggested mounted path when a removable drive reconnected at a new mount point. */
+  relocatable_path?: string | null;
 }
 export interface Crop {
   x: number;
@@ -44,6 +49,10 @@ export interface Asset {
   rating: number;
   /** Culling mark stored in the catalog; never written to the original. */
   flag?: Flag;
+  /** Photographer color label (6=red, 7=yellow, 8=green, 9=blue); synced to xmp:Label. */
+  color_label?: ColorLabel;
+  /** Hierarchical keywords such as `人像 > 客片`, synced to dc:subject / lr:hierarchicalSubject. */
+  keywords?: string[];
   metadata: Record<string, string>;
   crop?: Crop | null;
   availability: string;
@@ -56,9 +65,27 @@ export interface Asset {
 }
 export type Flag = 'none' | 'pick' | 'reject';
 export type FlagFilter = 'any' | 'pick' | 'none' | 'reject' | 'not_reject';
+export type ColorLabel = 'none' | 'red' | 'yellow' | 'green' | 'blue';
+export type ColorLabelFilter = 'any' | ColorLabel;
+export type CollectionKind = 'manual' | 'smart';
+export interface Collection {
+  id: string;
+  library_id: string;
+  name: string;
+  kind: CollectionKind;
+  rules?: SmartCollectionRules | null;
+  item_count: number;
+  created_at: string;
+}
+export type SmartCollectionRules = Partial<
+  Omit<AssetListOptions, 'limit' | 'offset' | 'collection_id' | 'library_id'>
+>;
 export interface AssetListOptions {
   library_id?: string;
   flag?: FlagFilter;
+  color_label?: ColorLabelFilter;
+  collection_id?: string;
+  keyword?: string;
   import_batch_id?: string;
   camera?: string;
   lens?: string;
@@ -129,6 +156,11 @@ export interface AssetListResult {
   total: number;
   file_total?: number;
 }
+export interface AssetIdsResult {
+  ids: string[];
+  total: number;
+  file_total: number;
+}
 export interface FingerprintStatus {
   library_id: string;
   total: number;
@@ -165,12 +197,13 @@ export interface CaptureIndexStatus {
     error?: string;
   };
 }
-export type PreviewTier = 't256' | 't512' | 't1024' | 'p2560';
+export type PreviewTier = 't256' | 't512' | 't1024' | 'p2560' | 'full';
 export const TIER_PIXELS: Record<PreviewTier, number> = {
   t256: 256,
   t512: 512,
   t1024: 1024,
   p2560: 2560,
+  full: 9600,
 };
 /** Metadata only: pixels are served by the `neb` protocol at `previewUrl(asset, tier)`. */
 export interface Preview {
@@ -283,12 +316,15 @@ export interface ImportItem {
   /** exif, paired_exif, import_date, modified_time, unknown or preserved. */
   date_source?: string;
 }
+export type RenameMode = 'keep' | 'date_prefix_seq' | 'prefix_original';
 export interface OrganizeRules {
   date_basis: 'capture' | 'import' | 'none' | 'preserve';
   date_layout: 'Y-M-D' | 'Y/Y-M-D' | 'Y/M/Y-M-D' | 'Y/M/D';
   type_split: 'none' | 'by_kind';
   unknown_date: 'folder' | 'modified_time';
   subfolder: string;
+  rename_mode?: RenameMode;
+  rename_prefix?: string;
 }
 export interface ImportPlan {
   id: string;
@@ -302,6 +338,7 @@ export interface ImportPlan {
   /** Present for NAS targets: whether this location passed the write test. */
   write_capability?: WriteCapability;
   library_id?: string;
+  backup_destination?: string;
   warnings: string[];
   [key: string]: unknown;
 }
@@ -347,13 +384,18 @@ export interface ImportResult {
   plan_id: string;
   source: string;
   destination: string;
-  status: 'completed' | 'partial' | 'failed' | 'interrupted';
+  status: 'completed' | 'partial' | 'failed' | 'interrupted' | 'cancelled';
   started_at: string;
   finished_at?: string;
   total: number;
   copied: number;
   duplicates: number;
   failed: number;
+  skipped_unselected?: number;
+  backup_destination?: string;
+  backup_copied?: number;
+  backup_failed?: number;
+  backup_errors?: string[];
   items: {
     source: string;
     destination: string;
@@ -368,6 +410,37 @@ export interface ImportResult {
   batch?: ImportBatch;
   batch_error?: string;
   [key: string]: unknown;
+}
+
+export interface ImportProgress {
+  plan_id: string;
+  status: string;
+  total_items: number;
+  done_items: number;
+  total_bytes: number;
+  copied_bytes: number;
+  current_file?: string | null;
+  backup_copied: number;
+  cancelling: boolean;
+}
+
+export interface ImportStatus {
+  active: boolean;
+  cancelling: boolean;
+  progress?: ImportProgress | null;
+}
+
+export interface XmpPolicy {
+  auto_write: boolean;
+}
+
+export interface XmpSyncReport {
+  written?: number;
+  skipped?: number;
+  updated?: number;
+  unchanged?: number;
+  missing_sidecar?: number;
+  errors: { id: string; path: string; message: string }[];
 }
 
 export function bytes(value: number): string {
@@ -406,12 +479,14 @@ export function cropFromPoints(
 export function imageRequestKey(
   asset: Pick<Asset, 'id' | 'crop' | 'preview_revision'>,
   uncropped = false,
+  preferRaw = false,
 ): string {
   return JSON.stringify({
     id: asset.id,
     crop: uncropped ? null : asset.crop || null,
     uncropped,
     revision: asset.preview_revision || 0,
+    ...(preferRaw ? { preferRaw: true } : {}),
   });
 }
 export function histogramFromPixels(data: ArrayLike<number>): Omit<Histogram, 'source'> {

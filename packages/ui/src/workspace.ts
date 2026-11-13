@@ -112,10 +112,26 @@ export function browserAssetFacets(items: Asset[], libraryId: string): AssetFace
     captured: { first: days[0] ?? null, last: days.at(-1) ?? null },
   };
 }
+export function matchesColorLabel(
+  colorLabel: Asset['color_label'],
+  filter: AssetListOptions['color_label'] = 'any',
+): boolean {
+  const normalized = colorLabel || 'none';
+  return !filter || filter === 'any' || normalized === filter;
+}
+
+export function matchesKeyword(keywords: string[] | undefined, filter?: string): boolean {
+  const kw = filter?.trim();
+  if (!kw) return true;
+  if (!keywords?.length) return false;
+  return keywords.some((item) => item === kw || item.startsWith(`${kw} > `));
+}
+
 export function browserAssetList(
   items: Asset[],
   options: AssetListOptions,
   paired = false,
+  allowedIds?: ReadonlySet<string>,
 ): AssetListResult {
   const inLibrary = items.filter(
     (item) => !options.library_id || item.library_id === options.library_id,
@@ -123,11 +139,16 @@ export function browserAssetList(
   const jpeg = (item: Asset) => ['jpg', 'jpeg'].includes(item.extension.toLowerCase());
   const query = options.query?.trim().toLowerCase();
   const matches = (item: Asset) =>
+    (!allowedIds || allowedIds.has(item.id)) &&
     (!query ||
-      `${item.filename} ${Object.values(item.metadata).join(' ')}`.toLowerCase().includes(query)) &&
+      `${item.filename} ${Object.values(item.metadata).join(' ')} ${(item.keywords || []).join(' ')}`
+        .toLowerCase()
+        .includes(query)) &&
     item.rating >= (options.rating || 0) &&
     (options.rating_max === undefined || item.rating <= options.rating_max) &&
     matchesFlag(item.flag || 'none', options.flag) &&
+    matchesColorLabel(item.color_label, options.color_label) &&
+    matchesKeyword(item.keywords, options.keyword) &&
     (!options.camera || item.metadata.Camera === options.camera) &&
     (!options.lens || item.metadata.Lens === options.lens) &&
     (!options.captured_from ||
@@ -260,6 +281,8 @@ export const defaultOrganizeRules = (): OrganizeRules => ({
   type_split: 'none',
   unknown_date: 'folder',
   subfolder: '',
+  rename_mode: 'keep',
+  rename_prefix: '',
 });
 /** Mirrors neb-ingest's subfolder validation so the form can explain problems early. */
 export function subfolderError(value: string): string {
@@ -278,6 +301,30 @@ export function subfolderError(value: string): string {
       return '子目录只能是用 / 分隔的普通文件夹名，不能包含 .. 或特殊字符。';
   return '';
 }
+export function renamePrefixError(value = ''): string {
+  if (!value) return '';
+  if (value.length > 40) return '命名前缀最多 40 个字符。';
+  const reserved = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
+  if (
+    value === '.' ||
+    value === '..' ||
+    /^[.\s]|[.\s]$/.test(value) ||
+    reserved.test(value.split('.')[0]) ||
+    /[\\/:*?"<>|\u0000-\u001f]/.test(value)
+  )
+    return '命名前缀不能包含路径分隔符、首尾点号/空格或系统保留名。';
+  return '';
+}
+/** Matches `neb_ingest::companion_group_key` so RAW + JPEG + XMP toggle together. */
+export function companionGroupKey(sourcePath: string): string {
+  const normalized = sourcePath.replace(/\\/g, '/');
+  const slash = normalized.lastIndexOf('/');
+  const parent = slash >= 0 ? normalized.slice(0, slash) : '';
+  const name = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  return `${parent}/${stem}`.toLowerCase();
+}
 /** A representative destination path, matching neb-ingest's target layout. */
 export function organizeExample(rules: OrganizeRules, day = '2026-10-22'): string {
   const [y, m, d] = day.split('-');
@@ -295,7 +342,17 @@ export function organizeExample(rules: OrganizeRules, day = '2026-10-22'): strin
             : day,
     );
   if (rules.type_split === 'by_kind') parts.push('RAW');
-  parts.push('DSC_0001.NEF');
+  const prefix = rules.rename_prefix?.trim() || '';
+  const mode = rules.rename_mode ?? 'keep';
+  const filename =
+    mode === 'date_prefix_seq'
+      ? prefix
+        ? `${y}${m}${d}_${prefix}_0001.NEF`
+        : `${y}${m}${d}_0001.NEF`
+      : mode === 'prefix_original' && prefix
+        ? `${prefix}_DSC_0001.NEF`
+        : 'DSC_0001.NEF';
+  parts.push(filename);
   return parts.join('/');
 }
 export function dateSourceName(source?: string): string {

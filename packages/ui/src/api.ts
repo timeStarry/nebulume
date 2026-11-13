@@ -93,6 +93,47 @@ export function viewerContext(): Promise<{
 export function listVolumes(): Promise<Volume[]> {
   return desktop ? invoke('list_volumes') : Promise.resolve([]);
 }
+export function revealInFolder(path: string): Promise<void> {
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
+  return invoke('reveal_in_folder', { path });
+}
+export function openDataDirectory(): Promise<void> {
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
+  return invoke('open_data_dir');
+}
+export function openProjectUrl(url: string): Promise<void> {
+  if (!desktop) {
+    if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer');
+    return Promise.resolve();
+  }
+  return invoke('open_url', { url });
+}
+export function openExternal(options: {
+  id?: string;
+  path: string;
+  appPath?: string;
+}): Promise<void> {
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
+  return invoke('open_external', {
+    id: options.id ?? null,
+    path: options.path,
+    appPath: options.appPath ?? null,
+  });
+}
+export async function chooseExternalApp(): Promise<string | null> {
+  if (!desktop) return null;
+  const selected = await open({
+    title: '选择外部精修软件',
+    multiple: false,
+  });
+  return typeof selected === 'string' ? selected : null;
+}
+export function ejectVolume(
+  path: string,
+): Promise<{ path: string; name: string; ejected: boolean }> {
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
+  return invoke('eject_volume', { path });
+}
 const PREGENERATE_KEY = 'nebulume.pregenerate-previews';
 /** Background grid-preview rendering after a scan; on unless the user turned it off. */
 export function readPregenerate(): boolean {

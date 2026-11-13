@@ -1,6 +1,6 @@
 import type { Asset, AssetListOptions } from './model';
 
-export type AssetChange = 'rating' | 'flag' | 'crop' | 'metadata' | 'refresh';
+export type AssetChange = 'rating' | 'flag' | 'color_label' | 'keywords' | 'crop' | 'metadata' | 'refresh';
 export interface AssetUpdated {
   id: string;
   revision?: number;
@@ -32,8 +32,11 @@ export function changedAssetFields(
     JSON.stringify(previous.metadata) !== JSON.stringify(next.metadata)
   )
     return 'metadata';
+  if (JSON.stringify(previous.keywords || []) !== JSON.stringify(next.keywords || []))
+    return 'keywords';
   if (previous.rating !== next.rating) return 'rating';
   if ((previous.flag || 'none') !== (next.flag || 'none')) return 'flag';
+  if ((previous.color_label || 'none') !== (next.color_label || 'none')) return 'color_label';
   return undefined;
 }
 
@@ -46,8 +49,14 @@ export function needsCatalogReconcile(
 ): boolean {
   if (!change || (options.library_id && next.library_id !== options.library_id)) return false;
   if (change === 'crop') return false;
+  if (options.collection_id) {
+    if (change === 'rating' || change === 'flag' || change === 'color_label' || change === 'keywords')
+      return true;
+  }
   if (change === 'rating') return !!options.rating || options.sort_by === 'rating';
   if (change === 'flag') return !!options.flag && options.flag !== 'any';
+  if (change === 'color_label') return !!options.color_label && options.color_label !== 'any';
+  if (change === 'keywords') return !!options.keyword || !!options.query;
   if (!previous) return true;
   if (options.query && JSON.stringify(previous.metadata) !== JSON.stringify(next.metadata))
     return true;
@@ -72,9 +81,9 @@ export function mergePendingUpdate(
       ? 4
       : change === 'crop'
         ? 3
-        : change === 'metadata'
+        : change === 'metadata' || change === 'keywords'
           ? 2
-          : change === 'rating' || change === 'flag'
+          : change === 'rating' || change === 'flag' || change === 'color_label'
             ? 1
             : 0;
   return {

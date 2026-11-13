@@ -16,8 +16,9 @@ use std::{
 use uuid::Uuid;
 
 pub mod organize;
-pub use organize::OrganizeRules;
 use organize::{DateBasis, ItemDate, TypeSplit, UnknownDate};
+pub use organize::{OrganizeRules, RenameMode};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportItem {
@@ -58,6 +59,30 @@ pub struct ImportPlan {
     /// hashed. Skipped by default; reported as unverified, never as a duplicate.
     #[serde(default)]
     pub likely_duplicate_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_destination: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImportProgress {
+    pub plan_id: String,
+    pub status: String,
+    pub total_items: usize,
+    pub done_items: usize,
+    pub total_bytes: u64,
+    pub copied_bytes: u64,
+    pub current_file: Option<String>,
+    pub backup_copied: usize,
+    pub cancelling: bool,
+}
+
+#[derive(Default)]
+pub struct ExecuteOptions<'a> {
+    pub selected_sources: Option<HashSet<String>>,
+    pub backup_destination: Option<PathBuf>,
+    pub include_likely_duplicates: bool,
+    pub progress: Option<&'a (dyn Fn(ImportProgress) + Send + Sync)>,
+    pub cancel: Option<&'a AtomicBool>,
 }
 
 /// What the target library already holds, from its catalog. Planning a remote
@@ -101,6 +126,16 @@ pub struct ImportResult {
     /// Rules frozen in the executed plan; absent in journals from older versions.
     #[serde(default)]
     pub rules: Option<OrganizeRules>,
+    #[serde(default)]
+    pub skipped_unselected: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_destination: Option<String>,
+    #[serde(default)]
+    pub backup_copied: usize,
+    #[serde(default)]
+    pub backup_failed: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backup_errors: Vec<String>,
 }
 
 enum ReviewedDestination {
@@ -111,6 +146,7 @@ enum ReviewedDestination {
 struct ReviewedImport {
     plan: ImportPlan,
     destination: ReviewedDestination,
+    backup: Option<(PathBuf, PreparedDestination)>,
     preserve_names: HashSet<String>,
 }
 pub struct IngestService {
@@ -149,6 +185,17 @@ impl IngestService {
         rules: &OrganizeRules,
         deduplicate: bool,
     ) -> Result<ImportPlan> {
+        self.plan_with_options(source, destination, rules, deduplicate, None)
+    }
+
+    pub fn plan_with_options(
+        &mut self,
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        rules: &OrganizeRules,
+        deduplicate: bool,
+        backup_destination: Option<&Path>,
+    ) -> Result<ImportPlan> {
         rules.validate()?;
         let layout = match rules.date_basis {
             DateBasis::Preserve => "preserve",
@@ -164,6 +211,10 @@ impl IngestService {
             bail!("Import source and destination must be separate directory trees");
         }
         let destination_capability = PreparedDestination::new(&destination)?;
+        let backup = match backup_destination {
+            Some(raw) => Some(prepare_backup_root(&source, Some(&destination), raw)?),
+            None => None,
+        };
         let mut warnings = Vec::new();
         let source_discovery = discover(&source, &mut warnings)?;
         let source_files = source_discovery.files;
@@ -185,6 +236,7 @@ impl IngestService {
             HashMap::new()
         };
         let anchors = group_anchors(rules, &source_files);
+        let sequences = group_sequences(&source_files);
         let destination_files = if deduplicate && destination.is_dir() {
             discover(&destination, &mut warnings)?.files
         } else {
@@ -203,6 +255,7 @@ impl IngestService {
         let mut total_bytes = 0;
         let mut duplicate_count = 0;
         for key in source_files {
+            let seq = *sequences.get(&group_seq_key(&key)).unwrap_or(&1);
             let inspect = (|| -> Result<ImportItem> {
                 let mut file = open_scoped(&source, &key)?;
                 let metadata = file.metadata()?;
@@ -222,6 +275,7 @@ impl IngestService {
                     &capture_dates,
                     &anchors,
                     &import_day,
+                    seq,
                 )?;
                 let preserve_name = preserve_names.contains(&key);
                 let duplicate_identity = dedup_identity(&relative_path, &sha256, preserve_name);
@@ -340,6 +394,9 @@ impl IngestService {
             destination_location: None,
             destination_prefix: String::new(),
             likely_duplicate_count: 0,
+            backup_destination: backup
+                .as_ref()
+                .map(|(root, _)| root.to_string_lossy().into_owned()),
         };
         // Bound stale review snapshots; application can always make another plan.
         if self.plans.len() >= 32 {
@@ -350,6 +407,7 @@ impl IngestService {
             ReviewedImport {
                 plan: plan.clone(),
                 destination: ReviewedDestination::Local(destination_capability),
+                backup,
                 preserve_names,
             },
         );
@@ -357,6 +415,14 @@ impl IngestService {
     }
 
     pub fn execute(&mut self, plan_id: &str) -> Result<ImportResult> {
+        self.execute_with_options(plan_id, ExecuteOptions::default())
+    }
+
+    pub fn execute_with_options(
+        &mut self,
+        plan_id: &str,
+        options: ExecuteOptions<'_>,
+    ) -> Result<ImportResult> {
         let reviewed = self
             .plans
             .get(plan_id)
@@ -367,6 +433,17 @@ impl IngestService {
         if fs::canonicalize(source)? != source || prospective_root(destination)? != destination {
             bail!("Import roots changed after planning");
         }
+        let (active_items, skipped_unselected) = filter_selected_items(
+            &plan.items,
+            &reviewed.preserve_names,
+            options.selected_sources.as_ref(),
+        )?;
+        let backup_target = materialize_backup(
+            source,
+            Some(destination),
+            reviewed.backup.as_ref(),
+            options.backup_destination.as_deref(),
+        )?;
         let mut result = ImportResult {
             id: Uuid::new_v4().to_string(),
             plan_id: plan.id.clone(),
@@ -375,13 +452,20 @@ impl IngestService {
             status: "running".to_string(),
             started_at: Utc::now().to_rfc3339(),
             finished_at: None,
-            total: plan.items.len(),
+            total: active_items.len(),
             copied: 0,
             duplicates: 0,
             failed: 0,
             items: Vec::new(),
             originals_retained: true,
             rules: Some(plan.rules.clone()),
+            skipped_unselected,
+            backup_destination: backup_target
+                .as_ref()
+                .map(|(root, _)| root.to_string_lossy().into_owned()),
+            backup_copied: 0,
+            backup_failed: 0,
+            backup_errors: Vec::new(),
         };
         let journal_path = self.history_dir.join(format!("{}.json", result.id));
         atomic_json(&journal_path, &result)?;
@@ -390,20 +474,63 @@ impl IngestService {
         };
         let scoped_destination = prepared.materialize()?;
         let mut group_members: HashMap<String, Vec<&ImportItem>> = HashMap::new();
-        for item in &plan.items {
+        for item in &active_items {
             if reviewed.preserve_names.contains(&item.source_relative_path) {
                 group_members
                     .entry(capture_group(&item.source_relative_path))
                     .or_default()
-                    .push(item);
+                    .push(*item);
             }
         }
-        let mut group_errors = conflicting_companion_groups(&plan.items, &group_members);
+        let active_owned: Vec<ImportItem> = active_items.iter().map(|&i| i.clone()).collect();
+        let mut group_errors = conflicting_companion_groups(&active_owned, &group_members);
         let mut checked_groups = HashSet::new();
         let mut verified_batch: HashMap<String, String> = HashMap::new();
-        for item in &plan.items {
+        let total_items = active_items.len();
+        let total_bytes: u64 = active_items.iter().map(|i| i.size).sum();
+        let mut done_items = 0usize;
+        let mut copied_bytes = 0u64;
+        let mut was_cancelled = false;
+        let emit_progress = |status: &str,
+                             current: Option<String>,
+                             done: usize,
+                             bytes: u64,
+                             backup: usize,
+                             cancelling: bool| {
+            if let Some(cb) = options.progress {
+                cb(ImportProgress {
+                    plan_id: plan.id.clone(),
+                    status: status.to_string(),
+                    total_items,
+                    done_items: done,
+                    total_bytes,
+                    copied_bytes: bytes,
+                    current_file: current,
+                    backup_copied: backup,
+                    cancelling,
+                });
+            }
+        };
+        emit_progress("running", None, 0, 0, 0, false);
+        for item in active_items {
             let preserve_name = reviewed.preserve_names.contains(&item.source_relative_path);
             let group = preserve_name.then(|| capture_group(&item.source_relative_path));
+            let cancelling = options
+                .cancel
+                .is_some_and(|flag| flag.load(Ordering::Relaxed));
+            let mid_companion_group = group.as_ref().is_some_and(|g| checked_groups.contains(g));
+            if cancelling && !mid_companion_group {
+                was_cancelled = true;
+                break;
+            }
+            emit_progress(
+                "running",
+                Some(item.source_relative_path.clone()),
+                done_items,
+                copied_bytes,
+                result.backup_copied,
+                cancelling,
+            );
             let duplicate_identity =
                 dedup_identity(&item.relative_path, &item.sha256, preserve_name);
             let outcome = (|| -> Result<ItemResult> {
@@ -440,6 +567,18 @@ impl IngestService {
                     } else {
                         result.copied += 1;
                     }
+                    if let Some((_, backup_scoped)) = &backup_target {
+                        match copy_to_backup(source, backup_scoped, item, preserve_name) {
+                            Ok(true) => result.backup_copied += 1,
+                            Ok(false) => {}
+                            Err(err) => {
+                                result.backup_failed += 1;
+                                result
+                                    .backup_errors
+                                    .push(format!("{}: {err:#}", item.source_relative_path));
+                            }
+                        }
+                    }
                     item_result
                 }
                 Err(error) => {
@@ -465,11 +604,25 @@ impl IngestService {
                     }
                 }
             };
+            done_items += 1;
+            copied_bytes = copied_bytes.saturating_add(item.size);
             result.items.push(item_result);
             // Each completed file is durable. A restart re-plans and re-verifies actual files.
             atomic_json(&journal_path, &result)?;
+            emit_progress(
+                "running",
+                Some(item.source_relative_path.clone()),
+                done_items,
+                copied_bytes,
+                result.backup_copied,
+                options
+                    .cancel
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed)),
+            );
         }
-        result.status = if result.failed == 0 {
+        result.status = if was_cancelled {
+            "cancelled"
+        } else if result.failed == 0 && result.backup_failed == 0 {
             "completed"
         } else if result.copied + result.duplicates == 0 {
             "failed"
@@ -479,6 +632,14 @@ impl IngestService {
         .to_string();
         result.finished_at = Some(Utc::now().to_rfc3339());
         atomic_json(&journal_path, &result)?;
+        emit_progress(
+            &result.status,
+            None,
+            done_items,
+            copied_bytes,
+            result.backup_copied,
+            was_cancelled,
+        );
         Ok(result)
     }
 
@@ -493,6 +654,20 @@ impl IngestService {
         deduplicate: bool,
         known: &[KnownAsset],
     ) -> Result<ImportPlan> {
+        self.plan_remote_with_options(source, location_id, prefix, rules, deduplicate, known, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_remote_with_options(
+        &mut self,
+        source: impl AsRef<Path>,
+        location_id: &str,
+        prefix: &str,
+        rules: &OrganizeRules,
+        deduplicate: bool,
+        known: &[KnownAsset],
+        backup_destination: Option<&Path>,
+    ) -> Result<ImportPlan> {
         rules.validate()?;
         let prefix = prefix.trim_matches('/').to_owned();
         validate_key(&prefix, true)?;
@@ -501,6 +676,10 @@ impl IngestService {
         if !source.is_dir() {
             bail!("Import source must be a directory");
         }
+        let backup = match backup_destination {
+            Some(raw) => Some(prepare_backup_root(&source, None, raw)?),
+            None => None,
+        };
         let mut warnings = Vec::new();
         let discovery = discover(&source, &mut warnings)?;
         let source_files = discovery.files;
@@ -511,6 +690,7 @@ impl IngestService {
             HashMap::new()
         };
         let anchors = group_anchors(rules, &source_files);
+        let sequences = group_sequences(&source_files);
         let by_hash: HashMap<&str, &KnownAsset> = known
             .iter()
             .filter_map(|asset| asset.sha256.as_deref().map(|hash| (hash, asset)))
@@ -525,6 +705,7 @@ impl IngestService {
         let mut batch_hashes: HashMap<String, String> = HashMap::new();
         let mut items = Vec::new();
         for key in source_files {
+            let seq = *sequences.get(&group_seq_key(&key)).unwrap_or(&1);
             let inspect = (|| -> Result<ImportItem> {
                 let (metadata, size, sha256, modified) = inspect_source(&source, &key)?;
                 let (relative_path, date_source) = target_for(
@@ -534,6 +715,7 @@ impl IngestService {
                     &capture_dates,
                     &anchors,
                     &import_day,
+                    seq,
                 )?;
                 let target = join_key(&prefix, &relative_path);
                 let preserve_name = preserve_names.contains(&key);
@@ -616,6 +798,9 @@ impl IngestService {
             created_at: Utc::now().to_rfc3339(),
             destination_location: Some(location_id.to_owned()),
             destination_prefix: prefix,
+            backup_destination: backup
+                .as_ref()
+                .map(|(root, _)| root.to_string_lossy().into_owned()),
         };
         if self.plans.len() >= 32 {
             self.plans.clear();
@@ -625,6 +810,7 @@ impl IngestService {
             ReviewedImport {
                 plan: plan.clone(),
                 destination: ReviewedDestination::Remote,
+                backup,
                 preserve_names,
             },
         );
@@ -638,6 +824,22 @@ impl IngestService {
         plan_id: &str,
         writer: &RemoteWriter,
         include_likely: bool,
+    ) -> Result<ImportResult> {
+        self.execute_remote_with_options(
+            plan_id,
+            writer,
+            ExecuteOptions {
+                include_likely_duplicates: include_likely,
+                ..ExecuteOptions::default()
+            },
+        )
+    }
+
+    pub fn execute_remote_with_options(
+        &mut self,
+        plan_id: &str,
+        writer: &RemoteWriter,
+        options: ExecuteOptions<'_>,
     ) -> Result<ImportResult> {
         let reviewed = self
             .plans
@@ -653,6 +855,17 @@ impl IngestService {
         if fs::canonicalize(source)? != source {
             bail!("Import source changed after planning");
         }
+        let (active_items, skipped_unselected) = filter_selected_items(
+            &plan.items,
+            &reviewed.preserve_names,
+            options.selected_sources.as_ref(),
+        )?;
+        let backup_target = materialize_backup(
+            source,
+            None,
+            reviewed.backup.as_ref(),
+            options.backup_destination.as_deref(),
+        )?;
         let mut result = ImportResult {
             id: Uuid::new_v4().to_string(),
             plan_id: plan.id.clone(),
@@ -661,33 +874,87 @@ impl IngestService {
             status: "running".to_string(),
             started_at: Utc::now().to_rfc3339(),
             finished_at: None,
-            total: plan.items.len(),
+            total: active_items.len(),
             copied: 0,
             duplicates: 0,
             failed: 0,
             items: Vec::new(),
             originals_retained: true,
             rules: Some(plan.rules.clone()),
+            skipped_unselected,
+            backup_destination: backup_target
+                .as_ref()
+                .map(|(root, _)| root.to_string_lossy().into_owned()),
+            backup_copied: 0,
+            backup_failed: 0,
+            backup_errors: Vec::new(),
         };
         let journal_path = self.history_dir.join(format!("{}.json", result.id));
         atomic_json(&journal_path, &result)?;
         let mut group_members: HashMap<String, Vec<&ImportItem>> = HashMap::new();
-        for item in &plan.items {
+        for item in &active_items {
             if reviewed.preserve_names.contains(&item.source_relative_path) {
                 group_members
                     .entry(capture_group(&item.source_relative_path))
                     .or_default()
-                    .push(item);
+                    .push(*item);
             }
         }
-        let mut group_errors = conflicting_companion_groups(&plan.items, &group_members);
+        let active_owned: Vec<ImportItem> = active_items.iter().map(|&i| i.clone()).collect();
+        let mut group_errors = conflicting_companion_groups(&active_owned, &group_members);
+        let mut started_groups: HashSet<String> = HashSet::new();
         let mut published: HashMap<String, String> = HashMap::new();
-        for item in &plan.items {
+        let total_items = active_items.len();
+        let total_bytes: u64 = active_items.iter().map(|i| i.size).sum();
+        let mut done_items = 0usize;
+        let mut copied_bytes = 0u64;
+        let mut was_cancelled = false;
+        let emit_progress = |status: &str,
+                             current: Option<String>,
+                             done: usize,
+                             bytes: u64,
+                             backup: usize,
+                             cancelling: bool| {
+            if let Some(cb) = options.progress {
+                cb(ImportProgress {
+                    plan_id: plan.id.clone(),
+                    status: status.to_string(),
+                    total_items,
+                    done_items: done,
+                    total_bytes,
+                    copied_bytes: bytes,
+                    current_file: current,
+                    backup_copied: backup,
+                    cancelling,
+                });
+            }
+        };
+        emit_progress("running", None, 0, 0, 0, false);
+        for item in active_items {
             let preserve_name = reviewed.preserve_names.contains(&item.source_relative_path);
             let group = preserve_name.then(|| capture_group(&item.source_relative_path));
+            let cancelling = options
+                .cancel
+                .is_some_and(|flag| flag.load(Ordering::Relaxed));
+            let mid_companion_group = group.as_ref().is_some_and(|g| started_groups.contains(g));
+            if cancelling && !mid_companion_group {
+                was_cancelled = true;
+                break;
+            }
+            if let Some(g) = &group {
+                started_groups.insert(g.clone());
+            }
+            emit_progress(
+                "running",
+                Some(item.source_relative_path.clone()),
+                done_items,
+                copied_bytes,
+                result.backup_copied,
+                cancelling,
+            );
             let identity = dedup_identity(&item.relative_path, &item.sha256, preserve_name);
             let skip = item.status == "duplicate"
-                || (item.status == "likely_duplicate" && !include_likely);
+                || (item.status == "likely_duplicate" && !options.include_likely_duplicates);
             let outcome = (|| -> Result<ItemResult> {
                 if skip {
                     let status = if item.status == "duplicate" {
@@ -754,6 +1021,18 @@ impl IngestService {
                         }
                         _ => result.duplicates += 1,
                     }
+                    if let Some((_, backup_scoped)) = &backup_target {
+                        match copy_to_backup(source, backup_scoped, item, preserve_name) {
+                            Ok(true) => result.backup_copied += 1,
+                            Ok(false) => {}
+                            Err(err) => {
+                                result.backup_failed += 1;
+                                result
+                                    .backup_errors
+                                    .push(format!("{}: {err:#}", item.source_relative_path));
+                            }
+                        }
+                    }
                     item_result
                 }
                 Err(error) => {
@@ -776,10 +1055,24 @@ impl IngestService {
                     }
                 }
             };
+            done_items += 1;
+            copied_bytes = copied_bytes.saturating_add(item.size);
             result.items.push(item_result);
             atomic_json(&journal_path, &result)?;
+            emit_progress(
+                "running",
+                Some(item.source_relative_path.clone()),
+                done_items,
+                copied_bytes,
+                result.backup_copied,
+                options
+                    .cancel
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed)),
+            );
         }
-        result.status = if result.failed == 0 {
+        result.status = if was_cancelled {
+            "cancelled"
+        } else if result.failed == 0 && result.backup_failed == 0 {
             "completed"
         } else if result.copied + result.duplicates == 0 {
             "failed"
@@ -789,7 +1082,17 @@ impl IngestService {
         .to_string();
         result.finished_at = Some(Utc::now().to_rfc3339());
         atomic_json(&journal_path, &result)?;
-        self.plans.remove(plan_id);
+        emit_progress(
+            &result.status,
+            None,
+            done_items,
+            copied_bytes,
+            result.backup_copied,
+            was_cancelled,
+        );
+        if !was_cancelled && options.selected_sources.is_none() {
+            self.plans.remove(plan_id);
+        }
         Ok(result)
     }
 
@@ -1183,12 +1486,27 @@ fn target_for(
     capture_dates: &HashMap<String, (Option<String>, String)>,
     anchors: &HashMap<String, String>,
     import_day: &str,
+    seq: usize,
 ) -> Result<(String, String)> {
     let item_date = match rules.date_basis {
-        DateBasis::Preserve | DateBasis::None => ItemDate {
-            day: None,
-            source: "preserved".into(),
-        },
+        DateBasis::Preserve | DateBasis::None => {
+            let day = if rules.rename_mode == RenameMode::DatePrefixSeq {
+                capture_dates
+                    .get(key)
+                    .and_then(|(d, _)| d.clone())
+                    .or_else(|| {
+                        (rules.unknown_date == UnknownDate::ModifiedTime)
+                            .then(|| modified_day(metadata))
+                            .flatten()
+                    })
+            } else {
+                None
+            };
+            ItemDate {
+                day,
+                source: "preserved".into(),
+            }
+        }
         DateBasis::Import => ItemDate {
             day: Some(import_day.to_owned()),
             source: "import_date".into(),
@@ -1215,7 +1533,7 @@ fn target_for(
             }
         }
     };
-    let mut relative_path = organize::target_path(rules, key, &item_date)?;
+    let mut relative_path = organize::target_path_with_seq(rules, key, &item_date, seq)?;
     // With type folders an XMP follows the file it describes.
     if let Some(anchor) = anchors.get(&capture_group(key)) {
         if extension_role(key) == "xmp" {
@@ -1226,6 +1544,123 @@ fn target_for(
         }
     }
     Ok((relative_path, item_date.source))
+}
+
+fn group_seq_key(key: &str) -> String {
+    if is_pairable(key) {
+        capture_group(key)
+    } else {
+        key.to_owned()
+    }
+}
+
+fn group_sequences(source_files: &[String]) -> HashMap<String, usize> {
+    let mut by_group = HashMap::new();
+    let mut next_seq = 1usize;
+    for key in source_files {
+        let group = group_seq_key(key);
+        if let std::collections::hash_map::Entry::Vacant(entry) = by_group.entry(group) {
+            entry.insert(next_seq);
+            next_seq += 1;
+        }
+    }
+    by_group
+}
+
+fn prepare_backup_root(
+    source: &Path,
+    primary_destination: Option<&Path>,
+    raw_backup: &Path,
+) -> Result<(PathBuf, PreparedDestination)> {
+    let backup = prospective_root(raw_backup)?;
+    if backup.starts_with(source) || source.starts_with(&backup) {
+        bail!("E_INVALID: Secondary backup destination must be separate from source");
+    }
+    if let Some(primary) = primary_destination {
+        if backup.starts_with(primary) || primary.starts_with(&backup) {
+            bail!(
+                "E_INVALID: Secondary backup destination must be separate from primary destination"
+            );
+        }
+    }
+    let prepared = PreparedDestination::new(&backup)?;
+    Ok((backup, prepared))
+}
+
+fn materialize_backup(
+    source: &Path,
+    primary_destination: Option<&Path>,
+    planned: Option<&(PathBuf, PreparedDestination)>,
+    override_backup: Option<&Path>,
+) -> Result<Option<(PathBuf, ScopedDestination)>> {
+    if let Some(raw) = override_backup {
+        let (root, prepared) = prepare_backup_root(source, primary_destination, raw)?;
+        return Ok(Some((root, prepared.materialize()?)));
+    }
+    if let Some((planned_root, prepared)) = planned {
+        if prospective_root(planned_root)? != *planned_root {
+            bail!("Backup destination root changed after planning");
+        }
+        return Ok(Some((planned_root.clone(), prepared.materialize()?)));
+    }
+    Ok(None)
+}
+
+fn filter_selected_items<'a>(
+    items: &'a [ImportItem],
+    preserve_names: &HashSet<String>,
+    selected: Option<&HashSet<String>>,
+) -> Result<(Vec<&'a ImportItem>, usize)> {
+    let Some(selected_set) = selected else {
+        return Ok((items.iter().collect(), 0));
+    };
+    let matches_direct = |item: &ImportItem| {
+        selected_set.contains(&item.source) || selected_set.contains(&item.source_relative_path)
+    };
+    let selected_companion_groups: HashSet<String> = items
+        .iter()
+        .filter(|item| matches_direct(item) && preserve_names.contains(&item.source_relative_path))
+        .map(|item| capture_group(&item.source_relative_path))
+        .collect();
+    let active: Vec<&'a ImportItem> = items
+        .iter()
+        .filter(|item| {
+            matches_direct(item)
+                || (preserve_names.contains(&item.source_relative_path)
+                    && selected_companion_groups
+                        .contains(&capture_group(&item.source_relative_path)))
+        })
+        .collect();
+    ensure!(
+        !active.is_empty(),
+        "E_INVALID: Select at least one item to import"
+    );
+    let skipped = items.len().saturating_sub(active.len());
+    Ok((active, skipped))
+}
+
+fn copy_to_backup(
+    source: &Path,
+    backup_scoped: &ScopedDestination,
+    item: &ImportItem,
+    preserve_name: bool,
+) -> Result<bool> {
+    for attempt in 0..100 {
+        let key = collision_key(&item.relative_path, &item.sha256, attempt)?;
+        if backup_scoped.exists(&key)? {
+            if existing_matches(backup_scoped, &key, item) {
+                return Ok(false);
+            }
+            if preserve_name {
+                bail!("Backup conflict in XMP companion group at {key}");
+            }
+            continue;
+        }
+        let mut file = open_scoped(source, &item.source_relative_path)?;
+        backup_scoped.publish(&mut file, &key, Some(&item.sha256))?;
+        return Ok(true);
+    }
+    bail!("Too many filename conflicts on backup destination")
 }
 
 /// With type folders, each companion group is anchored on its RAW (else first image).

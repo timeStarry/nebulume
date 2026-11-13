@@ -11,6 +11,24 @@ const BANNER_ICON: Record<BannerTone, IconName> = {
   error: 'alert-circle',
 };
 
+/** Lightweight single-line hint directly beneath a form field (no box, no border). */
+export function FieldHint(props: {
+  tone?: BannerTone;
+  children: JSX.Element;
+  class?: string;
+}) {
+  const tone = () => props.tone ?? 'neutral';
+  return (
+    <p
+      class={`nl-field-hint nl-field-hint--${tone()}${props.class ? ` ${props.class}` : ''}`}
+      role={tone() === 'error' ? 'alert' : 'note'}
+    >
+      <Icon name={BANNER_ICON[tone()]} size={14} />
+      <span>{props.children}</span>
+    </p>
+  );
+}
+
 /** Above the content, until the user acts on it or closes it. */
 export function Banner(props: {
   tone?: BannerTone;

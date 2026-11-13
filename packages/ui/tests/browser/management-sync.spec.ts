@@ -33,6 +33,7 @@ async function fixture(
       export const openViewerWindow = async()=>'', viewerContext = async()=>({asset_ids:[]}), listVolumes=async()=>[];
       export const readPregenerate = ()=>false, writePregenerate = ()=>{}, pregeneratePreviews = async()=>{};
       export const readWatchLibraries = ()=>false, writeWatchLibraries = ()=>{}, watchLibraries = async()=>[];
+      export const revealInFolder = async()=>{}, openDataDirectory = async()=>{}, openProjectUrl = async()=>{}, openExternal = async()=>{}, chooseExternalApp = async()=>null, ejectVolume = async()=>{};
     `,
       }),
     );
@@ -110,6 +111,15 @@ async function fixture(
       case 'asset.list':
         result = browserAssetList(assets, call.params as AssetListOptions, paired);
         break;
+      case 'asset.ids': {
+        const listed = browserAssetList(
+          assets,
+          { ...(call.params as AssetListOptions), limit: 100000, offset: 0 },
+          paired,
+        );
+        result = { ids: listed.items.map((item) => item.id), total: listed.total };
+        break;
+      }
       case 'import.batches':
         result = [];
         break;
@@ -338,9 +348,10 @@ async function fixture(
   await page.addInitScript(() => localStorage.setItem('nebulume.filters-open', 'true'));
   await page.goto('/');
   await page.getByRole('button', { name: '打开图片库 同步图库' }).click();
-  // The grid is virtualized: count what is loaded, not what is mounted.
-  await expect(page.locator('.collection-status')).toContainText(
-    `已载入 ${Math.min(count - (paired ? 1 : 0), 200)} / `,
+  // The grid is virtualized: count what is loaded via the status attribute/title, while visible text shows total.
+  await expect(page.locator('.collection-status')).toHaveAttribute(
+    'title',
+    new RegExp(`^已载入 ${Math.min(count - (paired ? 1 : 0), 200)} / `),
   );
   await expect(page.locator('.photo-grid .thumbnail').first()).toBeVisible();
   return {
@@ -400,7 +411,7 @@ async function loadAllPhotos(page: Page, total: number) {
   await expect
     .poll(async () => {
       await page.locator('.collection-scroll').evaluate((el) => (el.scrollTop = el.scrollHeight));
-      return page.locator('.collection-status').textContent();
+      return (await page.locator('.collection-status').getAttribute('title')) ?? '';
     })
     .toContain(`已载入 ${total} / ${total}`);
 }
@@ -428,7 +439,7 @@ test('repeated blur/focus preserves all loaded pages, detail, selection, scroll 
   expect(await nodesUnchanged(page)).toBe(true);
   expect(await page.locator('.collection-scroll').evaluate((el) => el.scrollTop)).toBe(scroll);
   await expect(page.locator('.thumbnail.selected')).toHaveAttribute('aria-label', selected!);
-  await expect(page.locator('.collection-status')).toContainText('已载入 410 / 410');
+  await expect(page.locator('.collection-status')).toHaveAttribute('title', /^已载入 410 \/ 410/);
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
 });
 test('rating updates fields only; crop and refresh invalidate only the changed asset pixels', async ({
@@ -500,7 +511,7 @@ test('rating sort reconciles the loaded window in the background without remount
     'aria-label',
     'Photo-090.jpg，5 星',
   );
-  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
+  await expect(page.locator('.collection-status')).toHaveAttribute('title', /^已载入 410 \/ /);
   expect(calls.slice(before).filter((c) => c.command === 'asset.list')).toHaveLength(1);
   expect(calls.slice(before).find((c) => c.command === 'asset.list')?.params.limit).toBe(410);
   expect(
@@ -826,7 +837,7 @@ test('scrolling near the end loads the next page automatically and a failed page
   page,
 }) => {
   const { calls, failList } = await fixture(page);
-  await expect(page.locator('.collection-status')).toContainText('已载入 200 / ');
+  await expect(page.locator('.collection-status')).toHaveAttribute('title', /^已载入 200 \/ /);
   const pages = () =>
     calls.filter((call) => call.command === 'asset.list' && Number(call.params.offset) > 0);
   failList();
@@ -841,11 +852,11 @@ test('scrolling near the end loads the next page automatically and a failed page
   await page.waitForTimeout(300);
   expect(pages()).toHaveLength(1);
   await page.getByRole('button', { name: '载入更多（200 / 410）' }).click();
-  await expect(page.locator('.collection-status')).toContainText('已载入 400 / ');
+  await expect(page.locator('.collection-status')).toHaveAttribute('title', /^已载入 400 \/ /);
   await page
     .locator('.collection-scroll')
     .evaluate((element) => (element.scrollTop = element.scrollHeight));
-  await expect(page.locator('.collection-status')).toContainText('已载入 410 / ');
+  await expect(page.locator('.collection-status')).toHaveAttribute('title', /^已载入 410 \/ /);
   await expect(page.getByRole('button', { name: /载入更多/ })).toHaveCount(0);
 });
 
@@ -1018,7 +1029,7 @@ test('the grid mounts only rows near the viewport however many photos are loaded
     .getAttribute('aria-label');
   for (const loaded of [400, 600, 800]) {
     await scroller.evaluate((element) => (element.scrollTop = element.scrollHeight));
-    await expect(status).toContainText(`已载入 ${loaded} / `);
+    await expect(status).toHaveAttribute('title', new RegExp(`^已载入 ${loaded} / `));
   }
   const atEnd = await mounted();
   expect(atEnd).toBeGreaterThan(0);
@@ -1139,14 +1150,14 @@ test('camera, lens and date filters are sent with every page and clear with the 
     captured_from: '2026-10-11',
     captured_to: '2026-10-13',
   });
-  await expect(page.locator('.collection-status')).toContainText('已载入 2 / 2');
+  await expect(page.locator('.collection-status')).toContainText('2 张');
   await page.getByLabel('拍摄日期起').fill('2026-10-20');
   await expect(page.getByRole('heading', { name: '没有匹配的照片' })).toBeVisible();
   await page.getByRole('button', { name: '清除筛选' }).click();
   await expect.poll(lastList).toEqual(expect.not.objectContaining({ camera: expect.anything() }));
   await expect(camera).toHaveValue('');
   await expect(page.getByLabel('拍摄日期起')).toHaveValue('');
-  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.locator('.collection-status')).toContainText('6 张');
 });
 
 test('active filters show as removable chips and the panel remembers whether it is open', async ({
@@ -1190,7 +1201,7 @@ test('the inspector shows the selected photo at once and keeps its layout while 
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   const inspector = page.getByRole('complementary', { name: '影像详情' });
   await expect(inspector).toHaveAttribute('aria-busy', 'true');
-  await expect(inspector.locator('.inspector-file h2')).toHaveText(selected!.split('，')[0]);
+  await expect(inspector.locator('.inspector-heading h2')).toHaveText(selected!.split('，')[0]);
   await expect(inspector.locator('.spinner')).toHaveCount(0);
   release();
   await expect(inspector).not.toHaveAttribute('aria-busy');
@@ -1221,7 +1232,7 @@ test('batch export renders each selected photo to the chosen folder without over
 
 test('a change in a watched library folder refreshes the open grid in place', async ({ page }) => {
   const { calls, assets } = await fixture(page, 12);
-  await expect(page.locator('.collection-status')).toContainText('已载入 12 / 12');
+  await expect(page.locator('.collection-status')).toContainText('12 张');
   await expect
     .poll(() => calls.find((call) => call.command === '$native/watch_libraries')?.params)
     .toEqual({ enabled: true });
@@ -1237,7 +1248,7 @@ test('a change in a watched library folder refreshes the open grid in place', as
       window as unknown as { __emitTauriEvent: (event: string, payload: unknown) => void }
     ).__emitTauriEvent('library-changed', { library_id: 'library', indexed: 1, moved: 0 }),
   );
-  await expect(page.locator('.collection-status')).toContainText('已载入 13 / 13');
+  await expect(page.locator('.collection-status')).toContainText('13 张');
   // Existing cells are kept, not remounted.
   expect(await nodesUnchanged(page)).toBe(true);
 });
@@ -1300,7 +1311,7 @@ test('the overview counts the filtered library and every figure leads back to it
     assets[2].flag = 'reject';
     assets[3].rating = 3;
   });
-  await expect(page.locator('.collection-status')).toContainText('已载入 12 / 12');
+  await expect(page.locator('.collection-status')).toContainText('12 张');
   await page.getByRole('tab', { name: '概览' }).click();
   const overview = page.getByLabel('图片库概览');
   await expect(overview).toContainText('12张照片');
@@ -1316,7 +1327,7 @@ test('the overview counts the filtered library and every figure leads back to it
   await expect
     .poll(() => calls.filter((call) => call.command === 'asset.list').at(-1)?.params)
     .toMatchObject({ flag: 'none', rating_max: 0 });
-  await expect(page.locator('.collection-status')).toContainText('已载入 8 / 8');
+  await expect(page.locator('.collection-status')).toContainText('8 张');
   // The overview then follows the same filter as the grid.
   await page.keyboard.press('Meta+3');
   await expect(overview).toContainText('8张照片');
@@ -1324,7 +1335,7 @@ test('the overview counts the filtered library and every figure leads back to it
 
 test('⌘⌫ moves the selected photo to the Trash and the toast puts it back', async ({ page }) => {
   const { calls } = await fixture(page, 6);
-  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.locator('.collection-status')).toContainText('6 张');
   const second = page.locator('.thumbnail').nth(1);
   const name = await second.getAttribute('aria-label');
   await second.click();
@@ -1332,14 +1343,14 @@ test('⌘⌫ moves the selected photo to the Trash and the toast puts it back', 
   await expect
     .poll(() => calls.find((call) => call.command === 'asset.trash')?.params)
     .toEqual({ ids: ['photo-1'] });
-  await expect(page.locator('.collection-status')).toContainText('已载入 5 / 5');
+  await expect(page.locator('.collection-status')).toContainText('5 张');
   // Selection moves on to the photo that took its place.
   await expect(page.locator('.thumbnail').nth(1)).toBeFocused();
   await page.getByRole('button', { name: '撤销' }).click();
   await expect
     .poll(() => calls.find((call) => call.command === 'asset.restore')?.params)
     .toEqual({ ids: ['photo-1'] });
-  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.locator('.collection-status')).toContainText('6 张');
   await expect(page.getByRole('button', { name: name! })).toBeVisible();
 });
 
@@ -1347,7 +1358,7 @@ test('a keyboard rating shows the HUD, applies at once and ⌘Z restores the pre
   page,
 }) => {
   const { calls } = await fixture(page, 6);
-  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.locator('.collection-status')).toContainText('6 张');
   const first = page.locator('.thumbnail').first();
   await first.click();
   await page.keyboard.press('3');
@@ -1366,32 +1377,32 @@ test('a keyboard rating shows the HUD, applies at once and ⌘Z restores the pre
   const batches = () => calls.filter((call) => call.command === 'asset.mark_batch');
   await expect
     .poll(() => batches().at(-1)?.params)
-    .toEqual({ ids: ['photo-0'], rating: 3, flag: 'none' });
+    .toEqual({ ids: ['photo-0'], rating: 3, flag: 'none', color_label: 'none' });
   await page.keyboard.press('Meta+z');
   await expect
     .poll(() => batches().at(-1)?.params)
-    .toEqual({ ids: ['photo-0'], rating: 0, flag: 'none' });
+    .toEqual({ ids: ['photo-0'], rating: 0, flag: 'none', color_label: 'none' });
   await expect(first).toHaveAttribute('aria-label', /0 星/);
 });
 
 test('⌘Z puts trashed photos back without clicking the toast', async ({ page }) => {
   const { calls } = await fixture(page, 6);
-  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.locator('.collection-status')).toContainText('6 张');
   await page.locator('.thumbnail').nth(2).click();
   await page.keyboard.press('Meta+Backspace');
-  await expect(page.locator('.collection-status')).toContainText('已载入 5 / 5');
+  await expect(page.locator('.collection-status')).toContainText('5 张');
   await expect(page.getByRole('button', { name: /撤销/ })).toContainText('⌘Z');
   await page.keyboard.press('Meta+z');
   await expect
     .poll(() => calls.find((call) => call.command === 'asset.restore')?.params)
     .toEqual({ ids: ['photo-2'] });
-  await expect(page.locator('.collection-status')).toContainText('已载入 6 / 6');
+  await expect(page.locator('.collection-status')).toContainText('6 张');
   await expect(page.getByRole('button', { name: /撤销/ })).toHaveCount(0);
 });
 
 test('a failed rating write restores the previous value and explains why', async ({ page }) => {
   await fixture(page, 4);
-  await expect(page.locator('.collection-status')).toContainText('已载入 4 / 4');
+  await expect(page.locator('.collection-status')).toContainText('4 张');
   await page.route('**/__sync_rpc', async (route) => {
     const body = route.request().postDataJSON() as { command: string };
     if (body.command === 'asset.rate')
@@ -1403,4 +1414,59 @@ test('a failed rating write restores the previous value and explains why', async
   await page.keyboard.press('5');
   await expect(page.getByRole('alert')).toContainText('标记未保存');
   await expect(first).toHaveAttribute('aria-label', /0 星/);
+});
+
+test('full-filter ⌘A selects unloaded pages via asset.ids, ⌘B toggles sidebar, Space quick-previews, and background scan stays non-blocking', async ({
+  page,
+}) => {
+  const { calls, assets } = await fixture(page, 410);
+  await expect(page.locator('.collection-status')).toHaveAttribute('title', /^已载入 200 \/ 410/);
+
+  // 1. ⌘A selects all 410 matching photos via asset.ids even though only 200 are loaded in DOM
+  await page.locator('.photo-grid .thumbnail').first().click();
+  await page.keyboard.press('ControlOrMeta+a');
+  const dock = page.getByRole('toolbar', { name: '批量操作' });
+  await expect(dock).toContainText('已选 410 张');
+  await dock.getByRole('button', { name: '留用' }).click();
+  await expect.poll(() => assets.filter((a) => a.flag === 'pick').length).toBe(410);
+  await page.keyboard.press('Escape');
+  await expect(dock).toHaveCount(0);
+
+  // 2. ⌘B collapses and expands the library sidebar
+  await expect(page.getByRole('button', { name: '收起图片库侧栏（⌘B）' })).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+b');
+  await expect(page.getByRole('button', { name: '收起图片库侧栏（⌘B）' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '展开图片库侧栏（⌘B）' })).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+b');
+  await expect(page.getByRole('button', { name: '收起图片库侧栏（⌘B）' })).toBeVisible();
+
+  // 3. Space opens quick preview on the focused thumbnail and Space closes it cleanly
+  await page.locator('.photo-grid .thumbnail').first().focus();
+  await page.keyboard.press('Space');
+  const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
+  await expect(viewer).toBeVisible();
+  await page.keyboard.press('Space');
+  await expect(viewer).toHaveCount(0);
+
+  // 4. Background scan shows TaskPill without locking 选片 tab or grid rating
+  let releaseScan!: () => void;
+  const scanGate = new Promise<void>((resolve) => (releaseScan = resolve));
+  await page.route('**/__sync_rpc', async (route) => {
+    const body = route.request().postDataJSON() as { command: string };
+    if (body.command === 'library.scan') {
+      await scanGate;
+      return route.fulfill({ json: { result: { indexed: 0, skipped: 410, errors: [] } } });
+    }
+    return route.fallback();
+  });
+  await page.getByRole('button', { name: '扫描更新' }).click();
+  await expect(page.locator('.task-pill-trigger')).toContainText('扫描 同步图库');
+  await expect(page.getByRole('tab', { name: '选片' })).not.toBeDisabled();
+  await page.locator('.photo-grid .thumbnail').first().click();
+  await page.keyboard.press('4');
+  await expect
+    .poll(() => calls.find((c) => c.command === 'asset.rate')?.params)
+    .toEqual({ id: 'photo-0', rating: 4 });
+  releaseScan();
+  await expect(page.locator('.nl-toast').filter({ hasText: '扫描完成' })).toBeVisible();
 });

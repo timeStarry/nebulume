@@ -1,0 +1,48 @@
+.date-scrubber {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  width: 36px;
+  padding: var(--nl-s-3) var(--nl-s-1);
+  border-left: 1px solid var(--nl-line);
+  background: var(--nl-side);
+  user-select: none;
+  touch-action: none;
+}
+.date-scrubber-tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  min-height: 16px;
+  padding: 0 var(--nl-s-1);
+  border-radius: var(--nl-r-xs);
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-11);
+  line-height: 1;
+}
+.date-scrubber-tick:hover,
+.date-scrubber-tick.active {
+  color: var(--nl-text);
+  background: var(--nl-raised);
+}
+.date-scrubber-hud {
+  position: absolute;
+  right: var(--nl-s-10);
+  padding: var(--nl-s-1) var(--nl-s-2);
+  border: 1px solid var(--nl-line-strong);
+  border-radius: var(--nl-r-sm);
+  background: var(--nl-raised);
+  color: var(--nl-text);
+  font-size: var(--nl-t-12);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+@media (max-width: 959px) {
+  .date-scrubber {
+    display: none;
+  }
+}

@@ -166,7 +166,7 @@ test('remote metadata stays empty until preview enriches current EXIF without re
   await expect(page.locator('.asset-inspector')).toContainText('Camera first');
   await expect(page.locator('.exposure-summary')).toContainText('f/2.8');
   await page.getByRole('button', { name: '放大', exact: true }).click();
-  await page.getByRole('button', { name: '关闭影像详情', exact: true }).click();
+  await page.getByRole('button', { name: '收起影像详情', exact: true }).click();
   await page.getByRole('button', { name: '影像信息（I）', exact: true }).click();
   await expect(page.locator('.asset-inspector')).toContainText('Camera first');
   await page.evaluate(

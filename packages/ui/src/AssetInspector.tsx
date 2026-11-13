@@ -17,10 +17,12 @@ import {
   renderSourceLabel,
   validCrop,
   type Asset,
+  type ColorLabel,
   type Crop,
   type Histogram,
 } from './model';
 import { displayDate } from './workspace';
+import { ASPECT_PRESETS, type AspectPreset } from './crop-aspect';
 import Icon from './Icon';
 import {
   diagnosticLabels,
@@ -28,6 +30,7 @@ import {
   inspectorMetadataGroups,
 } from './inspector-metadata';
 import './inspector.css';
+import KeywordSection, { ColorLabelDots } from './inspector/KeywordSection';
 import PinnedFields from './PinnedFields';
 
 export default function AssetInspector(props: {
@@ -38,9 +41,14 @@ export default function AssetInspector(props: {
   cropMode?: boolean;
   crop?: Crop;
   setCrop?: (crop: Crop) => void;
+  cropAspectPreset?: AspectPreset;
+  cropAspectSwapped?: boolean;
+  onSelectCropAspect?: (preset: AspectPreset, swapped: boolean) => void;
   onSaveCrop?: () => void;
   onResetCrop: () => void;
   onRate: (rating: number) => void;
+  onColorLabel?: (color: ColorLabel) => void;
+  onKeywordsUpdated?: (keywords: string[]) => void;
   onCrop: () => void;
   onExport: () => void;
   onRefresh?: () => void;
@@ -183,14 +191,21 @@ export default function AssetInspector(props: {
       aria-busy={props.loading || undefined}
     >
       <div class="inspector-heading">
-        <span>影像信息</span>
-        <button class="icon-button" aria-label="关闭影像详情" onClick={props.onClose}>
-          <Icon name="close" size={16} />
+        <button
+          type="button"
+          class="icon-button inspector-collapse"
+          aria-label="收起影像详情"
+          title="收起详情侧栏（I）"
+          onClick={props.onClose}
+        >
+          <Icon name="chevron-right" size={16} />
         </button>
+        <h2 class="inspector-title" title={props.asset.filename}>
+          {props.asset.filename}
+        </h2>
+        <span class="inspector-filetype">{props.asset.extension.toUpperCase()}</span>
       </div>
       <div class="inspector-file">
-        <span class="inspector-filetype">{props.asset.extension.toUpperCase()}</span>
-        <h2 title={props.asset.filename}>{props.asset.filename}</h2>
         <p>
           {inspectedAsset().width && inspectedAsset().height
             ? `${embeddedPreview() ? '预览尺寸 ' : ''}${inspectedAsset().width} × ${inspectedAsset().height} px`
@@ -220,13 +235,61 @@ export default function AssetInspector(props: {
             清除
           </button>
         </div>
+        <Show when={props.onColorLabel}>
+          <ColorLabelDots
+            value={props.asset.color_label}
+            disabled={props.busy}
+            onChange={(color) => props.onColorLabel!(color)}
+          />
+        </Show>
       </div>
       <Show when={props.cropMode && props.crop}>
         <section class="inspector-section crop-panel">
           <div class="section-title">
             <h3>裁剪选区</h3>
           </div>
-          <p class="muted">拖动选区或输入百分比，保存为配方，原图不变。</p>
+          <p class="muted">拖动选区或选择摄影画幅比例，保存为无损配方，原图不变。</p>
+          <Show when={props.onSelectCropAspect}>
+            <div class="crop-aspect-bar" role="group" aria-label="裁剪画幅比例">
+              <For each={ASPECT_PRESETS}>
+                {(item) => (
+                  <button
+                    type="button"
+                    class="crop-aspect-pill"
+                    classList={{ active: (props.cropAspectPreset || 'free') === item.id }}
+                    aria-pressed={(props.cropAspectPreset || 'free') === item.id}
+                    disabled={props.busy}
+                    onClick={() =>
+                      props.onSelectCropAspect!(item.id, !!props.cropAspectSwapped)
+                    }
+                  >
+                    {item.label}
+                  </button>
+                )}
+              </For>
+              <button
+                type="button"
+                class="crop-aspect-pill swap"
+                classList={{ active: !!props.cropAspectSwapped }}
+                aria-pressed={!!props.cropAspectSwapped}
+                disabled={
+                  props.busy ||
+                  !props.cropAspectPreset ||
+                  props.cropAspectPreset === 'free' ||
+                  props.cropAspectPreset === '1:1'
+                }
+                onClick={() =>
+                  props.onSelectCropAspect!(
+                    props.cropAspectPreset || 'free',
+                    !props.cropAspectSwapped,
+                  )
+                }
+                title="切换横向 / 纵向画幅方向"
+              >
+                横竖 ↔
+              </button>
+            </div>
+          </Show>
           <div class="crop-inputs">
             <For each={['x', 'y', 'width', 'height'] as const}>
               {(key) => (
@@ -330,6 +393,11 @@ export default function AssetInspector(props: {
           </p>
         </Show>
       </section>
+      <KeywordSection
+        asset={inspectedAsset()}
+        disabled={props.busy}
+        onUpdated={props.onKeywordsUpdated}
+      />
       <PinnedFields asset={inspectedAsset()} />
       <section class="inspector-section inspector-raw">
         <Show when={!hasExif()}>

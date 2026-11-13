@@ -22,6 +22,11 @@ describe('actionable storage diagnostics', () => {
       '重新读取证书',
     ],
     ['TLS handshake failed: connection refused', '地址与端口正确'],
+    [
+      'HTTP and certificate fingerprint trust are limited to LAN addresses (private, loopback or link-local)',
+      '组网内网（100.64.x.x–100.127.x.x）',
+    ],
+    ['Storage request failed with HTTP 404 Not Found', '未找到目标目录（404）'],
   ])('turns %s into a short instruction and preserves original detail', (raw, expected) => {
     const presented = storageErrorPresentation({ code: 'NETWORK', message: raw });
     expect(presented.summary).toContain(expected);

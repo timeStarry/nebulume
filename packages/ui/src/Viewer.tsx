@@ -1,5 +1,4 @@
 import {
-  For,
   Show,
   createEffect,
   createMemo,
@@ -12,10 +11,24 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { chooseSave, desktop, execute, schedulePreview, viewerContext } from './api';
-import { loadImage, previewUrl } from './preview-url';
+import {
+  chooseDirectory,
+  chooseExternalApp,
+  chooseSave,
+  desktop,
+  execute,
+  openExternal,
+  revealInFolder,
+  viewerContext,
+} from './api';
+import ExportDialog from './ExportDialog';
+import type { ExportRecipe } from './export-presets';
+import { previewUrl } from './preview-url';
 import AssetInspector from './AssetInspector';
-import PhotoView, { Thumbnail, decodedThumbnail, rememberDecodedPreview } from './PhotoView';
+import CompareStage from './CompareStage';
+import { fitCropToAspect, resolveAspectRatio, type AspectPreset } from './crop-aspect';
+import PhotoView, { decodedThumbnail, rememberDecodedPreview } from './PhotoView';
+import { prefetchViewerImage } from './viewer-frame-cache';
 import Icon from './Icon';
 import {
   errorMessage,
@@ -26,10 +39,12 @@ import {
   type Asset,
   type AssetListOptions,
   type AssetListResult,
+  type ColorLabel,
   type Crop,
   type Flag,
   type FocusInfo,
   type Preview,
+  type XmpSyncReport,
 } from './model';
 import { viewerIds } from './workspace';
 import { focusPresentation } from './viewer-focus';
@@ -46,9 +61,9 @@ import {
 } from './culling';
 import CullPanel, { CullStatus } from './CullPanel';
 import { IconButton, Segmented, Toggle, createHud } from './ui';
-import { createUndoHistory, markHudText, type UndoEntry } from './undo';
+import { createUndoHistory, keyToColorLabel, markHudText, type UndoEntry } from './undo';
 import ViewerOverlay from './ViewerOverlay';
-import { readOverlayFades } from './overlay-layout';
+import { readOverlayFades, readToolbarAutoHide } from './overlay-layout';
 import CullStrip from './CullStrip';
 import CullReview from './CullReview';
 import {
@@ -58,7 +73,6 @@ import {
   trashPhotos,
   trashSummary,
 } from './photo-actions';
-import { chooseDirectory } from './api';
 import { FolderBrowser, listFolder } from './folder-browser';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
 import type { Library } from './model';
@@ -75,6 +89,7 @@ export interface CullQueue {
 export default function Viewer(props: {
   initialAssetId?: string;
   initialAssetIds?: string[];
+  initialAssets?: Asset[];
   initialMode?: ViewerMode;
   initialQueue?: CullQueue;
   onClose?: () => void;
@@ -85,21 +100,29 @@ export default function Viewer(props: {
   onTrashed?: () => void;
 }) {
   const focusHelpId = createUniqueId();
+  const initialMap: Record<string, Asset> = {};
+  if (props.initialAssets) {
+    for (const each of props.initialAssets) initialMap[each.id] = each;
+  }
+  const initialKnown = props.initialAssetId ? initialMap[props.initialAssetId] : undefined;
   const [ids, setIds] = createSignal<string[]>(props.initialAssetIds || []);
   const [id, setId] = createSignal(props.initialAssetId);
-  const [asset, setAsset] = createSignal<Asset>();
+  const [asset, setAsset] = createSignal<Asset | undefined>(initialKnown);
   // The photo shown before the current load began; its frame stays dimmed behind the
   // spinner when the next photo has no decoded thumbnail yet, so the stage never flashes empty.
   const [previousFrame, setPreviousFrame] = createSignal<string>();
-  const [loading, setLoading] = createSignal(true);
+  const [loading, setLoading] = createSignal(!initialKnown);
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
   const [busy, setBusy] = createSignal('');
   const [info, setInfo] = createSignal(false);
   const [cropMode, setCropMode] = createSignal(false);
-  const [crop, setCrop] = createSignal<Crop>({ ...fullCrop });
+  const [crop, setCrop] = createSignal<Crop>({ ...(initialKnown?.crop || fullCrop) });
   const [controls, setControls] = createSignal(true);
   const [controlFocus, setControlFocus] = createSignal(false);
+  const [toolbarAutoHide, setToolbarAutoHide] = createSignal(readToolbarAutoHide(localStorage));
+  const [toolbarAwake, setToolbarAwake] = createSignal(true);
+  const [navDir, setNavDir] = createSignal<1 | -1>(1);
   const [previewPending, setPreviewPending] = createSignal(true);
   const [previewFailed, setPreviewFailed] = createSignal(false);
   const [previewKey, setPreviewKey] = createSignal('');
@@ -111,7 +134,13 @@ export default function Viewer(props: {
   const [refreshing, setRefreshing] = createSignal(false);
   const [mode, setMode] = createSignal<ViewerMode>(props.initialMode || 'view');
   const [cullView, setCullView] = createSignal<'single' | 'compare'>('single');
-  const [compareCount] = createSignal(2);
+  const [compareCount, setCompareCount] = createSignal<2 | 4>(2);
+  const [compareAnchor, setCompareAnchor] = createSignal(0);
+  const [compareSync, setCompareSync] = createSignal(true);
+  const [clippingEnabled, setClippingEnabled] = createSignal(false);
+  const [preferRaw, setPreferRaw] = createSignal(false);
+  const [cropPreset, setCropPreset] = createSignal<AspectPreset>('free');
+  const [cropSwapped, setCropSwapped] = createSignal(false);
   const [overlayVisible, setOverlayVisible] = createSignal(true);
   const [editingOverlay, setEditingOverlay] = createSignal(false);
   const [autoAdvance, setAutoAdvance] = createSignal(readAutoAdvance());
@@ -123,8 +152,9 @@ export default function Viewer(props: {
   const [folder, setFolder] = createSignal<FolderBrowser>();
   const [outside, setOutside] = createSignal(false);
   const [menu, setMenu] = createSignal<ContextMenuState>();
-  // Culling: the queue's photos for the strip and counts, those already looked at, and the review.
-  const [items, setItems] = createSignal<Record<string, Asset>>({});
+  const [exportTargets, setExportTargets] = createSignal<string[] | null>(null);
+  // Culling & instant navigation: known photos for the strip, counts, and zero-jump switching.
+  const [items, setItems] = createSignal<Record<string, Asset>>(initialMap);
   const [seen, setSeen] = createSignal(new Set<string>());
   const [review, setReview] = createSignal(false);
   const remember = (list: Asset[]) =>
@@ -164,60 +194,66 @@ export default function Viewer(props: {
   let pendingAdvance: (() => void) | undefined;
   let container!: HTMLDivElement;
   let timer: ReturnType<typeof setTimeout>;
+  let toolbarTimer: ReturnType<typeof setTimeout> | undefined;
   let request = 0;
   let focusRequest = 0;
   const revisions = new Map<string, number>();
   const focusCache = new Map<string, Promise<FocusInfo>>();
   const index = createMemo(() => ids().indexOf(id() || ''));
-  // Between photos asset() is briefly empty: fill the stage with an already decoded thumbnail.
+  // Between cold unindexed photos asset() may still be empty: fill the stage with a decoded thumb.
   const stagePlaceholder = () => {
     const next = id();
     return next ? decodedThumbnail({ id: next, preview_revision: revisions.get(next) }) : undefined;
   };
-  // Once a local photo is shown, render the next one's viewer tier in the background (one lane
-  // of two, so the photo the user opens never waits). Moving on cancels it if not yet started.
-  const prefetched = new Map<string, HTMLImageElement>();
+  // Once a local photo is on screen, pre-decode adjacent viewer-tier frames in both travel
+  // directions (`+dir`, `-dir`, `+2*dir`) into the shared viewer pool so `PhotoView` swaps in 0ms.
   createEffect(
-    on(asset, (current) => {
+    on([asset, navDir], ([current, dir]) => {
       if (!current || current.source_key || compareIds().length) return;
       const position = ids().indexOf(current.id);
+      if (position < 0) return;
       const browser = folder();
-      const ahead = ids()[position + 1] ?? ids()[position - 1];
-      if (browser && ahead && FolderBrowser.isPlaceholder(ahead)) {
-        // Index the next file of the folder in the background; prefetch it once it has an id.
+      const firstAhead = ids()[position + dir] ?? ids()[position - dir];
+      if (browser && firstAhead && FolderBrowser.isPlaceholder(firstAhead)) {
         void browser
-          .resolve(ahead)
-          .then(() => setIds([...browser.ids]))
+          .resolve(firstAhead)
+          .then((resolved) => {
+            remember([resolved]);
+            setIds([...browser.ids]);
+          })
           .catch(() => undefined);
         return;
       }
-      const neighbours = [ahead].filter(
-        (neighbour): neighbour is string => !!neighbour && !prefetched.has(neighbour),
-      );
+      const candidates = [
+        ids()[position + dir],
+        ids()[position - dir],
+        ids()[position + dir * 2],
+      ];
+      const seenNeighbours = new Set<string>();
+      const neighbours = candidates.filter((each): each is string => {
+        if (!each || each === current.id || FolderBrowser.isPlaceholder(each) || seenNeighbours.has(each))
+          return false;
+        seenNeighbours.add(each);
+        return true;
+      });
       if (!neighbours.length) return;
       const controller = new AbortController();
       const delay = setTimeout(() => {
         for (const neighbour of neighbours) {
-          const url = previewUrl(
-            { id: neighbour, preview_revision: revisions.get(neighbour) },
-            'p2560',
-          );
-          void schedulePreview(
-            async () => {
-              const image = await loadImage(await url);
-              prefetched.set(neighbour, image);
+          const rev = revisions.get(neighbour) ?? items()[neighbour]?.preview_revision;
+          void Promise.resolve(previewUrl({ id: neighbour, preview_revision: rev }, 'p2560'))
+            .then((url) => prefetchViewerImage(url, controller.signal))
+            .then((image) =>
               rememberDecodedPreview(
-                { id: neighbour, preview_revision: revisions.get(neighbour) },
+                { id: neighbour, preview_revision: rev },
                 image.src,
-              );
-              // Keep only a handful decoded; older ones fall back to the backend cache.
-              while (prefetched.size > 4) prefetched.delete(prefetched.keys().next().value!);
-              return image;
-            },
-            { source: 'local', priority: 'viewer', signal: controller.signal },
-          ).catch(() => undefined);
+                image.naturalWidth,
+                image.naturalHeight,
+              ),
+            )
+            .catch(() => undefined);
         }
-      }, 250);
+      }, 24);
       onCleanup(() => {
         clearTimeout(delay);
         controller.abort();
@@ -238,7 +274,9 @@ export default function Viewer(props: {
   });
   const currentPreviewKey = createMemo(() => {
     const current = asset();
-    return current?.id === id() && current ? imageRequestKey(current, cropMode()) : false;
+    return current?.id === id() && current
+      ? imageRequestKey(current, cropMode(), !cropMode() && preferRaw() && current.kind === 'raw')
+      : false;
   });
   createEffect(
     on(focusKey, (key) => {
@@ -269,7 +307,7 @@ export default function Viewer(props: {
     return data ? focusPresentation(data, previewMapping()) : { regions: [], message: '' };
   });
   const focusUnavailableReason = createMemo(() => {
-    if (!asset() || loading()) return '正在读取影像…';
+    if (!asset() || asset()?.id !== id() || loading()) return '正在读取影像…';
     if (cropMode()) return '裁剪时暂不显示对焦点';
     if (refreshing() || focusLoading()) return '正在检测对焦信息…';
     if (focusError()) return `对焦信息读取失败：${focusError()}`;
@@ -285,16 +323,23 @@ export default function Viewer(props: {
     controls() ||
     controlFocus() ||
     cropMode() ||
-    loading() ||
-    previewPending() ||
+    editingOverlay() ||
     previewFailed() ||
-    focusLoading() ||
     !!busy() ||
+    !!error();
+  const showToolbar = () =>
+    !toolbarAutoHide() ||
+    toolbarAwake() ||
+    cropMode() ||
+    editingOverlay() ||
+    !!menu() ||
     !!error();
   function isControl(target: EventTarget | null) {
     return (
       target instanceof HTMLElement &&
-      !!target.closest('.viewer-chrome, .viewer-controls, .viewer-nav, .asset-inspector')
+      !!target.closest(
+        '.viewer-chrome, .viewer-controls, .compare-bar, .viewer-nav, .asset-inspector',
+      )
     );
   }
   function recoverFocus(preferred?: HTMLElement | null) {
@@ -307,32 +352,67 @@ export default function Viewer(props: {
       preferred?.isConnected && !preferred.matches(':disabled') ? preferred : container;
     target.focus({ preventScroll: true });
   }
+  function scheduleToolbarSleep() {
+    clearTimeout(toolbarTimer);
+    toolbarTimer = setTimeout(() => {
+      toolbarTimer = undefined;
+      setToolbarAwake(false);
+    }, 1500);
+  }
   function activity() {
     setControls(true);
     clearTimeout(timer);
     timer = setTimeout(() => setControls(false), 2400);
   }
+  function pointerMoveActivity(event: PointerEvent) {
+    activity();
+    if (!toolbarAutoHide()) return;
+    const inTopZone =
+      event.clientY <= 64 ||
+      (event.target instanceof HTMLElement && !!event.target.closest('.nl-viewer-bar'));
+    if (inTopZone) {
+      clearTimeout(toolbarTimer);
+      toolbarTimer = undefined;
+      setToolbarAwake(true);
+    } else if (toolbarAwake() && !toolbarTimer) {
+      scheduleToolbarSleep();
+    }
+  }
   async function loadAsset(nextId: string) {
     const token = ++request;
-    setLoading(true);
-    setPreviewPending(true);
     setPreviewFailed(false);
-    setPreviewKey('');
-    setPreviewMapping(undefined);
     setError('');
     setNotice('');
-    const leaving = asset();
-    if (leaving && leaving.id !== nextId)
-      setPreviousFrame(
-        decodedThumbnail({ id: leaving.id, preview_revision: revisions.get(leaving.id) }),
-      );
-    setAsset(undefined);
     setCropMode(false);
+    setCropPreset('free');
+    setCropSwapped(false);
+
+    const browser = folder();
+    const known = !FolderBrowser.isPlaceholder(nextId) ? items()[nextId] : undefined;
+    if (known) {
+      const pending = optimistic.get(nextId);
+      const immediate = pending
+        ? { ...known, rating: pending.rating, flag: pending.flag }
+        : known;
+      const rev = revisions.get(nextId) ?? immediate.preview_revision;
+      setAsset({ ...immediate, ...(rev !== undefined ? { preview_revision: rev } : {}) });
+      setCrop({ ...(immediate.crop || fullCrop) });
+      setLoading(false);
+    } else {
+      setLoading(true);
+      const leaving = asset();
+      if (leaving && leaving.id !== nextId) {
+        setPreviousFrame(
+          decodedThumbnail({ id: leaving.id, preview_revision: revisions.get(leaving.id) }),
+        );
+      }
+    }
+
     try {
-      const browser = folder();
       if (browser && FolderBrowser.isPlaceholder(nextId)) {
         const opened = await browser.resolve(nextId);
         if (token !== request || id() !== nextId) return;
+        remember([opened]);
         setIds([...browser.ids]);
         setId(opened.id);
         return;
@@ -340,15 +420,32 @@ export default function Viewer(props: {
       const loaded = await execute<Asset>('asset.get', { id: nextId });
       const pending = optimistic.get(nextId);
       const next = pending ? { ...loaded, rating: pending.rating, flag: pending.flag } : loaded;
+      remember([next]);
       if (token === request && id() === nextId) {
-        setAsset({ ...next, preview_revision: revisions.get(next.id) });
+        const rev = revisions.get(next.id) ?? next.preview_revision;
+        setAsset((previous) => {
+          const keepEnrichedMeta =
+            previous?.id === next.id &&
+            Object.keys(next.metadata || {}).length === 0 &&
+            Object.keys(previous.metadata || {}).length > 0;
+          return {
+            ...next,
+            width: next.width || (previous?.id === next.id ? previous.width : undefined),
+            height: next.height || (previous?.id === next.id ? previous.height : undefined),
+            metadata: keepEnrichedMeta ? previous!.metadata : next.metadata,
+            ...(rev !== undefined ? { preview_revision: rev } : {}),
+          };
+        });
         setCrop({ ...(next.crop || fullCrop) });
-        document.title = `${next.filename} — Nebulume`;
+        document.title = `${next.filename} — Lumen`;
         // Only a viewer window names itself; inside the library window the title stays.
         if (desktop && !props.onClose) await getCurrentWindow().setTitle(document.title);
       }
     } catch (e) {
-      if (token === request) setError(errorMessage(e));
+      if (token === request && id() === nextId) {
+        if (!known) setAsset(undefined);
+        setError(errorMessage(e));
+      }
     } finally {
       if (token === request) setLoading(false);
     }
@@ -407,6 +504,60 @@ export default function Viewer(props: {
           disabled: !target || !!busy() || cropMode(),
           onSelect: () => void exportImage(),
         },
+        {
+          label: '按预设导出…',
+          icon: 'download',
+          shortcut: '⌘⇧E',
+          disabled: !target || !!busy() || cropMode(),
+          onSelect: () => target && setExportTargets([target.id]),
+        },
+        ...(desktop && local
+          ? [
+              {
+                label: '在文件夹中显示',
+                icon: 'folder-open' as const,
+                disabled: !target?.path,
+                onSelect: () =>
+                  void revealInFolder(target!.path).catch((e) => setError(errorMessage(e))),
+              },
+              {
+                label: '用默认应用打开',
+                icon: 'external-link' as const,
+                disabled: !target?.path,
+                onSelect: () =>
+                  void openExternal({ id: target!.id, path: target!.path }).catch((e) =>
+                    setError(errorMessage(e)),
+                  ),
+              },
+              {
+                label: '选择外部精修软件打开…',
+                icon: 'app-window' as const,
+                disabled: !target?.path,
+                onSelect: () =>
+                  void chooseExternalApp()
+                    .then((app) => {
+                      if (app) return openExternal({ id: target!.id, path: target!.path, appPath: app });
+                    })
+                    .catch((e) => setError(errorMessage(e))),
+              },
+            ]
+          : []),
+        ...(local
+          ? [
+              {
+                label: '写入 .xmp 伴随文件',
+                icon: 'file' as const,
+                disabled: !!busy(),
+                onSelect: () => void syncViewerXmp('write'),
+              },
+              {
+                label: '从 .xmp 重新读取标记',
+                icon: 'refresh' as const,
+                disabled: !!busy(),
+                onSelect: () => void syncViewerXmp('read'),
+              },
+            ]
+          : []),
         ...(desktop
           ? [
               {
@@ -514,10 +665,20 @@ export default function Viewer(props: {
       setError('此查看窗口没有影像上下文，请从图片库打开照片。');
     }
     activity();
+    if (toolbarAutoHide()) scheduleToolbarSleep();
+    const syncStorage = () => {
+      const nextAutoHide = readToolbarAutoHide(localStorage);
+      setToolbarAutoHide(nextAutoHide);
+      if (nextAutoHide) scheduleToolbarSleep();
+      else setToolbarAwake(true);
+    };
+    window.addEventListener('storage', syncStorage);
     window.addEventListener('keydown', keyboard);
     onCleanup(() => {
       clearTimeout(timer);
+      clearTimeout(toolbarTimer);
       clearTimeout(pulseTimer);
+      window.removeEventListener('storage', syncStorage);
       window.removeEventListener('keydown', keyboard);
       request++;
       focusRequest++;
@@ -527,10 +688,10 @@ export default function Viewer(props: {
   });
   function move(direction: number) {
     if (cropMode() || busy()) return;
-    if (loading() && mode() !== 'cull') return;
+    if (!asset() && loading() && mode() !== 'cull') return;
+    setNavDir(direction < 0 ? -1 : 1);
     const next = ids()[index() + direction];
     if (next) setId(next);
-    activity();
   }
   // Culling: optimistic marks, short confirmation, then optional auto-advance.
   function finishPulse() {
@@ -554,42 +715,49 @@ export default function Viewer(props: {
     return markOf(await execute<Asset>('asset.get', { id: targetId }));
   }
   function applyLocal(updated: Mark) {
-    setItems((map) =>
-      map[updated.id]
-        ? {
-            ...map,
-            [updated.id]: { ...map[updated.id], rating: updated.rating, flag: updated.flag },
-          }
-        : map,
-    );
+    const patch = (item: Asset): Asset => ({
+      ...item,
+      rating: updated.rating,
+      flag: updated.flag,
+      ...(updated.color_label !== undefined ? { color_label: updated.color_label } : {}),
+    });
+    setItems((map) => (map[updated.id] ? { ...map, [updated.id]: patch(map[updated.id]) } : map));
     setAsset((previous) =>
-      previous && previous.id === updated.id
-        ? { ...previous, rating: updated.rating, flag: updated.flag }
-        : previous,
+      previous && previous.id === updated.id ? patch(previous) : previous,
     );
     setCompareAssets((map) =>
-      map[updated.id]
-        ? {
-            ...map,
-            [updated.id]: { ...map[updated.id], rating: updated.rating, flag: updated.flag },
-          }
-        : map,
+      map[updated.id] ? { ...map, [updated.id]: patch(map[updated.id]) } : map,
     );
   }
   async function persistMark(target: Mark, next: Mark) {
+    const colorChanged =
+      next.color_label !== undefined && next.color_label !== (target.color_label ?? 'none');
+    const flagChanged = next.flag !== target.flag;
+    const ratingChanged = next.rating !== target.rating;
+    const changedCount = Number(colorChanged) + Number(flagChanged) + Number(ratingChanged);
     const result =
-      next.flag !== target.flag && next.rating !== target.rating
+      changedCount > 1
         ? await execute<Asset>('asset.mark_batch', {
             ids: [next.id],
             rating: next.rating,
             flag: next.flag,
+            ...(next.color_label !== undefined ? { color_label: next.color_label } : {}),
           }).then(() => execute<Asset>('asset.get', { id: next.id }))
-        : next.flag !== target.flag
-          ? await execute<Asset>('asset.flag', { id: next.id, flag: next.flag })
-          : await execute<Asset>('asset.rate', { id: next.id, rating: next.rating });
-    await changed(result, next.flag !== target.flag ? 'flag' : 'rating');
+        : colorChanged
+          ? await execute<Asset>('asset.label', { id: next.id, color_label: next.color_label })
+          : flagChanged
+            ? await execute<Asset>('asset.flag', { id: next.id, flag: next.flag })
+            : await execute<Asset>('asset.rate', { id: next.id, rating: next.rating });
+    await changed(
+      result,
+      colorChanged ? 'color_label' : flagChanged ? 'flag' : 'rating',
+    );
   }
-  async function mark(kind: 'rate' | 'flag', value: number | Flag, fromKeyboard = false) {
+  async function mark(
+    kind: 'rate' | 'flag' | 'color_label',
+    value: number | Flag | ColorLabel,
+    fromKeyboard = false,
+  ) {
     // A key during the confirmation finishes it (and its advance) first, so each key
     // applies to the photo the user sees next; none is dropped or applied twice.
     if (pulse()) finishPulse();
@@ -604,24 +772,45 @@ export default function Viewer(props: {
     }
     if (!before || id() !== targetId) return;
     if (pulse()) finishPulse();
+    const nextColor =
+      kind === 'color_label'
+        ? ((before.color_label ?? 'none') === value ? 'none' : (value as ColorLabel))
+        : before.color_label;
     const next: Mark =
-      kind === 'rate' ? { ...before, rating: value as number } : { ...before, flag: value as Flag };
-    const unchanged = next.rating === before.rating && next.flag === before.flag;
+      kind === 'rate'
+        ? { ...before, rating: value as number }
+        : kind === 'flag'
+          ? { ...before, flag: value as Flag }
+          : { ...before, color_label: nextColor };
+    const unchanged =
+      next.rating === before.rating &&
+      next.flag === before.flag &&
+      (next.color_label ?? 'none') === (before.color_label ?? 'none');
     applyLocal(next);
     const position = ids().indexOf(targetId);
-    const step = nextAfterMark(position, ids().length, autoAdvance());
-    setPulse({ kind, value: String(value), key: Date.now() });
-    if (fromKeyboard)
-      hud.show(
-        markHudText(kind === 'rate' ? { rating: value as number } : { flag: value as Flag }),
-        kind === 'rate' ? 'star' : 'flag',
-      );
+    const step = nextAfterMark(
+      position,
+      ids().length,
+      cullView() === 'compare' ? false : autoAdvance(),
+    );
+    setPulse({
+      kind: kind === 'color_label' ? 'flag' : kind,
+      value: String(kind === 'color_label' ? nextColor : value),
+      key: Date.now(),
+    });
+    const hudMark =
+      kind === 'rate'
+        ? { rating: value as number }
+        : kind === 'flag'
+          ? { flag: value as Flag }
+          : { color_label: nextColor };
+    if (fromKeyboard) hud.show(markHudText(hudMark), kind === 'rate' ? 'star' : 'flag');
     let failed = false;
     if (!unchanged) {
       const previous = before;
       optimistic.set(targetId, next);
       history.push({
-        label: markHudText(kind === 'rate' ? { rating: next.rating } : { flag: next.flag }),
+        label: markHudText(hudMark),
         ids: [targetId],
         revert: () => revertMark(previous),
       });
@@ -649,6 +838,7 @@ export default function Viewer(props: {
       ids: [previous.id],
       rating: previous.rating,
       flag: previous.flag,
+      color_label: previous.color_label ?? 'none',
     }).then(() => execute<Asset>('asset.get', { id: previous.id }));
     if (id() !== previous.id && ids().includes(previous.id)) setId(previous.id);
     applyLocal(previous);
@@ -681,9 +871,21 @@ export default function Viewer(props: {
     setAutoAdvance(next);
     writeAutoAdvance(next);
   }
+  createEffect(
+    on(
+      [mode, cullView, id, ids, compareCount],
+      ([now, view, currentId, list, count]) => {
+        if (now !== 'cull' || view !== 'compare' || !currentId) return;
+        const currentWindow = compareWindow(list, compareAnchor(), count);
+        if (!currentWindow.includes(currentId)) {
+          setCompareAnchor(Math.max(0, list.indexOf(currentId)));
+        }
+      },
+    ),
+  );
   const compareIds = createMemo(() =>
     mode() === 'cull' && cullView() === 'compare'
-      ? compareWindow(ids(), Math.max(0, index()), compareCount())
+      ? compareWindow(ids(), compareAnchor(), compareCount())
       : [],
   );
   createEffect(
@@ -696,16 +898,48 @@ export default function Viewer(props: {
       }
     }),
   );
+  function toggleClipping(fromKeyboard = false) {
+    const next = !clippingEnabled();
+    setClippingEnabled(next);
+    if (fromKeyboard) hud.show(next ? '高光/暗部溢出警告：开启' : '高光/暗部溢出警告：关闭', 'info');
+    activity();
+  }
+  function rawUnavailable(target: Asset | undefined) {
+    return !!target?.metadata['Decode Status']?.includes('不可用');
+  }
+  function toggleRawMode(fromKeyboard = false) {
+    const target = asset();
+    if (!target || cropMode()) return;
+    if (target.kind !== 'raw') {
+      if (fromKeyboard) hud.show('当前为光栅图像，已使用原图解码', 'photo');
+      return;
+    }
+    if (rawUnavailable(target)) {
+      if (fromKeyboard) hud.show('此 RAW 暂不支持传感器显影，已使用相机预览', 'photo');
+      return;
+    }
+    const next = !preferRaw();
+    setPreferRaw(next);
+    if (fromKeyboard) hud.show(next ? 'RAW 传感器显影' : '相机内嵌预览', 'photo');
+    activity();
+  }
   function cullKeyboard(event: KeyboardEvent): boolean {
+    if (event.key === ' ' && (isControl(document.activeElement) || event.repeat)) return false;
     const action = cullKeyAction(event);
     if (!action) return false;
     event.preventDefault();
-    if (action.kind === 'rate' || action.kind === 'flag') {
+    if (action.kind === 'rate' || action.kind === 'flag' || action.kind === 'color_label') {
       if (!event.repeat) void mark(action.kind, action.value, true);
     } else if (action.kind === 'move') move(action.delta);
-    else if (action.kind === 'view') setCullView(action.value);
-    else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
-    else if (action.kind === 'undo') void undoLatest();
+    else if (action.kind === 'view') {
+      if (action.value === 'compare') setCompareAnchor(Math.max(0, index()));
+      setCullView(action.value);
+    } else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
+    else if (action.kind === 'clipping') {
+      if (!event.repeat) toggleClipping(true);
+    } else if (action.kind === 'raw_mode') {
+      if (!event.repeat) toggleRawMode(true);
+    } else if (action.kind === 'undo') void undoLatest();
     else if (action.kind === 'overlay') setOverlayVisible((value) => !value);
     else if (action.kind === 'mode') toggleMode();
     else if (action.kind === 'focus') toggleFocus();
@@ -762,8 +996,19 @@ export default function Viewer(props: {
     }
   }
   function keyboard(event: KeyboardEvent) {
+    if (exportTargets()) return;
     recoverFocus();
     if (!container.contains(document.activeElement)) return;
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.shiftKey &&
+      event.key.toLowerCase() === 'e' &&
+      !isTextEntry(event.target)
+    ) {
+      event.preventDefault();
+      if (asset() && !cropMode() && !busy()) setExportTargets([asset()!.id]);
+      return;
+    }
     if (editingOverlay()) {
       if (event.key === 'Escape' && !event.defaultPrevented) {
         event.preventDefault();
@@ -850,16 +1095,46 @@ export default function Viewer(props: {
       move(-1);
     } else if (key === 'i') setInfo((value) => !value);
     else if (key === 'c' && !event.shiftKey) beginCrop();
-    else if (key === 'p' && !event.repeat) {
+    else if (key === 'f' && event.shiftKey && !event.repeat) {
       event.preventDefault();
       toggleFocus();
-    } else if (key === 'f') void fullscreen();
-    else if (key === 'd') setOverlayVisible((value) => !value);
-    else if (key === 'escape') {
+    } else if (key === 'f' && !event.shiftKey) void fullscreen();
+    else if (
+      (key === 'p' || key === 'x' || key === 'u') &&
+      !event.shiftKey &&
+      !event.repeat &&
+      !cropMode()
+    ) {
+      event.preventDefault();
+      void flagPhoto(key === 'p' ? 'pick' : key === 'x' ? 'reject' : 'none', true);
+    } else if (key === 'd') setOverlayVisible((value) => !value);
+    else if (key === 'z' && !event.shiftKey && !cropMode()) {
+      event.preventDefault();
+      setZoomToggle((value) => value + 1);
+    } else if (key === 'j' && !event.shiftKey && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      toggleClipping(true);
+    } else if (key === 'r' && !event.shiftKey && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      toggleRawMode(true);
+    } else if (
+      event.key === ' ' &&
+      !event.shiftKey &&
+      !event.repeat &&
+      !cropMode() &&
+      !isControl(document.activeElement)
+    ) {
+      event.preventDefault();
+      void escape();
+    } else if (key === 'escape') {
       event.preventDefault();
       void escape();
     } else if (/^[0-5]$/.test(key)) void rate(Number(key), true);
-    else if (key === 'c' && event.shiftKey) toggleMode();
+    else if (/^[6-9]$/.test(key) && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      const color = keyToColorLabel(key);
+      if (color) void colorLabelPhoto(color, true);
+    } else if (key === 'c' && event.shiftKey) toggleMode();
   }
   function toggleFocus() {
     if (focusUnavailableReason()) return;
@@ -884,7 +1159,10 @@ export default function Viewer(props: {
       queueMicrotask(() => recoverFocus(trigger));
     }
   }
-  async function changed(updated: Asset, change: 'rating' | 'flag' | 'crop' | 'refresh') {
+  async function changed(
+    updated: Asset,
+    change: 'rating' | 'flag' | 'color_label' | 'keywords' | 'crop' | 'refresh',
+  ) {
     const revision =
       change === 'crop' ? Date.now() : updated.preview_revision || revisions.get(updated.id);
     updated = { ...updated, preview_revision: revision };
@@ -899,7 +1177,12 @@ export default function Viewer(props: {
           id: updated.id,
           change,
           asset: updated,
-          ...(change === 'rating' || change === 'flag' ? {} : { revision }),
+          ...(change === 'rating' ||
+          change === 'flag' ||
+          change === 'color_label' ||
+          change === 'keywords'
+            ? {}
+            : { revision }),
         });
       } catch {
         setError('编辑已保存，但未能通知图库更新。请在图库使用“扫描更新”。');
@@ -995,9 +1278,121 @@ export default function Viewer(props: {
           changed(await execute<Asset>('asset.rate', { id: target.id, rating: before }), 'rating'),
       });
   }
+  async function flagPhoto(flag: Flag, fromKeyboard = false) {
+    const target = asset();
+    if (!target || cropMode()) return;
+    const before: Flag = (optimistic.get(target.id)?.flag ?? target.flag ?? 'none') as Flag;
+    if (fromKeyboard) hud.show(markHudText({ flag }), 'flag');
+    if (before === flag) return;
+    const currentColor: ColorLabel =
+      (optimistic.get(target.id)?.color_label ?? target.color_label ?? 'none') as ColorLabel;
+    const next: Mark = { id: target.id, rating: target.rating, flag, color_label: currentColor };
+    optimistic.set(target.id, next);
+    applyLocal(next);
+    history.push({
+      label: markHudText({ flag }),
+      ids: [target.id],
+      revert: async () => {
+        const updated = await execute<Asset>('asset.flag', { id: target.id, flag: before });
+        applyLocal({
+          id: target.id,
+          rating: updated.rating,
+          flag: before,
+          color_label: (updated.color_label ?? currentColor) as ColorLabel,
+        });
+        await changed(updated, 'flag');
+      },
+    });
+    try {
+      const updated = await execute<Asset>('asset.flag', { id: target.id, flag });
+      if (optimistic.get(target.id) === next) await changed(updated, 'flag');
+    } catch (e) {
+      if (optimistic.get(target.id) === next) {
+        applyLocal({ id: target.id, rating: target.rating, flag: before, color_label: currentColor });
+      }
+      setError(`标记未保存：${errorMessage(e)}`);
+    } finally {
+      if (optimistic.get(target.id) === next) optimistic.delete(target.id);
+    }
+  }
+  async function colorLabelPhoto(color: ColorLabel, fromKeyboard = false) {
+    const target = asset();
+    if (!target || cropMode()) return;
+    const before: ColorLabel =
+      (optimistic.get(target.id)?.color_label ?? target.color_label ?? 'none') as ColorLabel;
+    const desired: ColorLabel = fromKeyboard && before === color ? 'none' : color;
+    if (fromKeyboard) hud.show(markHudText({ color_label: desired }), 'flag');
+    if (before === desired) return;
+    const next: Mark = {
+      id: target.id,
+      rating: target.rating,
+      flag: (target.flag ?? 'none') as Flag,
+      color_label: desired,
+    };
+    optimistic.set(target.id, next);
+    applyLocal(next);
+    history.push({
+      label: markHudText({ color_label: desired }),
+      ids: [target.id],
+      revert: async () => {
+        const updated = await execute<Asset>('asset.label', {
+          id: target.id,
+          color_label: before,
+        });
+        applyLocal({
+          id: target.id,
+          rating: updated.rating,
+          flag: (updated.flag ?? 'none') as Flag,
+          color_label: before,
+        });
+        await changed(updated, 'color_label');
+      },
+    });
+    try {
+      const updated = await execute<Asset>('asset.label', {
+        id: target.id,
+        color_label: desired,
+      });
+      if (optimistic.get(target.id) === next) await changed(updated, 'color_label');
+    } catch (e) {
+      if (optimistic.get(target.id) === next) {
+        applyLocal({
+          id: target.id,
+          rating: target.rating,
+          flag: (target.flag ?? 'none') as Flag,
+          color_label: before,
+        });
+      }
+      setError(`色标未保存：${errorMessage(e)}`);
+    } finally {
+      if (optimistic.get(target.id) === next) optimistic.delete(target.id);
+    }
+  }
+  const cropFrameDims = () => {
+    const current = asset();
+    const m = previewMapping();
+    return {
+      width: m?.full_width || current?.width || 1,
+      height: m?.full_height || current?.height || 1,
+    };
+  };
+  const cropAspect = createMemo(() => {
+    const dims = cropFrameDims();
+    return resolveAspectRatio(cropPreset(), cropSwapped(), dims.width, dims.height);
+  });
+  function selectCropAspect(preset: AspectPreset, swapped: boolean) {
+    setCropPreset(preset);
+    setCropSwapped(swapped);
+    if (preset === 'free') return;
+    const dims = cropFrameDims();
+    const ratio = resolveAspectRatio(preset, swapped, dims.width, dims.height);
+    if (ratio) setCrop((prev) => fitCropToAspect(prev, ratio, dims.width, dims.height));
+  }
   function beginCrop() {
     if (!asset() || busy()) return;
     setCrop({ ...(asset()!.crop || fullCrop) });
+    setCropPreset('free');
+    setCropSwapped(false);
     setCropMode(true);
     setInfo(true);
     activity();
@@ -1032,6 +1427,41 @@ export default function Viewer(props: {
       setNotice(desktop ? `已导出：${result.path}` : `已生成 ${result.path}，并交给浏览器下载。`);
     });
   }
+  async function exportWithPreset(targets: string[], recipe: ExportRecipe, directory: string) {
+    await action(`正在按预设导出 ${targets.length} 张…`, async () => {
+      const known = new Map<string, Asset>(Object.entries(items()));
+      if (asset()) known.set(asset()!.id, asset()!);
+      const result = await exportPhotos(
+        targets,
+        directory,
+        known,
+        (done, count) => setBusy(`正在导出 ${done} / ${count}…`),
+        recipe,
+      );
+      setExportTargets(null);
+      const summary = exportSummary(result, directory, desktop);
+      if (summary.error) setError(summary.error);
+      else setNotice(summary.notice!);
+    });
+  }
+  async function syncViewerXmp(mode: 'write' | 'read') {
+    const target = asset();
+    if (!target || target.source_key) return;
+    await action(mode === 'write' ? '正在写入 .xmp 伴随文件…' : '正在读取 .xmp 伴随文件…', async () => {
+      const report = await execute<XmpSyncReport>(
+        mode === 'write' ? 'asset.xmp.write' : 'asset.xmp.read',
+        { ids: [target.id] },
+      );
+      if (mode === 'read') {
+        const refreshed = await execute<Asset>('asset.get', { id: target.id });
+        await changed({ ...refreshed, preview_revision: Date.now() }, 'crop');
+        setNotice(report.updated ? '已从 .xmp 同步标记与裁剪。' : '未检测到新的 .xmp 伴随变更。');
+      } else {
+        setNotice(`已写入 .xmp 伴随文件。`);
+      }
+      if (report.errors.length) setError(report.errors[0].message);
+    });
+  }
   async function refreshOriginal() {
     const target = asset();
     if (!target || !desktop) return;
@@ -1050,10 +1480,19 @@ export default function Viewer(props: {
     <div
       ref={container}
       tabIndex={-1}
-      class={`immersive-viewer ${mode() === 'cull' ? 'culling' : ''} ${mode() === 'cull' && asset()?.flag === 'reject' ? 'rejected' : ''} ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${info() ? 'with-info' : ''} ${readOverlayFades(localStorage) ? 'overlay-fades' : ''}`}
-      onPointerMove={activity}
+      class={`immersive-viewer ${mode() === 'cull' ? 'culling' : ''} ${mode() === 'cull' && asset()?.flag === 'reject' ? 'rejected' : ''} ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${toolbarAutoHide() ? 'toolbar-autohide' : ''} ${showToolbar() ? '' : 'toolbar-hidden'} ${info() ? 'with-info' : ''} ${readOverlayFades(localStorage) ? 'overlay-fades' : ''}`}
+      onPointerMove={pointerMoveActivity}
       onPointerDown={(event) => {
         activity();
+        if (
+          toolbarAutoHide() &&
+          (event.clientY <= 64 ||
+            (event.target instanceof HTMLElement && !!event.target.closest('.nl-viewer-bar')))
+        ) {
+          clearTimeout(toolbarTimer);
+          toolbarTimer = undefined;
+          setToolbarAwake(true);
+        }
         if ((event.target as HTMLElement).closest('.photo-stage') && !isControl(event.target))
           container.focus({ preventScroll: true });
       }}
@@ -1096,6 +1535,21 @@ export default function Viewer(props: {
               ]}
             />
             <Show when={mode() === 'cull'}>
+              <Show when={ids().length > 1}>
+                <Segmented
+                  size="sm"
+                  label="选片视图"
+                  value={cullView()}
+                  onChange={(next) => {
+                    if (next === 'compare') setCompareAnchor(Math.max(0, index()));
+                    setCullView(next as 'single' | 'compare');
+                  }}
+                  options={[
+                    { value: 'single', label: '单张', shortcut: 'G' },
+                    { value: 'compare', label: '对比', shortcut: 'C' },
+                  ]}
+                />
+              </Show>
               <Toggle pressed={autoAdvance()} onChange={() => toggleAutoAdvance()}>
                 自动下一张
               </Toggle>
@@ -1112,13 +1566,13 @@ export default function Viewer(props: {
               class={`nl-icon-btn nl-icon-btn--sm focus-toggle ${focusVisible() ? 'active' : ''}`}
               onClick={toggleFocus}
               aria-disabled={!!focusUnavailableReason()}
-              aria-label={mode() === 'cull' ? '显示对焦点（Shift+F）' : '显示对焦点（P）'}
+              aria-label="显示对焦点（Shift+F）"
               aria-pressed={focusVisible()}
-              aria-keyshortcuts={mode() === 'cull' ? 'Shift+F' : 'P'}
+              aria-keyshortcuts="Shift+F"
               aria-describedby={focusHelpId}
               title={
                 focusUnavailableReason() ||
-                `对焦点（${mode() === 'cull' ? 'Shift+F' : 'P'}）· 实线选定，虚线活动`
+                '对焦点（Shift+F）· 实线选定，虚线活动'
               }
             >
               <Icon name="focus-2" size={16} />
@@ -1127,14 +1581,6 @@ export default function Viewer(props: {
               {focusUnavailableReason() ||
                 '显示相机记录的对焦区域。实线为选定区域，虚线为活动区域。'}
             </span>
-            <IconButton
-              size="sm"
-              icon="info"
-              label="影像信息（I）"
-              shortcut="I"
-              pressed={info()}
-              onClick={() => setInfo((value) => !value)}
-            />
             <IconButton
               size="sm"
               icon="crop"
@@ -1150,6 +1596,14 @@ export default function Viewer(props: {
               label="更多"
               aria-haspopup="menu"
               onClick={moreMenu}
+            />
+            <IconButton
+              size="sm"
+              icon="layout-sidebar-right"
+              label="影像信息（I）"
+              shortcut="I"
+              pressed={info()}
+              onClick={() => setInfo((value) => !value)}
             />
             <Show when={!props.onClose}>
               <IconButton
@@ -1233,126 +1687,130 @@ export default function Viewer(props: {
         </Show>
         <hud.Host tone="viewer" />
         <Show when={compareIds().length}>
-          <div
-            class={`cull-compare count-${compareIds().length}`}
-            role="listbox"
-            aria-label="对比视图"
-          >
-            <For each={compareIds()}>
-              {(compareId) => (
-                <Show
-                  when={compareAssets()[compareId]}
-                  fallback={<div class="cull-compare-placeholder">载入中…</div>}
-                >
-                  {(item) => (
-                    <div
-                      class={`cull-compare-item ${compareId === id() ? 'focused' : ''}`}
-                      role="option"
-                      aria-selected={compareId === id()}
-                    >
-                      <Thumbnail
-                        asset={item()}
-                        tier="t1024"
-                        selected={compareId === id()}
-                        onSelect={() => setId(compareId)}
-                        onOpen={() => {
-                          setId(compareId);
-                          setCullView('single');
-                        }}
-                      />
-                    </div>
-                  )}
-                </Show>
-              )}
-            </For>
-          </div>
+          <CompareStage
+            ids={compareIds()}
+            assets={compareAssets()}
+            activeId={id()}
+            count={compareCount()}
+            onCountChange={setCompareCount}
+            syncLocked={compareSync()}
+            onToggleSync={() => setCompareSync((value) => !value)}
+            preferRaw={preferRaw()}
+            clippingEnabled={clippingEnabled()}
+            onToggleClipping={() => toggleClipping(false)}
+            zoomToggle={zoomToggle()}
+            onSelect={(nextId) => {
+              if (pulse()) finishPulse();
+              setId(nextId);
+              container.focus({ preventScroll: true });
+            }}
+            onExitCompare={() => setCullView('single')}
+          />
         </Show>
-        <Show
-          when={compareIds().length ? undefined : asset()}
-          fallback={
-            <div class="viewer-loading" role="status" aria-live="polite">
-              {loading() ? (
-                <>
-                  <Show
-                    when={stagePlaceholder()}
-                    fallback={
-                      <Show when={previousFrame()}>
-                        {(src) => (
-                          <img
-                            class="photo-placeholder previous-frame"
-                            src={src()}
-                            alt=""
-                            aria-hidden="true"
-                          />
-                        )}
-                      </Show>
-                    }
-                  >
-                    {(src) => (
-                      <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />
-                    )}
-                  </Show>
-                  <span class="viewer-message over-placeholder">
-                    <span class="spinner" />
-                    <span>正在读取影像…</span>
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Icon name="photo" size={36} />
-                  <span>暂时无法读取此影像</span>
-                  <button class="button" onClick={() => id() && loadAsset(id()!)}>
-                    重试
-                  </button>
-                </>
-              )}
-            </div>
-          }
-        >
-          {(current) => (
-            <PhotoView
-              asset={current()}
-              cropMode={cropMode()}
-              crop={crop()}
-              setCrop={setCrop}
-              onPrevious={() => move(-1)}
-              onNext={() => move(1)}
-              hasPrevious={!busy() && !cropMode() && index() > 0}
-              hasNext={!busy() && !cropMode() && index() < ids().length - 1}
-              focusEnabled={focusVisible()}
-              focusRegions={focus().regions}
-              zoomToggle={zoomToggle()}
-              fill={!props.onClose && mode() === 'view' && !info()}
-              onPreviewStateChange={(state) => {
-                if (current().id !== id() || state.key !== currentPreviewKey()) return;
-                setPreviewKey(state.key);
-                setPreviewPending(state.loading);
-                setPreviewFailed(state.failed);
-                setPreviewMapping(state.loading || state.failed ? undefined : state.mapping);
-                if (
-                  !state.loading &&
-                  !state.failed &&
-                  state.asset?.id === current().id &&
-                  (state.asset.metadata !== current().metadata ||
-                    state.asset.width !== current().width ||
-                    state.asset.height !== current().height)
-                ) {
-                  const inspected = state.asset;
-                  setAsset(
-                    (previous) =>
-                      previous && {
-                        ...previous,
-                        width: inspected.width,
-                        height: inspected.height,
-                        metadata: inspected.metadata,
-                        availability: inspected.availability,
-                        cache_pinned: inspected.cache_pinned,
-                      },
-                  );
+        <Show when={!compareIds().length}>
+          <Show
+            when={asset()}
+            fallback={
+              <div class="viewer-loading" role="status" aria-live="polite">
+                {loading() ? (
+                  <>
+                    <Show
+                      when={stagePlaceholder()}
+                      fallback={
+                        <Show when={previousFrame()}>
+                          {(src) => (
+                            <img
+                              class="photo-placeholder previous-frame"
+                              src={src()}
+                              alt=""
+                              aria-hidden="true"
+                            />
+                          )}
+                        </Show>
+                      }
+                    >
+                      {(src) => (
+                        <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />
+                      )}
+                    </Show>
+                    <span class="viewer-message over-placeholder">
+                      <span class="spinner" />
+                      <span>正在读取影像…</span>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Icon name="photo" size={36} />
+                    <span>暂时无法读取此影像</span>
+                    <button class="button" onClick={() => id() && loadAsset(id()!)}>
+                      重试
+                    </button>
+                  </>
+                )}
+              </div>
+            }
+          >
+            {(current) => (
+              <PhotoView
+                asset={current()}
+                cropMode={cropMode()}
+                crop={crop()}
+                setCrop={setCrop}
+                onPrevious={() => move(-1)}
+                onNext={() => move(1)}
+                hasPrevious={!busy() && !cropMode() && index() > 0}
+                hasNext={!busy() && !cropMode() && index() < ids().length - 1}
+                focusEnabled={focusVisible()}
+                focusRegions={focus().regions}
+                zoomToggle={zoomToggle()}
+                fill={false}
+                preferRaw={preferRaw()}
+                onTogglePreferRaw={
+                  rawUnavailable(current()) ? undefined : () => toggleRawMode(false)
                 }
-              }}
-            />
-          )}
+                clippingEnabled={clippingEnabled()}
+                onToggleClipping={() => toggleClipping(false)}
+                cropAspect={cropAspect()}
+                onPreviewStateChange={(state) => {
+                  if (current().id !== id() || state.key !== currentPreviewKey()) return;
+                  setPreviewKey(state.key);
+                  setPreviewPending(state.loading);
+                  setPreviewFailed(state.failed);
+                  setPreviewMapping(state.loading || state.failed ? undefined : state.mapping);
+                  if (
+                    !state.loading &&
+                    !state.failed &&
+                    state.asset?.id === current().id &&
+                    (state.asset.metadata !== current().metadata ||
+                      state.asset.width !== current().width ||
+                      state.asset.height !== current().height)
+                  ) {
+                    const inspected = state.asset;
+                    const enriched: Asset = {
+                      ...current(),
+                      width: inspected.width,
+                      height: inspected.height,
+                      metadata: inspected.metadata,
+                      availability: inspected.availability,
+                      cache_pinned: inspected.cache_pinned,
+                    };
+                    remember([enriched]);
+                    setAsset(
+                      (previous) =>
+                        previous && {
+                          ...previous,
+                          width: inspected.width,
+                          height: inspected.height,
+                          metadata: inspected.metadata,
+                          availability: inspected.availability,
+                          cache_pinned: inspected.cache_pinned,
+                        },
+                    );
+                  }
+                }}
+              />
+            )}
+          </Show>
         </Show>
         <Show when={mode() === 'cull' && info() && asset()}>
           {(current) => (
@@ -1430,9 +1888,17 @@ export default function Viewer(props: {
           cropMode={cropMode()}
           crop={crop()}
           setCrop={setCrop}
+          cropAspectPreset={cropPreset()}
+          cropAspectSwapped={cropSwapped()}
+          onSelectCropAspect={selectCropAspect}
           onSaveCrop={saveCrop}
           onResetCrop={resetCrop}
           onRate={rate}
+          onColorLabel={(color) => void colorLabelPhoto(color, false)}
+          onKeywordsUpdated={(keywords) => {
+            const current = asset();
+            if (current) void changed({ ...current, keywords }, 'keywords');
+          }}
           onCrop={beginCrop}
           onExport={exportImage}
           onRefresh={desktop ? refreshOriginal : undefined}
@@ -1441,6 +1907,20 @@ export default function Viewer(props: {
             setCropMode(false);
           }}
         />
+      </Show>
+      <Show when={exportTargets()}>
+        {(targets) => (
+          <ExportDialog
+            count={targets().length}
+            sample={asset()}
+            busy={!!busy()}
+            onClose={() => {
+              setExportTargets(null);
+              container.focus({ preventScroll: true });
+            }}
+            onConfirm={(recipe, dir) => void exportWithPreset(targets(), recipe, dir)}
+          />
+        )}
       </Show>
     </div>
   );

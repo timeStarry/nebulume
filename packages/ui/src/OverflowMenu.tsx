@@ -1,4 +1,5 @@
 import { Show, createSignal, createUniqueId, onCleanup } from 'solid-js';
+import type { IconName } from './Icon';
 import { MenuList, type MenuEntry } from './ui/Menu';
 import IconButton from './ui/IconButton';
 
@@ -12,6 +13,7 @@ export default function OverflowMenu(props: {
   label: string;
   items: MenuEntry[];
   size?: 'xs' | 'sm' | 'md';
+  icon?: IconName;
 }) {
   const [open, setOpen] = createSignal(false);
   let root!: HTMLDivElement;
@@ -40,7 +42,7 @@ export default function OverflowMenu(props: {
     <div class="nl-menu-anchor" ref={root}>
       <IconButton
         ref={trigger}
-        icon="more"
+        icon={props.icon ?? 'more'}
         size={props.size ?? 'md'}
         label={props.label}
         aria-haspopup="menu"

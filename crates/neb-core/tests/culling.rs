@@ -133,7 +133,7 @@ fn v5_catalog_upgrades_to_v6_preserving_marks() {
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap()
     };
-    assert_eq!(version(&database), 12);
+    assert_eq!(version(&database), 14);
     let asset = core.asset(&assets[0]).unwrap();
     assert_eq!(asset.flag, "none");
     assert_eq!(asset.rating, 5);
@@ -141,7 +141,7 @@ fn v5_catalog_upgrades_to_v6_preserving_marks() {
     drop(core);
     // Reopening a v6 catalog does not migrate again.
     Core::open(temp.path().join("catalog")).unwrap();
-    assert_eq!(version(&database), 12);
+    assert_eq!(version(&database), 14);
 }
 
 const V6_DOWNGRADE: &str = "ALTER TABLE assets DROP COLUMN trashed_at; ALTER TABLE assets DROP COLUMN trash_path; DROP INDEX assets_quick_hash; ALTER TABLE assets DROP COLUMN quick_hash; DROP INDEX import_batches_library; DROP TABLE import_batches; DROP TABLE cards; DROP TABLE import_presets; DROP TABLE volume_identities; DROP INDEX assets_library_key; DROP INDEX libraries_location; ALTER TABLE assets DROP COLUMN key; ALTER TABLE libraries DROP COLUMN location_id; DROP TABLE locations; DROP INDEX assets_library_flag; DROP INDEX assets_library_batch; ALTER TABLE assets DROP COLUMN flag; ALTER TABLE assets DROP COLUMN import_batch_id; ALTER TABLE assets DROP COLUMN sha256;";

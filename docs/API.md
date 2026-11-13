@@ -4,34 +4,40 @@
 
 ## 图库 / 影像（core）
 
-0.2.1 启动时在同一 SQLite 事务内将已识别的正式目录和预览目录汇合到 schema12。预览版 schema9/10 及曾被 0.2.0 标成 schema11 的同源目录会补齐指纹与列表修订结构，保留用户数据和预览版扩展表；无法识别的结构或更新版本返回 `E_SCHEMA`，不尝试降级。旧程序不能直接打开已升级的数据库，回退须同时恢复升级前备份。
+启动时在同一 SQLite 事务内将已识别的目录结构迁移到 schema14（在 schema13 基础上新增 `assets.color_label` 色标列与索引、`collections` / `collection_items` 虚拟精选集与智能精选集表、`keywords` / `asset_keywords` 层级关键词表，以及相应 `catalog_revision` 触发器）。预览版 schema9/10 及曾被 0.2.0 标成 schema11 的同源目录会依次升级并补齐指纹、列表修订、EXIF 索引与虚拟组织层结构，保留用户数据和预览版扩展表；无法识别的结构或更新版本返回 `E_SCHEMA`，不尝试降级。旧程序不能直接打开已升级的数据库，回退须同时恢复升级前备份。
 
 - `location.list {}` → `Location[]`：`{id,kind:'local'|'removable'|'webdav'|'s3',name,endpoint,root,bucket?,region?,tls_certificate_sha256?,implicit,created_at,availability,library_ids}`；含选目录建库产生的隐式本地位置，不含凭据。存储源的增删同步到位置表；被库使用的位置不可删除（`E_IN_USE`），隐式位置随其库移除。`Library.location_id`、`Asset.key`（位置根下含库前缀的 `/` 分隔键）为 v7 新增字段。
 - `library.list {}` → `Library[]`；每项附运行时 `availability`：`unchecked`（本进程尚未访问远端，启动不联网）/ `online` / `offline`（卷未挂载、目录不存在、主机不可达或超时）/ `auth_required`（凭据缺失、401/403、安全存储不可用）/ `trust_required`（证书变化、过期或未信任）/ `error`（其他失败，不猜测为离线）。远端只由实际列举/读取/检查结果更新，本地目录直接检查。`connected` 保留为 `availability=='online'`。`storage.list`、`storage.check` 同样返回 `availability`。本地建库 `library.add {name,root,pair_raw_jpeg?}` 直接登记目录，不创建存储源；远端建库 `library.add {name,storage_id,prefix?,pair_raw_jpeg?}` 绑定已保存连接。两者返回 `Library`，配对默认关闭。显式引用旧本地storage_id的调用继续兼容。
 - `library.update {id,name?,pair_raw_jpeg?,root?,storage_id?,source_prefix?}` → `Library`；省略字段保留原值，空前缀须显式传 `""`。root与storage_id互斥；root指定直接本地目录并解除旧连接绑定。同一真实本地目录解除历史绑定保留资产id、评级与裁剪；实际变更来源或目录时清除该库旧索引/配方，随后需要重新扫描，不移动或修改任何原文件。
+- `library.relocate {id,root}` → `Library`；外接移动硬盘挂载路径变化后无损重新定位本地图片库根目录，保留全部资产 ID、星级、旗标、色标、裁剪配方、精选集成员与层级关键词，重写库内资产绝对路径而无需清空重建索引，不修改原文件。
 - `library.remove {id}` → `{id,removed_assets}`；移除库登记和索引/配方，不删除原文件、来源目录或存储源。
-- `library.scan {library_id}` → `{indexed,skipped,moved?,errors:[{path,message}],partial?}`；本地扫描文件，远端递归索引目录属性，尚不下载原图。`moved` 仅本地扫描返回：已识别为移动或改名并保留原资产 id 与标记的照片数（见架构文档）。
-- `asset.list {library_id?,query?,rating?,flag?:'any'|'pick'|'none'|'reject'|'not_reject',format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',import_batch_id?,camera?,lens?,captured_from?,captured_to?,limit?,offset?}` → `{items:Asset[],total,file_total}`；`camera` / `lens` 精确匹配 EXIF 的 `Camera` / `Lens`，`captured_from` / `captured_to` 为含端点的 `YYYY-MM-DD`，按相机当地日期比较，没有拍摄时间的照片不落入任何日期范围，格式不对返回 `E_INVALID`；格式/评级/旗标/搜索与排序字段/方向可任意组合，默认 all / any / captured_at / desc；`not_reject` 隐藏淘汰。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
+- `library.scan {library_id}` → `{indexed,skipped,moved?,errors:[{path,message}],partial?}`；本地扫描文件（自动跳过 `.photoslibrary`、`.aplibrary`、`.lrdata`、`.lrcat-data`、`.migratedphotolibrary`、`.app`、`.bundle`、`.framework` 等 macOS/摄影软件封装包目录，避免将系统图库衍生缓存误索引为用户文件夹），远端递归索引目录属性，尚不下载原图。`moved` 仅本地扫描返回：已识别为移动或改名并保留原资产 id 与标记的照片数（见架构文档）。
+- `asset.list {library_id?,collection_id?,query?,rating?,flag?:'any'|'pick'|'none'|'reject'|'not_reject',color_label?:'any'|'none'|'red'|'yellow'|'green'|'blue',keyword?,format?:'all'|'raw'|'jpeg',sort_by?:'captured_at'|'created_at'|'modified_at'|'filename'|'rating',sort_direction?:'asc'|'desc',import_batch_id?,camera?,lens?,captured_from?,captured_to?,limit?,offset?}` → `{items:Asset[],total,file_total}`；`collection_id` 限定手动精选集成员或动态套用智能精选集规则；`keyword` 按层级关键词前缀匹配（筛选父词如 `人像` 自动包含 `人像 > 客片`）；`camera` / `lens` 精确匹配 EXIF 的 `Camera` / `Lens`，`captured_from` / `captured_to` 为含端点的 `YYYY-MM-DD`，按相机当地日期比较，没有拍摄时间的照片不落入任何日期范围，格式不对返回 `E_INVALID`；格式/评级/旗标/色标/关键词/搜索与排序字段/方向可任意组合，默认 all / any / captured_at / desc；`not_reject` 隐藏淘汰。筛选、配对、排序均先于分页，`total` 为显示项数，`file_total` 为筛选命中的实体文件数。captured_at与created_at升降序的未知值均置后，再以path/id升序稳定排序。选择拍摄时间只查索引，不隐式读取整库原件或连接远端。
+- `asset.ids`（与 `asset.list` 相同的筛选/排序参数，忽略 `limit`/`offset`）→ `{ids:string[],total}`：返回当前筛选、RAW/JPEG 配对折叠与排序下的全部显示项 ID 列表（供整库 `⌘A` 全选、文件夹留用批量导出等使用，无需逐页拉取完整 `Asset` 元数据）。
 - `library.fingerprint.status {library_id}` → `{library_id,total,known,pending,pending_bytes,remote,job}`；`library.fingerprint.start {library_id}` / `library.fingerprint.cancel {library_id,job_id}`：显式后台计算未知 SHA-256 写入 `assets.sha256`，语义同拍摄时间索引（协作式停止、同一时间仅一个库、`E_IN_USE`/`E_CONFLICT`）。本地读取原片；远端优先使用当前有效的缓存原图，否则流式完整读取直接计算哈希，不写缓存、不进预览队列。读取期间文件被替换则不记录。扫描发现文件大小或修改标记变化、远端版本变化时清除旧哈希。离线、登录或证书问题会提前停止。
 - `library.capture_index.status {library_id}` → `CaptureIndexStatus`；只读本库的持久计数及当前Service实例的最新作业，不启动读取。
 - `library.capture_index.start {library_id}` → `CaptureIndexStatus`；显式后台处理启动时仍为pending的实体文件。同库已有running/stopping作业时返回该作业；同一Service实例内另一库正在运行时返回`E_IN_USE`。
 - `library.capture_index.cancel {library_id,job_id}` → `CaptureIndexStatus`；校验最新job_id，活动作业转stopping，终态作业保持原状态。无作业返回`E_NOT_FOUND`，job_id已变返回`E_CONFLICT`。
 - `asset.facets {library_id}` → `{cameras:[{value,count}],lenses:[{value,count}],captured:{first,last}}`：库内未丢失照片的机身与镜头（按数量降序，各最多 200 项）及拍摄日期范围，供筛选菜单使用，只读索引。
-- `asset.get {id}` → `Asset`；远端只读索引与离线快照，不发起图像正文请求。本地仍按需检查已有文件的变更。`asset.rate {id,rating}` → `Asset`。`asset.flag {id,flag:'none'|'pick'|'reject'}` → `Asset`。`asset.mark_batch {ids,rating?,flag?}` → `{updated}`：1–1000 个同库资产，至少设置一项，单事务执行，任一 id 不存在则 `E_NOT_FOUND` 且全部回滚，跨库返回 `E_INVALID`。旗标与评级一样只写目录，不改原片、不使预览失效，重新扫描保留。`Asset.flag` 默认 `none`。
+- `asset.get {id}` → `Asset`（附 `color_label` 与 `keywords?:string[]`）；远端只读索引与离线快照，不发起图像正文请求。本地仍按需检查已有文件的变更。`asset.rate {id,rating}` → `Asset`。`asset.flag {id,flag:'none'|'pick'|'reject'}` → `Asset`。`asset.color_label {id,color_label:'none'|'red'|'yellow'|'green'|'blue'}` → `Asset`。`asset.mark_batch {ids,rating?,flag?,color_label?}` → `{updated}`：1–1000 个同库资产，至少设置一项，单事务执行，任一 id 不存在则 `E_NOT_FOUND` 且全部回滚，跨库返回 `E_INVALID`。旗标、色标与评级一样只写目录（开启自动同步时异步刷新本地 `.xmp`），不改原片、不使预览失效，重新扫描保留。`Asset.flag` 与 `Asset.color_label` 默认均为 `none`。
+- `collection.list {library_id}` → `Collection[]`（`{id,library_id,name,kind:'manual'|'smart',rules?:SmartCollectionRules,position,item_count,created_at,updated_at}`）；`collection.get {id}` → `Collection`；`collection.create {library_id,name,kind,rules?,asset_ids?}` → `Collection`；`collection.update {id,name?,rules?}` → `Collection`；`collection.delete {id}` → `{id}`（只移除虚拟精选集，绝不删除资产或原文件）；`collection.add_assets {id,asset_ids}` → `{added,collection}`；`collection.remove_assets {id,asset_ids}` → `{removed,collection}`。
+- `library.keywords {library_id}` → `[{path,count}]`（返回库内层级关键词树与含子词的命中照片数）；`asset.keywords.set {ids,add?:string[],remove?:string[]}` → `{updated,keywords:string[]}`（支持 `>` 或 `|` 分隔层级路径如 `人像 > 客片`，同时作用于 RAW+JPEG 配对项并按策略同步 `.xmp`）。
 - `asset.refresh {id}` → `Asset`；显式更新原图，包含固定离线版本。远端新文件完整接收、核对长度并校验发布后才切换引用；网络、预约或发布失败保留旧缓存。评级与裁剪保留。
 - `asset.fetch_original {id}` → `Asset`；显式获取缺失原图，已有当前缓存时复用；允许手动预览策略下下载。
 - `asset.offline.set {id,pinned:boolean}` → `{asset_id,pinned,stats}`；固定前先取得完整原图，固定当前快照并计入总限额。远端重扫发现更新后不自动替换该快照；`asset.get` 附 `cache_update_available=true`，由用户执行 refresh 更新。解除固定允许作用于已移除库留下的孤立固定项。
 - `file.open {path}` → `Asset`；只索引指定文件，独立查看不隐式扫描同目录或新增可见图片库。
-- `asset.preview {id,tier?:'t256'|'t512'|'t1024'|'p2560',uncropped?,max_size?}` → `{width,height,source,tier,coordinate_mapping?,asset?}`，只返回元数据，不含像素（旧 `data_url` 已移除）；像素经下文 `neb` 协议获取。默认 `p2560`，应用配方；编辑裁剪时以 uncropped=true 请求方向校正后的全图。未知 tier 返回 `E_INVALID`。`max_size`（32–4096）已弃用，保留一个版本：未给 tier 时映射为最长边不小于它的最小档，大于 1024 映射为 `p2560`；同时给出时以 tier 为准。桌面响应的 `coordinate_mapping={orientation,full_width,full_height,crop}` 记录实际渲染采用的EXIF方向、裁剪前方向校正后的帧尺寸及实际像素取整后的归一化裁剪；用于可靠的画面叠加，不修改图像。
+- `asset.preview {id,tier?:'t256'|'t512'|'t1024'|'p2560'|'full',uncropped?,prefer_raw?,max_size?}` → `{width,height,source,tier,coordinate_mapping?,asset?}`，只返回元数据，不含像素（旧 `data_url` 已移除）；像素经下文 `neb` 协议获取。默认 `p2560`，应用配方；查焦放大超过 `p2560` 时按需请求 `full`（最长边 9600px）；编辑裁剪时以 `uncropped=true` 请求方向校正后的全图。RAW 在各档位默认优先使用相机内嵌全尺寸 JPEG（`prefer_raw` 缺省或 `false`），传 `prefer_raw=true` 时强制使用 RAW 传感器显影（若该 RAW 仅含远小于传感器分辨率的缩略图，`p2560`/`full` 也会自动回退传感器显影）。未知 tier 返回 `E_INVALID`。`max_size`（32–4096）已弃用，保留一个版本：未给 tier 时映射为最长边不小于它的最小档，大于 1024 映射为 `p2560`；同时给出时以 tier 为准。桌面响应的 `coordinate_mapping={orientation,full_width,full_height,crop,preview_width,preview_height}` 记录实际渲染采用的 EXIF 方向、裁剪前方向校正后的帧尺寸及实际像素取整后的归一化裁剪；用于可靠的画面叠加与 1:1 比例换算，不修改图像。
 - 远端预览因获取策略需要手动下载，或内嵌预览实际超出分段读取预算时，返回 `E_DOWNLOAD_REQUIRED`；前端可调用 `asset.fetch_original` 后重新预览。预算耗尽不自动升级为完整下载，即使当前为自动获取策略。
 - `asset.focus {id}` → `FocusInfo`；独立读取相机对焦元数据；远端优先有界分段读取，缺少可靠Range能力时返回不可用，不为自动能力检测下载整份原图。与RAW传感器解码是否成功无关。查看器在当前 `asset.get` 成功后自动检测可用性，不预取其他照片；显示开关只控制覆盖层。
 - `asset.histogram {id}` → `{red:number[],green:number[],blue:number[],luminance:number[],pixels:number,source:string,asset?}` (256 bins, display-rendered values)
 - `asset.crop {id,x,y,width,height}` → `Asset` (normalized 0..1, oriented coordinates)
 - `asset.reset_crop {id}` → `Asset`
-- `asset.export {id,destination}` → `{path}` (new JPEG file, never overwrite)
-- `asset.list` 另接受 `folder`（库内相对路径，如 `Kyoto/01 岚山`，含子文件夹；只匹配完整的路径段）、`rating_max`、`focal_min`/`focal_max`（EXIF Focal Length，mm）、`iso_min`/`iso_max`，均为闭区间。“未处理”即 `{flag:'none',rating_max:0}`。
+- `asset.export {id,destination,max_edge?,quality?,color_space?:'preserve'|'srgb'|'display_p3'|'adobe_rgb'}` → `{path}`（新建 JPEG，绝不覆盖；`max_edge` 范围 `256..=16384`，仅缩小不放大；`quality` 范围 `30..=100`，默认 `95`；`color_space` 默认 `'preserve'`，显式指定目标色域时在线性光空间执行 3×3 矩阵色域变换并嵌入标准 ICC v2.1 配置）
+- `xmp.policy.get {}` → `{auto_write:boolean}`；`xmp.policy.set {auto_write:boolean}` → `{auto_write}`：读取或设置本地资产打标/裁剪自动写入 `.xmp` 伴随文件策略（持久化在 `app_settings` 表，不升库版本）。
+- `asset.xmp.write {ids?:string[],library_id?:string}` → `{written,skipped,errors:[{id,path,message}]}`；`asset.xmp.read {ids?:string[],library_id?:string}` → `{updated,skipped,errors:[{id,path,message}]}`：非破坏性双向同步 Adobe/Lightroom/Capture One 兼容 `.xmp` 伴随文件（`xmp:Rating`、拒片 `Rating="-1"` / `xmpDM:pick` / `neb:Flag`、`xmp:Label` 红/黄/绿/蓝色标、`dc:subject` 扁平词 + `lr:hierarchicalSubject` `|` 分隔层级关键词、轴对齐 `crs:HasCrop` + `CropLeft/Top/Right/Bottom`），保留第三方已有 `crs:*` 冲印参数与非托管标签，原图文件严格只读；本地初始扫描时若发现同名 `.xmp` 自动导入星级、旗标、色标、层级关键词与轴对齐裁剪。
+- `asset.list` 另接受 `folder`（库内相对路径，已剥离图片库本级 `source_prefix`，如 `01 岚山`，含子文件夹；只匹配完整的路径段）、`rating_max`、`focal_min`/`focal_max`（EXIF Focal Length，mm）、`iso_min`/`iso_max`，均为闭区间。“未处理”即 `{flag:'none',rating_max:0}`。
 - `asset.stats`（与 `asset.list` 相同的筛选参数）→ `{photos,files,bytes,picks,rejects,rated,unprocessed,undated,days:[{day,count}],cameras:[{name,count}],lenses:[{name,count}],focal:[{label,min,max,count}],iso:[{label,min,max,count}]}`。照片数按网格的配对折叠计算，`files`/`bytes` 计所有文件。每个 `focal`/`iso` 分组的 `min`/`max` 可直接作为筛选参数，列出的照片与计数一致。
-- `library.folders {library_id}` → `{library_id,total,folders:[{path,name,count,children}]}`：库内各级文件夹，计数与网格一致（配对算一张）；`path` 即 `asset.list` 的 `folder`。
+- `library.folders {library_id}` → `{library_id,total,folders:[{path,name,count,children}]}`：库内直接子文件夹树（不包含图片库本级根目录节点），计数与网格一致（配对算一张）；`path` 即 `asset.list` 的库内相对 `folder`。
 - `asset.trash {ids}` → `{trashed:[id],failed:[{id,message}]}`：把本地原片移到系统废纸篓，RAW 与同目录同名 JPEG 一起移动；网络存储照片返回 `E_REMOTE`。记录标记 `trashed_at` 并在列表、计数与移动识别中隐藏，评级、旗标与裁剪保留 30 天。macOS 记录废纸篓中的实际位置。
 - `asset.restore {ids}` → `{restored,failed}`：把废纸篓中的照片放回原处并恢复记录；原处已有文件时不覆盖并报错。在访达中“放回原处”后重新扫描也会恢复记录。
 - `file.siblings {path}` → `{folder,index,files:[{name,path,size}]}`：所给文件所在目录中的影像文件，按名称排序，只读目录项，不读图像内容、不建立索引。独立查看器据此在同一文件夹内前后浏览，切换到某张时再 `file.open`。
@@ -77,7 +83,7 @@ type CaptureIndexStatus = {
 
 外层为当前本库全部实体文件的实时计数，不受网格筛选、分页或RAW/JPEG合并影响：total=known+missing+pending。job.total是启动时的pending候选数；processed为已处理候选数（包括错误及因已被其他操作更新而跳过的项），found/missing只计本次成功写入的有效/无有效时间结果，failed为读取失败数，因此processed不保证等于found+missing+failed。error为首个单项错误或使任务提前停止的作业错误，正常无错时为null。无候选时立即返回completed且job.total=0；候选处理结束但有失败项时为failed，网络/认证失败可提前停止。错误项不标为missing，仍保留pending供再次start重试。
 
-只读取JPEG APP1 EXIF或经典TIFF主IFD0→ExifIFD中的DateTimeOriginal/SubSecTimeOriginal/OffsetTimeOriginal；适用于采用该结构的部分RAW，不保证所有RAW，不解析MakerNote、BigTIFF或缩略图/子图的拍摄时间。单项解析累计读取上限128KiB，单目录512/总计1024条目、单字段256字节、JPEG最多256段。越界、结构损坏、传输或预算耗尽返回错误并保留pending；已确认不支持的容器或无效日期记为missing。已存在当前版本原图缓存时可复用租约读取；否则远端优先使用版本锁定Range。Range不可用且允许安全回退时，仅从单个GET响应逐64KiB读取最多1MiB前缀并重试解析，不拼接不同响应，不发布或增加原图缓存。128KiB是解析读取预算，底层Range传输仍受256KiB块、16MiB/128请求等边界约束，不等同于网络字节总量。
+只读取 JPEG APP1 EXIF、经典 TIFF 主 IFD0→ExifIFD、Canon CR3 ISO-BMFF `moov/uuid(CMT1/CMT2)` 或 HEIC/HEIF/AVIF ISO-BMFF `meta/iinf(Exif)` 中的 DateTimeOriginal/SubSecTimeOriginal/OffsetTimeOriginal；适用于采用上述结构的格式与 RAW，不解析 MakerNote、BigTIFF 或缩略图/子图的拍摄时间。单项解析累计读取上限128KiB，单目录512/总计1024条目、单字段256字节、JPEG最多256段。越界、结构损坏、传输或预算耗尽返回错误并保留pending；已确认不支持的容器或无效日期记为missing。已存在当前版本原图缓存时可复用租约读取；否则远端优先使用版本锁定Range。Range不可用且允许安全回退时，仅从单个GET响应逐64KiB读取最多1MiB前缀并重试解析，不拼接不同响应，不发布或增加原图缓存。128KiB是解析读取预算，底层Range传输仍受256KiB块、16MiB/128请求等边界约束，不等同于网络字节总量。
 
 后台不持全局catalog锁、不进入预览/下载队列，不解码图片像素；当前项使用库与资产租约，核对库绑定及登记版本后仅写入拍摄字段，不改评级、裁剪、尺寸和其他元数据。cancel是协作式停止：当前读取可完成并保留结果，发起下一项前停止，随后转cancelled；切换页面不取消。已完成索引持久化，但job仅保存在当前Service实例内存，重启不续跑；重启后status的job为null，再次显式start处理剩余pending。单次CLI进程不提供跨调用持久后台作业，持续任务应由常驻Service承载。
 
@@ -89,7 +95,7 @@ Metadata uses human-readable keys (Camera, Lens, ISO etc); absent data remains a
 
 远端 `asset.get` 的额外字段为 `cache_pinned?:boolean` 与 `cache_update_available?:boolean`；固定快照的只读尺寸/EXIF/大小及拍摄时间字段来自快照，评级与裁剪始终使用当前记录。旧快照缺少拍摄索引字段时，仅从该快照的有效EXIF Original推导available；无有效值保持pending，不冒充已检查。预览/直方图可附带 `asset` 补齐冷图元数据，前端应核对id后接收。
 
-`asset.list.rating` 表示最低星级，`asset.rate.rating` 为 0–5 整数。预览档位固定为 `t256`/`t512`/`t1024`/`p2560`（最长边 256/512/1024/2560px）；网格按滑块尺寸与 devicePixelRatio 选档，最高 `t1024`；查看器请求 `p2560`。直方图基于已应用裁剪的渲染图，不能作为传感器 RAW 直方图。导出为 JPEG，剥离源 EXIF/ICC。
+`asset.list.rating` 表示最低星级，`asset.rate.rating` 为 0–5 整数。预览档位为五档：`t256`/`t512`/`t1024`/`p2560`/`full`（最长边 256/512/1024/2560/9600px）；网格按滑块尺寸与 devicePixelRatio 选档，最高 `t1024`；查看器默认请求 `p2560`，放大超过 `p2560` 分辨率时后台无缝升级到 `full`。直方图基于已应用裁剪的渲染图，不能作为传感器 RAW 直方图。预览与 JPEG 导出保留源文件内嵌 ICC 配置（如 Display P3 / Adobe RGB），若相机内嵌 JPEG 或源文件未附 ICC 但 EXIF 标注 `ColorSpace=2` / `InteropIndex=R03` 则自动合成标准 `Adobe RGB (1998)` ICC v2.1 配置；导出剥离源 EXIF，永不修改原文件。
 
 `FocusInfo={status:'available'|'missing'|'unsupported',reason?:string,source:'nikon_afinfo2'|null,coordinate_space:'oriented_full_image',orientation:number,image_width?:number,image_height?:number,regions:[{x,y,width,height,kind:'selected'|'active'}]}`。区域为按主EXIF方向校正后的完整图像归一化矩形，未应用用户裁剪；宽高是对应方向下AF坐标帧尺寸。当前只解析标准JPEG EXIF/TIFF中的Nikon Type3 MakerNote（2.10/2.11）AFInfo2 0300/0301显式坐标，不推断纯点位bitmask、不读取其他私有字段、不返回MakerNote原文。记录缺失与格式/版本不支持明确区分，损坏或越界数据不猜测为中心点。
 
@@ -130,14 +136,15 @@ RAW 传感器解码失败时，查看与直方图可回退到标准 TIFF IFD / I
 - `storage.inspect_tls {endpoint}` → `{endpoint,sha256,subject,issuer,not_before,not_after,subject_alt_names:string[]}`；无凭据检查局域网 HTTPS 服务器证书，不保存或自动信任证书。日期使用 RFC3339。
 - `storage.browse {id,prefix?,limit?,cursor?}` → `{entries:[{key,size,is_dir,created_at?:string}],next_cursor:string|null}`；limit 默认 200，范围 1–1000。created_at可选，来自源的真实创建属性；缺失/无效省略，S3不把LastModified视为创建时间。
 - `storage.fetch {id,key,destination}` → `{path,size,sha256}`（新文件，无覆盖发布）
-- `import.plan {source,destination,rules?:OrganizeRules,layout?:'preserve'|'date',deduplicate?:boolean}` → `ImportPlan`；`rules` 优先，`layout` 为兼容别名（preserve = 保留卡内目录，date = 拍摄日 `Y-M-D`），默认 preserve / true，创建计划不复制文件。`OrganizeRules={date_basis:'capture'|'import'|'none'|'preserve',date_layout?:'Y-M-D'|'Y/Y-M-D'|'Y/M/Y-M-D'|'Y/M/D',type_split?:'none'|'by_kind',unknown_date?:'folder'|'modified_time',subfolder?}`：固定选项而非模板；`by_kind` 在日期目录内分 RAW/JPG/TIFF/OTHER，XMP 跟随其 RAW；拍摄日缺失默认进入 `unknown-date/`，仅显式选择 `modified_time` 时按源文件修改日并逐项标注 `date_source`；导入日在规划时冻结为 `ImportPlan.import_day`；`subfolder` 只接受普通目录名，拒绝越级、绝对路径与保留名。文件名永不改变。`ImportPlan.rules` 记录冻结的规则。
+- `import.plan {source,destination?,library_id?,backup_destination?,rules?:OrganizeRules,layout?:'preserve'|'date',deduplicate?:boolean}` → `ImportPlan`；`rules` 优先，`layout` 为兼容别名（preserve = 保留卡内目录，date = 拍摄日 `Y-M-D`），默认 preserve / true，创建计划不复制文件。`OrganizeRules={date_basis:'capture'|'import'|'none'|'preserve',date_layout?:'Y-M-D'|'Y/Y-M-D'|'Y/M/Y-M-D'|'Y/M/D',type_split?:'none'|'by_kind',unknown_date?:'folder'|'modified_time',subfolder?,rename_mode?:'keep'|'date_prefix_seq'|'prefix_original',rename_prefix?}`：固定选项而非自由模板；`by_kind` 在日期目录内分 RAW/JPG/TIFF/OTHER，XMP 跟随其 RAW；拍摄日缺失默认进入 `unknown-date/`，仅显式选择 `modified_time` 时按源文件修改日并逐项标注 `date_source`；导入日在规划时冻结为 `ImportPlan.import_day`；`subfolder` 与 `rename_prefix`（最长 40 字节）拒绝越级、分隔符与系统保留名；启用 `date_prefix_seq` 或 `prefix_original` 时同目录同主名的 RAW + JPEG + XMP 伴随组共享同一重命名主名与四位序号。可选 `backup_destination` 指定与来源、主目标互不重叠的本地副盘目录。`ImportPlan.rules` 记录冻结的规则。
+- `import.status {}` → `{active:boolean,cancelling:boolean,progress?:{plan_id,status,total_items,done_items,total_bytes,copied_bytes,current_file?,backup_copied,cancelling}|null}`；`import.cancel {}` → `{cancelling:boolean}`：无锁查询当前导入进度或请求在伴随组安全边界协作式停止导入（已完成伴随组保留并记入 `cancelled` 结果）。
 - `storage.write_check {id}` → `{id,write_capability:'verified'|'unsupported'|'unverified',error?,leftover?,checked_at}`：显式写入测试，仅限 WebDAV/S3。写入一个随机小对象，再证明对同一键的第二次写入被拒绝，然后删除；无法删除的测试对象如实返回 `leftover`。服务器替换了已有对象判为 `unsupported`。结果只在本进程有效，`storage.list` 每项附 `write_capability`。
 - 远端导入：`import.plan {source,library_id,rules?,deduplicate?}` 中 `library_id` 指向 WebDAV/S3 图片库时，按目标库目录记录判重而不下载：有 SHA-256 的严格判为 `duplicate`；无哈希但文件名（不区分大小写）、大小与拍摄日均已知且相同的判为 `likely_duplicate`，计入 `likely_duplicate_count`，默认跳过。计划附 `write_capability`、`destination_location`、`destination_prefix`。`import.execute {plan_id,library_id,include_likely_duplicates?,card_id?}` 要求该位置本进程已通过写入测试，否则 `E_WRITE_UNVERIFIED` 且不写入。WebDAV：MKCOL 父目录 → PUT 临时 `.nebulume-*.part`（`If-None-Match: *`）→ GET 读回校验 SHA-256 → `MOVE` 带 `Overwrite: F`，失败删除临时文件。S3：`PUT` 带 `If-None-Match: *`，SigV4 签名覆盖计划 SHA-256，内容不符 `E_VERIFY`，不支持条件写 `E_UNSUPPORTED`，单文件上限 5 GiB（`E_LIMIT`，暂无分片）。同名不同内容沿用哈希后缀改名。发布成功的文件按键和大小直接登记到目标库并记录 SHA-256，再写入导入批次。
 - `card.identify {mount_path,volume_label?,volume_serial?,capacity_bytes?}` → `{status:'known',card}` | `{status:'unknown'|'foreign',candidates:Card[],identity_id?}`；只读。按卷根 `/.nebulume/volume.json` 识别；卷标/序列号/容量只作“可能是这张卡”的提示，从不自动绑定。未挂载返回 `E_OFFLINE`。
 - `card.register {mount_path,name,...}` → `Card`：写入身份文件并读回校验（写保护卡返回 `E_IO`），同时建立 `removable` 位置。已登记返回 `E_CONFLICT`。`card.bind {mount_path,card_id,...}` → `Card`：把当前卷（如格式化后的卡）绑定到用户选择的已有记录，重写身份文件，继承名称、默认方案与历史。`card.list {}`、`card.update {id,name?,default_preset_id?:string|null}`、`card.remove {id}`（只删记录，不触碰卡与已导入文件）。身份文件是唯一写入卡的内容。
 - `preset.list {}`、`preset.save {id?,name,library_id,rules:OrganizeRules,deduplicate?}`（规则经 neb-ingest 校验）、`preset.remove {id}`（引用它的卡改为无默认方案）。
 - `import.batches {library_id}` → `ImportBatch[]`：`{id,library_id,card_id?,source,rules,started_at,finished_at?,status,copied,duplicates,failed,asset_count}`。`asset.list` 接受 `import_batch_id` 筛选。
-- `import.execute {plan_id}` → `ImportResult`；可附 `card_id`。完成并索引目标库后写入导入批次，结果附 `batch`（失败时 `batch_error`）；只有本次实际复制的文件被标记该批次并记录 SHA-256，跳过的重复项不改归属。`ImportResult.rules` 为执行时冻结的规则。仅当前会话已审核计划可执行，计划消费后重试须重新规划。
+- `import.execute {plan_id,library_id?,card_id?,include_likely_duplicates?,selected_sources?:string[]}` → `ImportResult`；可附 `card_id` 与子集勾选 `selected_sources`（同名伴随 `.xmp` 自动跟随入选图像；未勾选项记入 `skipped_unselected`）。若计划含 `backup_destination`，主目标校验发布后同步无覆盖校验写入副盘（结果附 `backup_copied`/`backup_failed`/`backup_errors`）。完成（或有已复制文件的 `partial`/`cancelled`）并索引目标库后写入导入批次，结果附 `batch`（失败时 `batch_error`）；只有本次实际复制的文件被标记该批次并记录 SHA-256，跳过的重复项不改归属。`ImportResult.rules` 为执行时冻结的规则。仅当前会话已审核计划可执行，计划消费后重试须重新规划。
 - `import.history {}` → `ImportResult[]`，来自持久日志；遗留 running 作业返回 interrupted。
 - `system.info {}` → runtime version, capability status and explicit limits.
 
@@ -147,9 +154,9 @@ WebDAV 列表按各 `propstat` 的成功状态合并属性，忽略失败属性�
 
 远端 `remember_credentials` 默认true，凭据安全存入Windows Credential Manager/macOS Keychain/Linux Secret Service，按用户数据目录、源id与具体位置绑定；启动不访问钥匙库或网络，首次操作按需恢复。设false为仅会话，系统库不可用时明确报错；配置/SQLite/日志/返回JSON不保存秘密。旧版会话凭据无法追溯，升级需首次重连。同位置编辑时省略/空秘密保留已有值；改身份须提供匹配秘密。按source id作用域的环境变量仍可用。
 
-HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须全部解析为允许的地址，连接固定这些解析结果并禁用代理/重定向；公网 HTTP 拒绝。标准 HTTPS 继续使用公共 CA 和主机名校验。
+HTTP 允许私有 IPv4、回环、链路本地、RFC 6598 组网内网（`100.64.0.0/10`，如 Tailscale / ZeroTier / 飞牛异地组网）及 IPv6 ULA。主机名须全部解析为允许的地址，连接固定这些解析结果并禁用代理/重定向；公网 HTTP 拒绝。标准 HTTPS 继续使用公共 CA 和主机名校验。
 
-`tls_certificate_sha256` 为用户明确确认的服务器叶证书 SHA-256，适用于局域网 HTTPS 自签证书或私有 CA。仅对应存储源生效，允许证书名称与访问地址不同，但仍校验证书有效期和 TLS 握手签名。证书变化会拒绝连接，须重新检查确认；缺省或 null 恢复标准校验。指纹作为非秘密连接配置持久化，原有配置缺少该字段时保持原行为。UI 将确认绑定本次 endpoint 与证书，地址变化或重新检查会清空确认。
+`tls_certificate_sha256` 为用户明确确认的服务器叶证书 SHA-256，适用于局域网或组网内网 HTTPS 自签证书或私有 CA。仅对应存储源生效，允许证书名称与访问地址不同及长期未续签的自签证书，但仍严格比对叶证书 SHA-256 指纹与 TLS 握手签名。证书指纹变化会拒绝连接，须重新检查确认；缺省或 null 恢复标准校验。指纹作为非秘密连接配置持久化，原有配置缺少该字段时保持原行为。UI 将确认绑定本次 endpoint 与证书，地址变化或重新检查会清空确认。
 
 `ImportPlan={id,source,destination,layout,deduplicate,items,total_bytes,duplicate_count,warnings,created_at}`。每个 item 包含 `source,source_relative_path,relative_path,size,status,sha256,date_source,duplicate_path,modified_nanos`。status 为 pending / duplicate；date_source 为 preserved / exif / paired_exif / unknown。`modified_nanos` 是 Rust 内部快照信息，前端不得以 JavaScript Number 重建其精确值；执行仅提交 plan_id，不接受客户端修改计划。
 
@@ -159,7 +166,7 @@ HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须�
 
 ## 预览协议（app）
 
-桌面 webview 通过自定义协议读取预览 JPEG，不经 IPC 传 base64：`neb://localhost/<id>/<tier>/<crop>/<rev>`（Windows 为 `http://neb.localhost/...`）。前端用 `convertFileSrc(path,'neb')` 构造，整段可被百分号编码为单段，服务端先解码再解析。`id` 为 1–64 个 ASCII 字母数字或 `-`；`tier` 为上述四档之一；`crop` 为 `0`（应用裁剪）或 `1`（uncropped）；`rev` 为数字，仅用于前端区分版本，不参与服务端缓存键。路径不合法时在任何文件查找前返回 400。
+桌面 webview 通过自定义协议读取预览 JPEG，不经 IPC 传 base64：`neb://localhost/<id>/<tier>/<crop>/<rev>[/raw]`（Windows 为 `http://neb.localhost/...`）。前端用 `convertFileSrc(path,'neb')` 构造，整段可被百分号编码为单段，服务端先解码再解析。`id` 为 1–64 个 ASCII 字母数字或 `-`；`tier` 为上述五档之一（`t256`/`t512`/`t1024`/`p2560`/`full`）；`crop` 为 `0`（应用裁剪）或 `1`（uncropped）；`rev` 为数字，仅用于前端区分版本，不参与服务端缓存键；可选第 5 段 `raw` 表示 `prefer_raw=true`（强制 RAW 传感器显影，参与服务端缓存键区分）。路径不合法时在任何文件查找前返回 400。
 
 - 200：`Content-Type: image/jpeg`，`Cache-Control: no-cache`，`ETag`，以及 `X-Neb-Width`/`X-Neb-Height`/`X-Neb-Source`。
 - 304：`If-None-Match` 与当前 ETag 相同（或为 `*`）时返回，不解码像素、不访问远端。ETag 为完整 `preview-v3:` 缓存键的小写十六进制 SHA-256（带引号）；原文件变化后键随之改变，不会返回过期 304。
@@ -167,7 +174,7 @@ HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须�
 - 仅对 `tauri://localhost`、`http://tauri.localhost` 来源回写 `Access-Control-Allow-Origin` 与 `Vary: Origin`。
 - CSP `img-src 'self' blob: neb: http://neb.localhost`，`img-src` 不再允许 `data:`（`font-src` 保留）。协议无需新增窗口权限。
 
-CLI `neb preview --id ID --tier TIER [--uncropped] --out FILE` 调用同一 `Service::preview_image`，把与协议相同的 JPEG 字节写入文件；失败按单次调用格式向 stderr 输出 `{code,message}` 并返回非零退出码。`scripts/bench-preview.mjs` 用它测量冷/热预览耗时。
+CLI `neb preview --id ID --tier TIER [--uncropped] [--prefer-raw] --out FILE` 调用同一 `Service::preview_image`，把与协议相同的 JPEG 字节写入文件；失败按单次调用格式向 stderr 输出 `{code,message}` 并返回非零退出码。`scripts/bench-preview.mjs` 用它测量冷/热预览耗时。
 
 ## 原生窗口接口
 
@@ -176,6 +183,8 @@ CLI `neb preview --id ID --tier TIER [--uncropped] --out FILE` 调用同一 `Ser
 命令行图片路径或安装包文件关联打开独立查看器；已有进程接收后续文件打开请求，不重复启动管理实例。不会改动用户系统默认应用设置。
 
 `classify_dropped {paths}` → `{folders,images,ignored}`：只读文件元数据，把拖入主窗口的路径分为文件夹与受支持影像，其余计入 `ignored`；不读取内容、不建库、不打开文件。
+
+`reveal_in_folder {path}` 在系统文件管理器（访达 / Explorer / 文件管理器）中定位本地文件；`open_data_dir {}` 在系统文件管理器中打开应用本机目录与数据目录；`open_external {id?,path,appPath?}` 在移交外部精修软件前若传入本地资产 `id` 会先将最新星级、旗标、色标、层级关键词与裁剪无损刷新到同名 `.xmp` 伴随文件，再用系统默认应用或指定应用打开原片；`eject_volume {path}` 校验路径属于 `volumes::enumerate()` 已枚举的可移动卷且非系统根后安全推出存储卡（macOS `diskutil eject` / Linux `gio mount -e`）。
 
 应用内更新只在主窗口使用：`update_support {}` → `{supported,kind}`，`kind` 为 `installer`、`portable`、`development` 或 `unsupported_platform`，仅安装器版本为 `supported=true`（依据程序旁是否有 NSIS 写入的 `uninstall.exe`）；`prepare_for_update {}` → `{cancelled_jobs,pending_writes,timed_out}`，停止运行中的拍摄时间索引并最多等待 5 秒让预览缓存写入落盘，超时不阻止安装。下载与安装由 `tauri-plugin-updater` 完成，前端顺序为下载、`prepare_for_update`、安装、重启；Windows 安装器启动时应用会直接退出。
 

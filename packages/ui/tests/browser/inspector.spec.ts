@@ -138,6 +138,10 @@ async function openInspector(
       case 'asset.facets':
         result = { cameras: [], lenses: [], captured: { first: null, last: null } };
         break;
+      case 'library.keywords':
+      case 'collection.list':
+        result = [];
+        break;
       default:
         throw new Error(`Unexpected inspector fixture command: ${command}`);
     }

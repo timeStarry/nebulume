@@ -46,6 +46,18 @@ pub enum UnknownDate {
     ModifiedTime,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenameMode {
+    /// Keep original camera filename (the default).
+    #[default]
+    Keep,
+    /// `{YYYYMMDD}_{prefix}_{seq:04}.{ext}` (or `{YYYYMMDD}_{seq:04}.{ext}` when prefix is empty).
+    DatePrefixSeq,
+    /// `{prefix}_{original_filename}` (keeps original filename when prefix is empty).
+    PrefixOriginal,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrganizeRules {
     pub date_basis: DateBasis,
@@ -58,6 +70,11 @@ pub struct OrganizeRules {
     /// Fixed folder between the destination root and the date folders, e.g. `Camera/Z8`.
     #[serde(default)]
     pub subfolder: String,
+    /// Optional structured filename renaming rule.
+    #[serde(default)]
+    pub rename_mode: RenameMode,
+    #[serde(default)]
+    pub rename_prefix: String,
 }
 
 fn default_layout() -> DateLayout {
@@ -78,8 +95,18 @@ impl Default for OrganizeRules {
             type_split: TypeSplit::None,
             unknown_date: UnknownDate::Folder,
             subfolder: String::new(),
+            rename_mode: RenameMode::Keep,
+            rename_prefix: String::new(),
         }
     }
+}
+
+fn is_reserved_windows_stem(part: &str) -> bool {
+    let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit())
 }
 
 impl OrganizeRules {
@@ -96,31 +123,42 @@ impl OrganizeRules {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.subfolder.is_empty() {
-            return Ok(());
+        if !self.subfolder.is_empty() {
+            if self.subfolder.len() > 120 {
+                bail!("Subfolder must be at most 120 bytes");
+            }
+            for part in self.subfolder.split('/') {
+                if part.is_empty()
+                    || part == "."
+                    || part == ".."
+                    || part.ends_with('.')
+                    || part.ends_with(' ')
+                    || is_reserved_windows_stem(part)
+                    || part
+                        .chars()
+                        .any(|c| c.is_control() || r#"\:*?"<>|"#.contains(c))
+                {
+                    bail!("Subfolder must be plain folder names separated by /");
+                }
+            }
         }
-        if self.subfolder.len() > 120 {
-            bail!("Subfolder must be at most 120 bytes");
-        }
-        for part in self.subfolder.split('/') {
-            let reserved = {
-                let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
-                matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-                    || (stem.len() == 4
-                        && (stem.starts_with("COM") || stem.starts_with("LPT"))
-                        && stem.as_bytes()[3].is_ascii_digit())
-            };
-            if part.is_empty()
-                || part == "."
-                || part == ".."
-                || part.ends_with('.')
-                || part.ends_with(' ')
-                || reserved
-                || part
+        if !self.rename_prefix.is_empty() {
+            if self.rename_prefix.len() > 40 {
+                bail!("Rename prefix must be at most 40 bytes");
+            }
+            if self.rename_prefix == "."
+                || self.rename_prefix == ".."
+                || self.rename_prefix.starts_with('.')
+                || self.rename_prefix.ends_with('.')
+                || self.rename_prefix.starts_with(' ')
+                || self.rename_prefix.ends_with(' ')
+                || is_reserved_windows_stem(&self.rename_prefix)
+                || self
+                    .rename_prefix
                     .chars()
-                    .any(|c| c.is_control() || r#"\:*?"<>|"#.contains(c))
+                    .any(|c| c.is_control() || r#"\/:*?"<>|"#.contains(c))
             {
-                bail!("Subfolder must be plain folder names separated by /");
+                bail!("Rename prefix must be a plain filename token without path separators");
             }
         }
         Ok(())
@@ -128,6 +166,8 @@ impl OrganizeRules {
 
     pub fn needs_capture_dates(&self) -> bool {
         self.date_basis == DateBasis::Capture
+            || (self.rename_mode == RenameMode::DatePrefixSeq
+                && self.date_basis != DateBasis::Import)
     }
 }
 
@@ -139,8 +179,18 @@ pub struct ItemDate {
     pub source: String,
 }
 
-/// Build a destination key. The filename is never changed.
+/// Build a destination key with sequence number `1`.
 pub fn target_path(rules: &OrganizeRules, source_key: &str, date: &ItemDate) -> Result<String> {
+    target_path_with_seq(rules, source_key, date, 1)
+}
+
+/// Build a destination key using a 1-based companion-group sequence number.
+pub fn target_path_with_seq(
+    rules: &OrganizeRules,
+    source_key: &str,
+    date: &ItemDate,
+    seq: usize,
+) -> Result<String> {
     let filename = Path::new(source_key)
         .file_name()
         .and_then(|name| name.to_str())
@@ -166,8 +216,38 @@ pub fn target_path(rules: &OrganizeRules, source_key: &str, date: &ItemDate) -> 
     if rules.type_split == TypeSplit::ByKind {
         parts.push(kind_folder(source_key).into());
     }
-    parts.push(filename.to_owned());
+    parts.push(format_filename(rules, filename, date.day.as_deref(), seq));
     Ok(parts.join("/"))
+}
+
+fn format_filename(rules: &OrganizeRules, filename: &str, day: Option<&str>, seq: usize) -> String {
+    let seq = seq.max(1);
+    match rules.rename_mode {
+        RenameMode::Keep => filename.to_owned(),
+        RenameMode::PrefixOriginal => {
+            if rules.rename_prefix.is_empty() {
+                filename.to_owned()
+            } else {
+                format!("{}_{filename}", rules.rename_prefix)
+            }
+        }
+        RenameMode::DatePrefixSeq => {
+            let ext = Path::new(filename)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{e}"))
+                .unwrap_or_default();
+            let compact_day = day
+                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .map(|d| d.format("%Y%m%d").to_string())
+                .unwrap_or_else(|| "00000000".into());
+            if rules.rename_prefix.is_empty() {
+                format!("{compact_day}_{seq:04}{ext}")
+            } else {
+                format!("{compact_day}_{}_{seq:04}{ext}", rules.rename_prefix)
+            }
+        }
+    }
 }
 
 fn day_folder(layout: &DateLayout, day: &str) -> Result<String> {
@@ -298,5 +378,47 @@ mod tests {
             serde_json::to_value(&rules).unwrap()["date_layout"],
             "Y/M/Y-M-D"
         );
+    }
+
+    #[test]
+    fn rename_modes_format_companion_stems_identically_and_reject_unsafe_prefixes() {
+        let day = date(Some("2026-10-22"));
+        let rules = OrganizeRules {
+            rename_mode: RenameMode::DatePrefixSeq,
+            rename_prefix: "Wedding".into(),
+            ..OrganizeRules::default()
+        };
+        rules.validate().unwrap();
+        assert_eq!(
+            target_path_with_seq(&rules, "DCIM/100NIKON/DSC_0042.NEF", &day, 7).unwrap(),
+            "2026-10-22/20261022_Wedding_0007.NEF"
+        );
+        assert_eq!(
+            target_path_with_seq(&rules, "DCIM/100NIKON/DSC_0042.JPG", &day, 7).unwrap(),
+            "2026-10-22/20261022_Wedding_0007.JPG"
+        );
+        assert_eq!(
+            target_path_with_seq(&rules, "DCIM/100NIKON/DSC_0042.xmp", &day, 7).unwrap(),
+            "2026-10-22/20261022_Wedding_0007.xmp"
+        );
+
+        let prefix_orig = OrganizeRules {
+            rename_mode: RenameMode::PrefixOriginal,
+            rename_prefix: "ClientA".into(),
+            ..OrganizeRules::default()
+        };
+        assert_eq!(
+            target_path_with_seq(&prefix_orig, "DCIM/DSC_0001.ARW", &day, 1).unwrap(),
+            "2026-10-22/ClientA_DSC_0001.ARW"
+        );
+
+        for bad in ["../escape", "a/b", "a\\b", "CON", ".hidden", "trail."] {
+            let invalid = OrganizeRules {
+                rename_mode: RenameMode::PrefixOriginal,
+                rename_prefix: bad.into(),
+                ..OrganizeRules::default()
+            };
+            assert!(invalid.validate().is_err(), "{bad} should fail validation");
+        }
     }
 }

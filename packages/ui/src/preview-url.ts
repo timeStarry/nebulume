@@ -3,12 +3,12 @@ import { demoPreviewUrl } from './demo';
 import { TIER_PIXELS, type Asset, type PreviewTier } from './model';
 
 export { TIER_PIXELS, type PreviewTier };
-const tiers = Object.keys(TIER_PIXELS) as PreviewTier[];
+const autoTiers: PreviewTier[] = ['t256', 't512', 't1024', 'p2560'];
 
-/** Smallest tier whose long side covers the displayed device pixels. */
+/** Smallest automatic tier whose long side covers the displayed device pixels (`full` is explicit 1:1 only). */
 export function previewTier(cssPixels: number, devicePixelRatio: number): PreviewTier {
   const needed = Math.ceil(cssPixels * (devicePixelRatio || 1));
-  return tiers.find((tier) => TIER_PIXELS[tier] >= needed) ?? 'p2560';
+  return autoTiers.find((tier) => TIER_PIXELS[tier] >= needed) ?? 'p2560';
 }
 /** Grid cells never ask for the viewer tier, even at the largest slider size on high-DPI screens. */
 export function gridTier(thumbSize: number, devicePixelRatio: number): PreviewTier {
@@ -23,10 +23,14 @@ export function previewUrl(
   asset: Pick<Asset, 'id' | 'preview_revision'>,
   tier: PreviewTier,
   uncropped = false,
+  preferRaw = false,
 ): string | Promise<string> {
   const revision = asset.preview_revision || 0;
-  if (!isTauri()) return demoPreviewUrl(asset.id, tier, uncropped, revision);
-  return convertFileSrc(`${asset.id}/${tier}/${uncropped ? 1 : 0}/${revision}`, 'neb');
+  if (!isTauri()) return demoPreviewUrl(asset.id, tier, uncropped, revision, preferRaw);
+  return convertFileSrc(
+    `${asset.id}/${tier}/${uncropped ? 1 : 0}/${revision}${preferRaw ? '/raw' : ''}`,
+    'neb',
+  );
 }
 /**
  * Fetches and decodes an image into the element that will be displayed, so each image costs

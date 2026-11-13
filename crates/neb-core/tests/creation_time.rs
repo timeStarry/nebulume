@@ -98,7 +98,7 @@ fn version_three_migration_backfills_once_and_preserves_user_edits() {
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        12
+        14
     );
     assert_eq!(core.asset(&asset.id).unwrap().created_at, "");
     let first = list(&core, &library.id, "asc", 0, 20);

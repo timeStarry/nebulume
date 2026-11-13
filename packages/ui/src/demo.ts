@@ -2,6 +2,8 @@ import {
   histogramFromPixels,
   validCrop,
   type Asset,
+  type Collection,
+  type ColorLabel,
   type Crop,
   type Library,
   TIER_PIXELS,
@@ -9,11 +11,14 @@ import {
   type PreviewTier,
   type AssetListOptions,
   type Flag,
+  type SmartCollectionRules,
 } from './model';
 import { browserAssetFacets, browserAssetList } from './workspace';
 
 const files = new Map<string, File>();
 const assets = new Map<string, Asset>();
+const demoCollections = new Map<string, Collection>();
+const demoCollectionItems = new Map<string, Set<string>>();
 const previewCache = new Map<string, Promise<{ url: string; width: number; height: number }>>();
 const browserLibrary: Library = {
   id: 'browser',
@@ -147,6 +152,8 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       if (params.id !== browserLibrary.id || !libraryVisible) throw new Error('图片库不存在。');
       assets.clear();
       files.clear();
+      demoCollections.clear();
+      demoCollectionItems.clear();
       clearDemoPreviews();
       libraryVisible = false;
       result = { id: browserLibrary.id };
@@ -155,10 +162,12 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       result = [];
       break;
     case 'asset.stats': {
+      const resolved = resolveDemoListOptions(params as AssetListOptions);
       const listed = browserAssetList(
         [...assets.values()],
-        { ...(params as AssetListOptions), limit: 100000, offset: 0 },
+        { ...resolved.options, limit: 100000, offset: 0 },
         browserLibrary.pair_raw_jpeg,
+        resolved.allowedIds,
       ).items;
       result = browserStats(listed);
       break;
@@ -171,16 +180,33 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       result = browserAssetFacets([...assets.values()], String(params.library_id));
       break;
     case 'asset.list': {
+      const resolved = resolveDemoListOptions(params as AssetListOptions);
       result = browserAssetList(
         [...assets.values()],
-        params as AssetListOptions,
+        resolved.options,
         browserLibrary.pair_raw_jpeg,
+        resolved.allowedIds,
       );
+      break;
+    }
+    case 'asset.ids': {
+      const resolved = resolveDemoListOptions(params as AssetListOptions);
+      const listed = browserAssetList(
+        [...assets.values()],
+        { ...resolved.options, limit: 100000, offset: 0 },
+        browserLibrary.pair_raw_jpeg,
+        resolved.allowedIds,
+      );
+      result = {
+        ids: listed.items.map((item) => item.id),
+        total: listed.total,
+        file_total: listed.file_total ?? listed.total,
+      };
       break;
     }
     case 'asset.get':
       if (!asset) throw new Error('图片不存在。');
-      result = asset;
+      result = { ...asset };
       break;
     case 'asset.focus':
       if (!asset) throw new Error('图片不存在。');
@@ -202,6 +228,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       )
         throw new Error('评级必须是 0 至 5 的整数。');
       asset.rating = Number(params.rating);
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     case 'asset.flag':
@@ -209,6 +236,15 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       if (!['none', 'pick', 'reject'].includes(String(params.flag)))
         throw new Error('旗标必须是 none、pick 或 reject。');
       asset.flag = params.flag as Flag;
+      autoSyncDemoSidecar(asset);
+      result = { ...asset };
+      break;
+    case 'asset.label':
+      if (!asset) throw new Error('图片不存在。');
+      if (!['none', 'red', 'yellow', 'green', 'blue'].includes(String(params.color_label)))
+        throw new Error('色标无效。');
+      asset.color_label = params.color_label as ColorLabel;
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     case 'asset.mark_batch': {
@@ -218,8 +254,147 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       for (const target of targets) {
         if (params.rating !== undefined) target!.rating = Number(params.rating);
         if (params.flag !== undefined) target!.flag = params.flag as Flag;
+        if (params.color_label !== undefined) target!.color_label = params.color_label as ColorLabel;
+        autoSyncDemoSidecar(target!);
       }
       result = { updated: ids.length };
+      break;
+    }
+    case 'collection.list': {
+      const libId = String(params.library_id || browserLibrary.id);
+      result = [...demoCollections.values()]
+        .filter((c) => c.library_id === libId)
+        .map((c) => hydrateDemoCollection(c));
+      break;
+    }
+    case 'collection.get': {
+      const coll = demoCollections.get(String(params.id));
+      if (!coll) throw new Error('精选集不存在。');
+      result = hydrateDemoCollection(coll);
+      break;
+    }
+    case 'collection.create': {
+      const name = String(params.name || '').trim();
+      if (!name) throw new Error('请输入精选集名称。');
+      const kind = params.kind === 'smart' ? 'smart' : 'manual';
+      const id = crypto.randomUUID();
+      const created: Collection = {
+        id,
+        library_id: String(params.library_id || browserLibrary.id),
+        name,
+        kind,
+        rules: kind === 'smart' ? ((params.rules as SmartCollectionRules) ?? {}) : null,
+        item_count: 0,
+        created_at: new Date().toISOString(),
+      };
+      demoCollections.set(id, created);
+      if (kind === 'manual') {
+        const initial = new Set<string>(
+          Array.isArray(params.asset_ids) ? (params.asset_ids as string[]) : [],
+        );
+        demoCollectionItems.set(id, initial);
+      }
+      result = hydrateDemoCollection(created);
+      break;
+    }
+    case 'collection.update': {
+      const coll = demoCollections.get(String(params.id));
+      if (!coll) throw new Error('精选集不存在。');
+      if (params.name !== undefined) {
+        const nextName = String(params.name).trim();
+        if (!nextName) throw new Error('请输入精选集名称。');
+        coll.name = nextName;
+      }
+      if (coll.kind === 'smart' && params.rules !== undefined) {
+        coll.rules = (params.rules as SmartCollectionRules) ?? {};
+      }
+      result = hydrateDemoCollection(coll);
+      break;
+    }
+    case 'collection.delete': {
+      const id = String(params.id);
+      demoCollections.delete(id);
+      demoCollectionItems.delete(id);
+      result = { id };
+      break;
+    }
+    case 'collection.add_assets': {
+      const coll = demoCollections.get(String(params.id));
+      if (!coll || coll.kind !== 'manual') throw new Error('智能精选集按规则自动聚合，不支持手动添加。');
+      const set = demoCollectionItems.get(coll.id) ?? new Set<string>();
+      const ids = Array.isArray(params.asset_ids) ? (params.asset_ids as string[]) : [];
+      let added = 0;
+      for (const id of ids) {
+        if (assets.has(id) && !set.has(id)) {
+          set.add(id);
+          added++;
+        }
+      }
+      demoCollectionItems.set(coll.id, set);
+      result = { added, collection: hydrateDemoCollection(coll) };
+      break;
+    }
+    case 'collection.remove_assets': {
+      const coll = demoCollections.get(String(params.id));
+      if (!coll || coll.kind !== 'manual') throw new Error('智能精选集不支持手动移除。');
+      const set = demoCollectionItems.get(coll.id) ?? new Set<string>();
+      const ids = Array.isArray(params.asset_ids) ? (params.asset_ids as string[]) : [];
+      let removed = 0;
+      for (const id of ids) if (set.delete(id)) removed++;
+      result = { removed, collection: hydrateDemoCollection(coll) };
+      break;
+    }
+    case 'library.keywords': {
+      const libId = String(params.library_id || browserLibrary.id);
+      const counts = new Map<string, number>();
+      for (const item of assets.values()) {
+        if (item.library_id !== libId) continue;
+        const expanded = new Set<string>();
+        for (const kw of item.keywords || []) {
+          const segments = kw
+            .split('>')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          for (let i = 1; i <= segments.length; i++) {
+            expanded.add(segments.slice(0, i).join(' > '));
+          }
+        }
+        for (const path of expanded) counts.set(path, (counts.get(path) || 0) + 1);
+      }
+      result = [...counts.entries()]
+        .map(([path, count]) => ({ path, count }))
+        .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+      break;
+    }
+    case 'asset.keywords.set': {
+      const ids = Array.isArray(params.ids) ? (params.ids as string[]) : [];
+      const add = Array.isArray(params.add)
+        ? (params.add as string[]).map(normalizeDemoKeyword).filter(Boolean)
+        : [];
+      const remove = new Set(
+        Array.isArray(params.remove)
+          ? (params.remove as string[]).map(normalizeDemoKeyword).filter(Boolean)
+          : [],
+      );
+      let latest: string[] = [];
+      for (const id of ids) {
+        const target = assets.get(id);
+        if (!target) continue;
+        const set = new Set((target.keywords || []).filter((k) => !remove.has(k)));
+        for (const kw of add) set.add(kw);
+        target.keywords = [...set].sort();
+        latest = target.keywords;
+        autoSyncDemoSidecar(target);
+      }
+      result = { updated: ids.length, keywords: latest };
+      break;
+    }
+    case 'library.relocate': {
+      if (params.id !== browserLibrary.id) throw new Error('图片库不存在。');
+      if (typeof params.root === 'string' && params.root.trim()) {
+        browserLibrary.root = params.root.trim();
+      }
+      result = { ...browserLibrary };
       break;
     }
     case 'asset.trash': {
@@ -259,12 +434,14 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       };
       if (!validCrop(crop)) throw new Error('裁剪区域超出图像。');
       asset.crop = crop;
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     }
     case 'asset.reset_crop':
       if (!asset) throw new Error('图片不存在。');
       asset.crop = null;
+      autoSyncDemoSidecar(asset);
       result = { ...asset };
       break;
     case 'asset.preview': {
@@ -277,7 +454,17 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
         width: rendered.width,
         height: rendered.height,
         tier,
-        source: crop ? '浏览器真实文件 · 已应用裁剪' : '浏览器真实文件解码',
+        source: params.prefer_raw
+          ? 'raw_demosaic'
+          : crop
+            ? '浏览器真实文件 · 已应用裁剪'
+            : '浏览器真实文件解码',
+        coordinate_mapping: {
+          orientation: 1,
+          full_width: asset.width || rendered.width,
+          full_height: asset.height || rendered.height,
+          crop: crop || { x: 0, y: 0, width: 1, height: 1 },
+        },
       } satisfies Preview;
       break;
     }
@@ -293,34 +480,124 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
     }
     case 'asset.export': {
       if (!asset) throw new Error('图片不存在。');
-      const output = applyCrop(await canvasFor(asset.id), asset.crop);
+      const cropped = applyCrop(await canvasFor(asset.id), asset.crop);
+      let output = cropped;
+      const maxEdge = typeof params.max_edge === 'number' ? params.max_edge : 0;
+      if (maxEdge > 0 && Math.max(cropped.width, cropped.height) > maxEdge) {
+        const scale = maxEdge / Math.max(cropped.width, cropped.height);
+        output = document.createElement('canvas');
+        output.width = Math.max(1, Math.round(cropped.width * scale));
+        output.height = Math.max(1, Math.round(cropped.height * scale));
+        output.getContext('2d')!.drawImage(cropped, 0, 0, output.width, output.height);
+      }
+      const quality =
+        typeof params.quality === 'number' ? Math.min(1, Math.max(0.3, params.quality / 100)) : 0.95;
       const blob = await new Promise<Blob>((resolve, reject) =>
         output.toBlob(
           (b) => (b ? resolve(b) : reject(new Error('JPEG 编码失败'))),
           'image/jpeg',
-          0.95,
+          quality,
         ),
       );
+      const requestedName =
+        typeof params.destination === 'string' && params.destination.trim()
+          ? params.destination.split(/[\\/]/).pop()!
+          : asset.filename.replace(/\.[^.]+$/, '') + '-edited.jpg';
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = asset.filename.replace(/\.[^.]+$/, '') + '-edited.jpg';
+      link.download = requestedName;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-      result = { path: link.download };
+      result = {
+        path: link.download,
+        width: output.width,
+        height: output.height,
+        quality: Math.round(quality * 100),
+        color_space: typeof params.color_space === 'string' ? params.color_space : 'preserve',
+      };
+      break;
+    }
+    case 'xmp.policy.get':
+      result = { auto_write: demoXmpAutoWrite };
+      break;
+    case 'xmp.policy.set':
+      demoXmpAutoWrite = Boolean(params.auto_write);
+      result = { auto_write: demoXmpAutoWrite };
+      break;
+    case 'asset.xmp.write': {
+      const targets = resolveDemoTargets(params);
+      let written = 0;
+      let skipped = 0;
+      for (const item of targets) {
+        const hasKeywords = (item.keywords?.length || 0) > 0;
+        const hasColor = item.color_label && item.color_label !== 'none';
+        if (
+          !item.rating &&
+          (!item.flag || item.flag === 'none') &&
+          !hasColor &&
+          !hasKeywords &&
+          !item.crop &&
+          !demoSidecars.has(item.id)
+        ) {
+          skipped++;
+        } else {
+          demoSidecars.set(item.id, {
+            rating: item.rating,
+            flag: item.flag || 'none',
+            color_label: item.color_label || 'none',
+            keywords: [...(item.keywords || [])],
+            crop: item.crop ? { ...item.crop } : null,
+          });
+          written++;
+        }
+      }
+      result = { written, skipped, errors: [] };
+      break;
+    }
+    case 'asset.xmp.read': {
+      const targets = resolveDemoTargets(params);
+      let updated = 0;
+      let unchanged = 0;
+      let missing_sidecar = 0;
+      for (const item of targets) {
+        const sidecar = demoSidecars.get(item.id);
+        if (!sidecar) {
+          missing_sidecar++;
+          continue;
+        }
+        const changed =
+          item.rating !== sidecar.rating ||
+          (item.flag || 'none') !== sidecar.flag ||
+          (item.color_label || 'none') !== sidecar.color_label ||
+          JSON.stringify(item.keywords || []) !== JSON.stringify(sidecar.keywords || []) ||
+          JSON.stringify(item.crop || null) !== JSON.stringify(sidecar.crop || null);
+        if (changed) {
+          item.rating = sidecar.rating;
+          item.flag = sidecar.flag;
+          item.color_label = sidecar.color_label;
+          item.keywords = [...sidecar.keywords];
+          item.crop = sidecar.crop ? { ...sidecar.crop } : null;
+          updated++;
+        } else {
+          unchanged++;
+        }
+      }
+      result = { updated, unchanged, missing_sidecar, errors: [] };
       break;
     }
     default:
-      throw new Error('此功能需要 Nebulume 桌面版。浏览器演示不会模拟文件系统或远程操作成功。');
+      throw new Error('此功能需要 Lumen 桌面版。浏览器演示不会模拟文件系统或远程操作成功。');
   }
   return result as T;
 }
 
+const demoAutoTiers: PreviewTier[] = ['t256', 't512', 't1024', 'p2560'];
 function demoTier(params: Record<string, unknown>): PreviewTier {
   if (typeof params.tier === 'string' && params.tier in TIER_PIXELS)
     return params.tier as PreviewTier;
   const max = Number(params.max_size || 2560);
-  return (Object.keys(TIER_PIXELS) as PreviewTier[]).find((t) => TIER_PIXELS[t] >= max) ?? 'p2560';
+  return demoAutoTiers.find((t) => TIER_PIXELS[t] >= max) ?? 'p2560';
 }
 function demoPreviewSize(asset: Asset, tier: PreviewTier, uncropped: boolean) {
   const crop = uncropped ? null : asset.crop;
@@ -343,9 +620,15 @@ function clearDemoPreviews() {
   for (const entry of previewCache.values()) retireDemoPreview(entry);
   previewCache.clear();
 }
-function renderDemoPreview(id: string, tier: PreviewTier, uncropped: boolean, revision: number) {
+function renderDemoPreview(
+  id: string,
+  tier: PreviewTier,
+  uncropped: boolean,
+  revision: number,
+  preferRaw = false,
+) {
   const crop = uncropped ? null : assets.get(id)?.crop;
-  const key = JSON.stringify([id, tier, uncropped, revision, crop || null]);
+  const key = JSON.stringify([id, tier, uncropped, revision, crop || null, preferRaw]);
   let entry = previewCache.get(key);
   if (entry) {
     // Least-recently handed out goes first.
@@ -387,8 +670,9 @@ export async function demoPreviewUrl(
   tier: PreviewTier,
   uncropped = false,
   revision = 0,
+  preferRaw = false,
 ): Promise<string> {
-  return (await renderDemoPreview(id, tier, uncropped, revision)).url;
+  return (await renderDemoPreview(id, tier, uncropped, revision, preferRaw)).url;
 }
 
 /** Camera-style local wall time, `YYYY-MM-DDTHH:mm:ss`, as the catalog stores it. */
@@ -444,3 +728,92 @@ function browserStats(items: Asset[]) {
 }
 
 const browserTrash = new Map<string, Asset>();
+let demoXmpAutoWrite = false;
+const demoSidecars = new Map<
+  string,
+  { rating: number; flag: Flag; color_label: ColorLabel; keywords: string[]; crop: Asset['crop'] }
+>();
+function autoSyncDemoSidecar(item: Asset) {
+  if (!demoXmpAutoWrite) return;
+  if (
+    !item.rating &&
+    (!item.flag || item.flag === 'none') &&
+    (!item.color_label || item.color_label === 'none') &&
+    !(item.keywords && item.keywords.length) &&
+    !item.crop &&
+    !demoSidecars.has(item.id)
+  )
+    return;
+  demoSidecars.set(item.id, {
+    rating: item.rating,
+    flag: item.flag || 'none',
+    color_label: item.color_label || 'none',
+    keywords: [...(item.keywords || [])],
+    crop: item.crop ? { ...item.crop } : null,
+  });
+}
+function normalizeDemoKeyword(raw: unknown): string {
+  return String(raw || '')
+    .split(/[>|/]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' > ');
+}
+function resolveDemoListOptions(options: AssetListOptions): {
+  options: AssetListOptions;
+  allowedIds?: ReadonlySet<string>;
+} {
+  if (!options.collection_id) return { options };
+  const coll = demoCollections.get(options.collection_id);
+  if (!coll) return { options, allowedIds: new Set() };
+  if (coll.kind === 'manual') {
+    return { options, allowedIds: demoCollectionItems.get(coll.id) ?? new Set() };
+  }
+  const rules = coll.rules ?? {};
+  const merged: AssetListOptions = {
+    ...options,
+    rating: Math.max(options.rating ?? 0, rules.rating ?? 0) || undefined,
+    rating_max:
+      options.rating_max !== undefined && rules.rating_max !== undefined
+        ? Math.min(options.rating_max, rules.rating_max)
+        : (options.rating_max ?? rules.rating_max ?? undefined),
+    flag: options.flag && options.flag !== 'any' ? options.flag : (rules.flag ?? undefined),
+    color_label:
+      options.color_label && options.color_label !== 'any'
+        ? options.color_label
+        : (rules.color_label ?? undefined),
+    format:
+      options.format && options.format !== 'all' ? options.format : (rules.format ?? undefined),
+    camera: options.camera || rules.camera || undefined,
+    lens: options.lens || rules.lens || undefined,
+    keyword: options.keyword || rules.keyword || undefined,
+    query: [options.query, rules.query].filter(Boolean).join(' ').trim() || undefined,
+    captured_from: options.captured_from || rules.captured_from || undefined,
+    captured_to: options.captured_to || rules.captured_to || undefined,
+  };
+  return { options: merged };
+}
+function hydrateDemoCollection(coll: Collection): Collection {
+  const { options, allowedIds } = resolveDemoListOptions({
+    library_id: coll.library_id,
+    collection_id: coll.id,
+  });
+  const total = browserAssetList(
+    [...assets.values()],
+    { ...options, limit: 100000, offset: 0 },
+    browserLibrary.pair_raw_jpeg,
+    allowedIds,
+  ).total;
+  return { ...coll, item_count: total };
+}
+function resolveDemoTargets(params: Record<string, unknown>): Asset[] {
+  if (Array.isArray(params.ids)) {
+    return (params.ids as string[])
+      .map((id) => assets.get(id))
+      .filter((item): item is Asset => !!item);
+  }
+  if (typeof params.library_id === 'string') {
+    return [...assets.values()].filter((item) => item.library_id === params.library_id);
+  }
+  return [];
+}

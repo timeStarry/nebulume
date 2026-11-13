@@ -147,7 +147,7 @@ async fn open_context(app: AppHandle, context: ViewerContext) -> Result<String, 
     }
     let built =
         WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html?viewer=1".into()))
-            .title(format!("{title} — Nebulume"))
+            .title(format!("{title} — Lumen"))
             .inner_size(1280.0, 860.0)
             .min_inner_size(640.0, 480.0)
             .center()

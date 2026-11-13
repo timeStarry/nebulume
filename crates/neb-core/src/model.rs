@@ -98,16 +98,39 @@ pub struct Asset {
     pub crop: Option<Crop>,
     pub availability: String,
     pub source_key: Option<String>,
-    /// Culling flag: none, pick or reject. A catalog mark only; never written to the source.
+    /// Culling flag: none, pick or reject.
     #[serde(default = "no_flag")]
     pub flag: String,
+    /// Photographer color label: none, red, yellow, green or blue (v14).
+    #[serde(default = "no_color_label")]
+    pub color_label: String,
+    /// Hierarchical keywords attached to this photo, e.g. `"人像 > 客片"` (v14).
+    #[serde(default)]
+    pub keywords: Vec<String>,
     /// Location-relative key including the library prefix, with `/` separators (v7).
     /// None only when an old path could not be expressed under its library root.
     #[serde(default)]
     pub key: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Collection {
+    pub id: String,
+    pub library_id: String,
+    pub name: String,
+    /// `manual` or `smart`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<serde_json::Value>,
+    pub item_count: usize,
+    pub created_at: String,
+}
+
 fn no_flag() -> String {
+    "none".to_owned()
+}
+
+fn no_color_label() -> String {
     "none".to_owned()
 }
 

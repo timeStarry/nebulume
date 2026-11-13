@@ -1,6 +1,6 @@
 # 架构与数据设计
 
-Nebulume 将文件、索引、存储和导入安全放在 Rust 中，SolidJS 负责交互。桌面应用和 CLI 使用同一命令服务，避免建立不同的业务路径。
+Lumen 将文件、索引、存储和导入安全放在 Rust 中，SolidJS 负责交互。桌面应用和 CLI 使用同一命令服务，避免建立不同的业务路径。
 
 ## 组件
 
@@ -23,13 +23,13 @@ flowchart TD
 
 | 模块          | 职责                                                           |
 | ------------- | -------------------------------------------------------------- |
-| `neb-core`    | SQLite、扫描、查询、元数据、预览、直方图、裁剪、导出与缓存管理 |
+| `neb-core`    | SQLite（`catalog.rs` 协调层 + `catalog/query.rs` 索引查询/统计 + `catalog/scan.rs` 批量本地扫描与封装包边界过滤 + `catalog/collections.rs` 虚拟精选集/智能精选集与层级关键词 + `catalog/xmp_sync.rs` 伴随同步）、非破坏 `.xmp` 合并解析（`xmp.rs`）、元数据、Canon CR3 解析（`cr3.rs`）、广色域 ICC 透传/AdobeRGB 合成与线性光色域变换（`icc.rs`）、macOS 原生 `ImageIO` 解码（`macos_imageio.rs`）、预览、直方图、裁剪、预设化导出与缓存管理 |
 | `neb-storage` | 连接、凭据、作用域路径、目录列举、完整下载和版本锁定分段读取   |
-| `neb-ingest`  | 冻结导入计划、内容哈希、校验复制、冲突处理和结果记录           |
-| `neb-service` | 统一命令路由、任务编排、资源协调和错误语义                     |
-| `neb-app`     | Tauri 窗口、系统路径、文件对话框、主题及 IPC                   |
+| `neb-ingest`  | 冻结导入计划、伴随组同号重命名、子集勾选、双盘同步校验复制、协作取消与结果记录 |
+| `neb-service` | 统一命令路由、任务编排、无锁导入进度跟踪、资源协调和错误语义   |
+| `neb-app`     | Tauri 窗口、访达定位/外部软件交接/安全退卡（`shell.rs`）、文件对话框、主题及 IPC |
 | `neb-cli`     | 命令行及可重复自动化入口                                       |
-| `packages/ui` | 导航、图库、查看器、参数面板、导入和缓存交互                   |
+| `packages/ui` | 纯状态层（`tasks.ts`、`selection.ts`、`culling.ts`、`export-presets.ts`、`overview-model.ts`、`burst-stacks.ts`、`command-palette.ts` 等）、设计原语层（`src/ui/`）与薄视图层 |
 
 核心模块不依赖 Tauri。前端不持有持久存储凭据，也不直接修改原片。
 
@@ -37,7 +37,7 @@ flowchart TD
 
 SQLite 保存图库、来源绑定、资产和编辑配方。图库绑定本地目录或远端来源前缀；一个存储源可提供多个图库。资产用稳定 ID 关联评级和裁剪，远端 `source_key` 保留原始键，与缓存路径分开。
 
-schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v10：v10 新增单行表 `catalog_revision`，由 `assets` 与 `libraries` 上的触发器在任何增删改（包括其他进程，如 CLI）时递增；`asset.list` 把同一筛选与排序下按配对折叠后的有序 ID 列表按该计数缓存（最近 2 组），翻页只读取当页行，计数变化即重新计算。10 万张照片的合成库中，新查询首页约 200ms，之后的翻页约 1ms。此前 v9 新增 `assets.quick_hash`（文件首尾各 64 KiB 加文件大小的 SHA-256，小于 128 KiB 的文件取全文），只用于扫描时识别移动和改名，导入去重仍用完整 `sha256`；升级不读原件，旧资产在下次扫描遇到未变化的文件时补算。此前 v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
+schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并发初始化产生重复或错误迁移。当前数据库结构版本为 v14：v14 新增 `assets.color_label`（`none`/`red`/`yellow`/`green`/`blue`）色标列与复合索引、`collections` 与 `collection_items` 虚拟精选集及动态规则智能精选集表、`keywords` 与 `asset_keywords` 层级关键词表（`>` / `|` 路径树前缀查询），并在成员与关键词变更时维护 `catalog_revision`。此前 v13 为 FTS5 触发器增加 `WHEN` 列变更守卫（仅 `filename`/`path`/`metadata_json` 变化时重建全文索引，高频打星/打旗/裁剪零 FTS5 写放大），新增虚拟生成列 `exif_camera`、`exif_lens`、`exif_focal_mm`、`exif_iso` 及其复合索引（替代每次查询解析 JSON），新增 `catalog_revision.structural_value` 以便纯标记更新在不改变筛选/排序命中集时复用已缓存的有序 ID 列表，并将本地扫描拆分为锁外无 SQL 预检快照 + 每 250 项短事务批量提交。此前 v11/v12 引入 `trashed_at` 废纸篓记录与预览分支表汇合；v10 新增单行表 `catalog_revision`，由 `assets` 与 `libraries` 上的触发器在任何增删改（包括其他进程，如 CLI）时递增；`asset.list` 与 `asset.ids` 把同一筛选与排序下按配对折叠后的有序 ID 列表按修订计数缓存，翻页只读取当页行。此前 v9 新增 `assets.quick_hash`（文件首尾各 64 KiB 加文件大小的 SHA-256，小于 128 KiB 的文件取全文），只用于扫描时识别移动和改名，导入去重仍用完整 `sha256`；升级不读原件，旧资产在下次扫描遇到未变化的文件时补算。此前 v8 新增 `volume_identities`（卷身份，存储卡与外接库盘共用）、`cards`、`import_presets`、`import_batches`；此前 v7：v7 新增 `locations` 表（只存非秘密字段，id 与原存储源一致，凭据作用域不变）、`libraries.location_id` 与位置相对的 `assets.key`；直接选目录的本地库自动获得隐式位置，迁移只读 SQLite 内已有字段，旧 `root`/`storage_id` 列继续使用。此前 v5 增加独立拍摄时间索引及检查状态，v6 增加选图旗标 `flag`（none/pick/reject）及为导入批次与内容指纹预留的 `import_batch_id`、`sha256` 列；升级只从已有有效元数据迁移，不隐式访问远端。
 
 文件创建、修改和 EXIF 拍摄时间分别保存。拍摄时间来自 DateTimeOriginal，按相机记录的日期、时间和子秒排序；保留已有时区但不推断缺失时区，不用文件或缓存时间补值。未知值在两个排序方向下均置后。
 
@@ -52,13 +52,13 @@ schema 创建和迁移在同一个 IMMEDIATE 事务内检查版本，防止并�
 5. 预览缓存按资产版本、尺寸和配方区分。仅补拍摄元数据不改变像素版本，避免重复解码。
 6. JPEG 导出写入新文件，不覆盖源文件。RAW 导出要求传感器解码成功，不能使用内嵌预览代替。
 
-预览固定为四档：网格 `t256`/`t512`/`t1024`，查看器 `p2560`（最长边 2560px）。网格档读取 RAW 时优先使用相机内嵌 JPEG，失败再做传感器解码；查看器档保持传感器优先，内嵌 JPEG 仅作回退。
+预览分为五档：网格 `t256`/`t512`/`t1024`，查看器默认 `p2560`（最长边 2560px），查焦放大超过 `p2560` 时后台按需请求 `full`（最长边 9600px，不闪烁替换）。读取 RAW 时各档默认优先使用相机内嵌全尺寸 JPEG 以获得即时响应与相机直出影调；若内嵌预览远小于传感器分辨率则自动回退传感器显影，用户也可在查看器中按 `R` 手动切换 `prefer_raw` 传感器显影。
 
-像素与元数据分路：`asset.preview` 经 IPC 只返回尺寸、来源、坐标映射和资产元数据；JPEG 字节由 `neb-app` 的 `neb` 自定义协议从 `Service::preview_image` 直接返回，以 ETag/304 复验，不再经 JSON 传 base64。CLI `neb preview` 走同一路径。
+像素与元数据分路：`asset.preview` 经 IPC 只返回尺寸、来源、坐标映射和资产元数据；JPEG 字节由 `neb-app` 的 `neb` 自定义协议从 `Service::preview_image` 直接返回（路径支持可选 `/raw` 段区分传感器显影），以 ETag/304 复验，不再经 JSON 传 base64。CLI `neb preview` 走同一路径。
 
-持久预览缓存键为 `preview-v3:`（资产、文件版本、尺寸、裁剪配方与档位）。v3 起预览与导出的 JPEG 内嵌源文件的 ICC 色彩配置（RAW 传感器解码与相机内嵌预览按 sRGB 处理，不附加配置），由 WebView 做色彩管理，广色域照片不再发灰；旧 `preview-v1:`、`preview-v2:` 条目不转换，由常规回收淘汰。磁盘条目为二进制信封：`NPV2`、小端 `u32` 元数据长度、UTF-8 元数据 JSON、JPEG 字节；格式不符即报 `E_CACHE: Invalid preview cache`。Service 内另有本地/远端共享的内存 LRU，最多 256 项、128 MiB JPEG 字节，命中直接共享 `Arc<PreviewImage>`，不复制字节。
+持久预览缓存键为 `preview-v3:`（资产、文件版本、尺寸、裁剪配方、档位与可选 `:raw` 模式）。v3 起预览与导出的 JPEG 内嵌源文件的 ICC 色彩配置（含栅格图、macOS `ImageIO` 解码的 `HEIC/HEIF/AVIF` Display P3，以及相机内嵌 JPEG 自带 ICC；若源文件/相机内嵌预览未带 ICC 但 EXIF 标注 `ColorSpace=2` / `InteropIndex=R03` 则合成标准 `Adobe RGB (1998)` ICC v2.1），由 WebView 做色彩管理，广色域照片不再偏色发灰；RAW 传感器显影仍按 sRGB 输出。旧 `preview-v1:`、`preview-v2:` 条目不转换，由常规回收淘汰。磁盘条目为二进制信封：`NPV2`、小端 `u32` 元数据长度、UTF-8 元数据 JSON、JPEG 字节；格式不符即报 `E_CACHE: Invalid preview cache`。Service 内另有本地/远端共享的内存 LRU，最多 256 项、128 MiB JPEG 字节，命中直接共享 `Arc<PreviewImage>`，不复制字节。
 
-直方图基于渲染图；当前没有完整分辨率瓦片或专业 ICC 工作流。解码、容器和相机支持边界见[实施状态](STATUS.md)。
+直方图基于渲染图；选片模式提供 2 张 / 4 张同步缩放与平移查焦台（`CompareStage`）及高光/暗部溢出警告叠加层（`ClippingOverlay`）。解码、容器和相机支持边界见[实施状态](STATUS.md)。
 
 ## 存储与凭据
 

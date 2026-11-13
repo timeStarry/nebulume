@@ -3,6 +3,7 @@ mod drop;
 mod file_open;
 mod pregenerate;
 mod preview_protocol;
+mod shell;
 mod updates;
 mod viewer;
 mod volumes;
@@ -68,6 +69,11 @@ fn main() {
             viewer::viewer_context,
             viewer::show_manager,
             list_volumes,
+            shell::open_url,
+            shell::open_data_dir,
+            shell::reveal_in_folder,
+            shell::open_external,
+            shell::eject_volume,
             updates::update_support,
             updates::prepare_for_update,
             drop::classify_dropped,
@@ -75,7 +81,7 @@ fn main() {
             watch::watch_libraries
         ])
         .build(tauri::generate_context!())
-        .expect("Nebulume failed to start")
+        .expect("Lumen failed to start")
         .run(move |app, event| match event {
             tauri::RunEvent::Ready => {
                 file_open::ready(app);

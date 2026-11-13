@@ -3,6 +3,7 @@ import { chooseSave, desktop, execute } from './api';
 import {
   bytes,
   errorMessage,
+  type Library,
   type StorageCheck,
   type StorageConfig,
   type StorageEntry,
@@ -10,11 +11,13 @@ import {
 } from './model';
 import { checkedConnection, credentialLabel, parentPrefix, sourceKind } from './workspace';
 import Icon from './Icon';
-import { Banner, Button, EmptyState, IconButton, PageHeader } from './ui';
+import { Banner, Button, EmptyState, Group, IconButton, ListRow, PageHeader, StatusDot } from './ui';
 import StorageError from './StorageError';
 
 export default function StorageWorkspace(props: {
   sources: StorageConfig[];
+  removableLibraries?: Library[];
+  onRelocateLibrary?: (library: Library) => void;
   onAdd: () => void;
   onEdit: (source: StorageConfig) => void;
   onUpdated: (source: StorageConfig) => void;
@@ -165,22 +168,50 @@ export default function StorageWorkspace(props: {
           />
         </Show>
         <Show when={error()}>
-          <div class="workspace-message error" role="alert">
-            <StorageError
-              error={error()}
-              disabled={!!busy()}
-              onSettings={
-                props.sources.some((item) => item.id === errorSourceId())
-                  ? () => props.onEdit(props.sources.find((item) => item.id === errorSourceId())!)
-                  : undefined
-              }
-            />
-          </div>
+          <StorageError
+            error={error()}
+            disabled={!!busy()}
+            onSettings={
+              props.sources.some((item) => item.id === errorSourceId())
+                ? () => props.onEdit(props.sources.find((item) => item.id === errorSourceId())!)
+                : undefined
+            }
+          />
         </Show>
         <Show when={notice()}>
-          <div class="workspace-message success" role="status">
-            {notice()}
-          </div>
+          <Banner tone="info" role="status" message={notice()} onClose={() => setNotice('')} />
+        </Show>
+        <Show when={props.removableLibraries?.length}>
+          <Group title="外接移动硬盘与离线图库">
+            <For each={props.removableLibraries}>
+              {(lib) => {
+                const offline = () => lib.availability === 'offline' || lib.connected === false;
+                return (
+                  <ListRow
+                    leading="usb"
+                    title={lib.name}
+                    description={
+                      lib.volume_label ? `${lib.volume_label} · ${lib.root}` : lib.root
+                    }
+                    control={
+                      <>
+                        <StatusDot
+                          state={offline() ? 'off' : 'ok'}
+                          label={offline() ? '未挂载' : '在线'}
+                          showLabel
+                        />
+                        <Show when={offline() && props.onRelocateLibrary}>
+                          <Button size="sm" onClick={() => props.onRelocateLibrary?.(lib)}>
+                            重新定位…
+                          </Button>
+                        </Show>
+                      </>
+                    }
+                  />
+                );
+              }}
+            </For>
+          </Group>
         </Show>
         <div class="source-list">
           <div class="source-list-head">
@@ -230,15 +261,15 @@ export default function StorageWorkspace(props: {
                 </span>
                 <span class="credential-status">{credentialLabel(item.credential_status)}</span>
                 <div class="source-row-actions">
-                  <button class="button small" onClick={() => check(item)} disabled={!!busy()}>
+                  <Button size="sm" onClick={() => check(item)} disabled={!!busy()}>
                     测试连接
-                  </button>
-                  <button class="button small" onClick={() => browse(item)} disabled={!!busy()}>
+                  </Button>
+                  <Button size="sm" onClick={() => browse(item)} disabled={!!busy()}>
                     浏览目录
-                  </button>
+                  </Button>
                   <Show when={item.kind !== 'local'}>
-                    <button
-                      class="button small"
+                    <Button
+                      size="sm"
                       onClick={() => writeCheck(item)}
                       disabled={!!busy()}
                       title="写入并删除一个测试文件，确认可以安全导入到这里"
@@ -248,25 +279,24 @@ export default function StorageWorkspace(props: {
                         : item.write_capability === 'unsupported'
                           ? '不可导入'
                           : '测试写入'}
-                    </button>
+                    </Button>
                   </Show>
-                  <button
-                    class="icon-button"
+                  <IconButton
+                    icon="settings"
+                    size="sm"
+                    label={`${item.name} 连接设置`}
+                    title="连接设置 / 重连"
                     onClick={() => props.onEdit(item)}
                     disabled={!!busy()}
-                    aria-label={`${item.name} 连接设置`}
-                    title="连接设置 / 重连"
-                  >
-                    <Icon name="settings" size={16} />
-                  </button>
-                  <button
-                    class="button small"
+                  />
+                  <Button
+                    size="sm"
                     onClick={() => props.onRemove(item)}
                     disabled={!!busy()}
                     aria-label={`移除位置 ${item.name}`}
                   >
                     移除
-                  </button>
+                  </Button>
                 </div>
               </article>
             )}
@@ -289,50 +319,54 @@ export default function StorageWorkspace(props: {
                   </span>
                 </div>
                 <div>
-                  <button
-                    class="button primary small"
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    icon="plus"
                     disabled={!!busy()}
                     onClick={() => props.onCreateLibrary(current(), prefix())}
                   >
-                    <Icon name="plus" size={14} />
                     从此目录建立图片库
-                  </button>
-                  <button
-                    class="icon-button"
+                  </Button>
+                  <IconButton
+                    icon="close"
+                    size="sm"
+                    label="关闭目录浏览"
                     onClick={() => {
                       request++;
                       setSelected(undefined);
                       setBusy('');
                     }}
-                    aria-label="关闭目录浏览"
-                  >
-                    <Icon name="close" size={16} />
-                  </button>
+                  />
                 </div>
               </div>
               <div class="directory-path">
-                <button
-                  class="button small"
+                <Button
+                  size="sm"
                   disabled={!prefix() || !!busy()}
                   onClick={() => browse(current(), parentPrefix(prefix()))}
                 >
                   上一级
-                </button>
-                <button class="path-root" onClick={() => browse(current(), '')} disabled={!!busy()}>
+                </Button>
+                <button
+                  type="button"
+                  class="path-root"
+                  onClick={() => browse(current(), '')}
+                  disabled={!!busy()}
+                >
                   根目录
                 </button>
                 <Show when={prefix()}>
                   <span>/</span>
                   <code>{prefix()}</code>
                 </Show>
-                <button
-                  class="icon-button"
-                  aria-label="刷新目录"
+                <IconButton
+                  icon="refresh"
+                  size="sm"
+                  label="刷新目录"
                   disabled={!!busy()}
                   onClick={() => browse(current(), prefix())}
-                >
-                  <Icon name="refresh" size={16} />
-                </button>
+                />
               </div>
               <div class="directory-table">
                 <div class="directory-table-head">
@@ -355,6 +389,7 @@ export default function StorageWorkspace(props: {
                   {(entry) => (
                     <div class="directory-entry">
                       <button
+                        type="button"
                         class="directory-entry-name"
                         disabled={!entry.is_dir || !!busy()}
                         onClick={() => browse(current(), entry.key)}
@@ -367,28 +402,28 @@ export default function StorageWorkspace(props: {
                       <span>
                         {entry.is_dir ? '文件夹' : entry.size ? bytes(entry.size) : '大小未知'}
                       </span>
-                      <button
-                        class="button small"
+                      <Button
+                        size="sm"
                         disabled={!!busy()}
                         onClick={() =>
                           entry.is_dir ? browse(current(), entry.key) : download(entry)
                         }
                       >
                         {entry.is_dir ? '打开' : '下载副本'}
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </For>
               </div>
               <Show when={cursor()}>
                 <div class="load-more">
-                  <button
-                    class="button"
+                  <Button
+                    size="sm"
                     disabled={!!busy()}
                     onClick={() => browse(current(), prefix(), true)}
                   >
                     载入更多
-                  </button>
+                  </Button>
                 </div>
               </Show>
             </section>

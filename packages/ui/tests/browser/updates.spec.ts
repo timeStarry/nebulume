@@ -31,6 +31,11 @@ async function mockDesktop(page: Page, fixture: Fixture) {
         invoke: async (command: string, params: Record<string, unknown>) => {
           calls.push(command);
           if (command === 'update_support') return fixture.support;
+          if (command === 'open_data_dir') return null;
+          if (command === 'open_url') {
+            calls.push(`open_url:${String(params.url ?? '')}`);
+            return null;
+          }
           if (command === 'prepare_for_update')
             return { cancelled_jobs: 0, pending_writes: 0, timed_out: false };
           if (command === 'plugin:updater|check') {
@@ -66,6 +71,7 @@ async function mockDesktop(page: Page, fixture: Fixture) {
             if (params.command === 'library.list' || params.command === 'storage.list') return [];
             if (params.command === 'system.info') return { originals_read_only: true };
             if (params.command === 'cache.status' || params.command === 'cache.settings') return {};
+            if (params.command === 'xmp.policy.get') return { auto_write: false };
           }
           throw new Error('Unexpected update fixture: ' + command);
         },
@@ -81,7 +87,7 @@ async function openSettings(page: Page) {
     .getByRole('button', { name: '设置', exact: true })
     .click();
   await page.getByRole('tab', { name: '关于', exact: true }).click();
-  return page.getByRole('region', { name: '关于与诊断' });
+  return page.getByRole('region', { name: 'Lumen' });
 }
 
 const calls = (page: Page) =>
@@ -90,10 +96,17 @@ const calls = (page: Page) =>
 test('about panel shows the build version and a manual up-to-date check', async ({ page }) => {
   await mockDesktop(page, { support: { supported: true, kind: 'installer' }, update: null });
   const about = await openSettings(page);
-  await expect(about).toContainText(`Nebulume ${appVersion} · 桌面应用`);
+  await expect(about).toContainText(`v${appVersion}`);
+  await expect(about).not.toContainText('桌面应用');
+  await expect(about.locator('pre')).toHaveCount(0);
+  await expect(about).not.toContainText('originals_read_only');
+  await expect(about.getByRole('button', { name: '打开数据目录' })).toBeVisible();
+  await expect(about.getByRole('button', { name: '复制诊断摘要' })).toBeVisible();
+  await about.getByRole('button', { name: 'GitHub', exact: true }).click();
+  await expect.poll(() => calls(page)).toContain('open_url:https://github.com/timeStarry/lumen');
   await about.getByRole('button', { name: '检查更新' }).click();
   await expect(about.getByRole('status')).toContainText('已是最新版本');
-  await expect(about.getByRole('checkbox', { name: '自动检查更新' })).toBeChecked();
+  await expect(about.getByRole('switch', { name: '自动检查更新' })).toBeChecked();
 });
 
 test('an available update shows notes, download progress, then prepares before installing', async ({
@@ -105,7 +118,7 @@ test('an available update shows notes, download progress, then prepares before i
   });
   const about = await openSettings(page);
   await about.getByRole('button', { name: '检查更新' }).click();
-  const prompt = page.getByRole('region', { name: 'Nebulume 0.2.0 可用' });
+  const prompt = page.getByRole('region', { name: 'Lumen 0.2.0 可用' });
   await expect(prompt).toContainText('修复若干问题');
   await prompt.getByRole('button', { name: '立即重启安装' }).click();
   await expect(prompt.getByRole('progressbar', { name: '更新下载进度' })).toBeVisible();
@@ -134,7 +147,7 @@ test('later dismisses the prompt without installing', async ({ page }) => {
   });
   const about = await openSettings(page);
   await about.getByRole('button', { name: '检查更新' }).click();
-  const prompt = page.getByRole('region', { name: 'Nebulume 0.2.0 可用' });
+  const prompt = page.getByRole('region', { name: 'Lumen 0.2.0 可用' });
   await prompt.getByRole('button', { name: '稍后' }).click();
   await expect(prompt).toHaveCount(0);
   expect(await calls(page)).not.toContain('plugin:updater|download');
@@ -151,5 +164,7 @@ test('portable builds explain why updates are unavailable and offer no check', a
 test('browser demo does not check for updates', async ({ page }) => {
   const about = await openSettings(page);
   await expect(about).toContainText('浏览器演示不检查更新');
+  await expect(about.locator('pre')).toHaveCount(0);
+  await expect(about).not.toContainText('originals_read_only');
   await expect(about.getByRole('button', { name: '检查更新' })).toHaveCount(0);
 });
