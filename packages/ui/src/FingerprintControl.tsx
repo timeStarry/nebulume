@@ -4,7 +4,10 @@ import { bytes, errorMessage, type FingerprintStatus } from './model';
 import { Banner, Button, FieldHint } from './ui';
 
 /** Explicit content-fingerprint task for one library, shown in library settings. */
-export default function FingerprintControl(props: { libraryId: string }) {
+export default function FingerprintControl(props: {
+  libraryId: string;
+  onStatus?: (status: FingerprintStatus) => void;
+}) {
   const [state, setState] = createSignal<FingerprintStatus>();
   const [confirm, setConfirm] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
@@ -19,6 +22,7 @@ export default function FingerprintControl(props: { libraryId: string }) {
       });
       if (disposed) return;
       setState(value);
+      props.onStatus?.(value);
       if (value.job?.status === 'failed') setError(value.job.error || '内容指纹任务未完成。');
     } catch (e) {
       if (!disposed) setError(errorMessage(e));
@@ -31,12 +35,12 @@ export default function FingerprintControl(props: { libraryId: string }) {
     setError('');
     setConfirm(false);
     try {
-      setState(
-        await execute<FingerprintStatus>(`library.fingerprint.${command}`, {
-          library_id: props.libraryId,
-          ...(command === 'cancel' ? { job_id: state()?.job?.id } : {}),
-        }),
-      );
+      const next = await execute<FingerprintStatus>(`library.fingerprint.${command}`, {
+        library_id: props.libraryId,
+        ...(command === 'cancel' ? { job_id: state()?.job?.id } : {}),
+      });
+      setState(next);
+      props.onStatus?.(next);
     } catch (e) {
       setError(errorMessage(e));
     } finally {

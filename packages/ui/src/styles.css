@@ -709,6 +709,9 @@ kbd {
   color: var(--nl-text-3);
   font-size: var(--nl-t-12);
 }
+.modal-footer-leading {
+  margin-right: auto;
+}
 .form-error {
   padding: var(--nl-s-2) var(--nl-s-3);
   border: 0;

@@ -250,6 +250,7 @@ export interface StorageConfig {
   bucket?: string;
   region?: string;
   connected?: boolean;
+  availability?: Availability;
   tls_certificate_sha256?: string | null;
   remember_credentials?: boolean;
   credential_status?: 'system' | 'session' | 'missing' | 'unavailable' | 'not_required';

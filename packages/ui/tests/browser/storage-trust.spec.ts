@@ -69,6 +69,26 @@ async function nativeFixture(
         case 'storage.browse':
           result = { entries: [], next_cursor: null };
           break;
+        case 'storage.check':
+          result = {
+            id: String(request.params.id),
+            connected: true,
+            availability: 'online',
+            credential_status: 'session',
+            checked_at: '2026-11-13T00:00:00Z',
+            error: null,
+          };
+          break;
+        case 'storage.probe':
+          result = {
+            id: 'probe',
+            connected: request.params.password !== 'wrong-secret',
+            availability: request.params.password === 'wrong-secret' ? 'auth_required' : 'online',
+            credential_status: 'session',
+            checked_at: '2026-11-13T00:00:00Z',
+            error: request.params.password === 'wrong-secret' ? 'HTTP 401 Unauthorized' : null,
+          };
+          break;
         default:
           throw new Error(`Unexpected fixture command: ${request.command}`);
       }
@@ -313,4 +333,28 @@ test('browser demonstration shows native-required state instead of simulating ce
   await page.getByRole('radio', { name: '信任此设备证书' }).check();
   await expect(page.getByRole('button', { name: '读取设备证书', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: '添加连接', exact: true })).toBeDisabled();
+});
+
+test('connection dialog can test connection before saving and clears stale probe status when edited', async ({
+  page,
+}) => {
+  const fixture = await nativeFixture(page);
+  await openConnection(page, endpointA);
+  await page.getByLabel('用户名', { exact: true }).fill('camera-user');
+  await page.getByLabel('密码', { exact: true }).fill('wrong-secret');
+
+  const testBtn = page.getByRole('dialog').getByRole('button', { name: '测试连接', exact: true });
+  await expect(testBtn).toBeEnabled();
+  await testBtn.click();
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('账号认证失败');
+  expect(fixture.requests.filter((r) => r.command === 'storage.add')).toHaveLength(0);
+
+  await page.getByLabel('密码', { exact: true }).fill('correct-secret');
+  await testBtn.click();
+  await expect(page.getByRole('dialog')).toContainText('连接成功，目录访问正常。');
+  expect(fixture.requests.filter((r) => r.command === 'storage.add')).toHaveLength(0);
+
+  // Editing the endpoint clears the stale green banner so unverified edits never look tested.
+  await page.getByLabel('服务端地址').fill(endpointB);
+  await expect(page.getByRole('dialog')).not.toContainText('连接成功，目录访问正常。');
 });

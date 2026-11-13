@@ -23,6 +23,7 @@ import {
   openExternal,
   openViewerWindow,
   pregeneratePreviews,
+  readPregenerate,
   revealInFolder,
   watchLibraries,
 } from './api';
@@ -53,6 +54,7 @@ import {
   Select,
   Slider,
   Spacer,
+  Spinner,
   TextInput,
   Toggle,
   Toolbar,
@@ -91,6 +93,7 @@ import { COLOR_LABEL_NAMES, groupMarks, keyToColorLabel, markHudText, type UndoE
 import { UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
+  bytes,
   errorMessage,
   isTextEntry,
   type Asset,
@@ -98,15 +101,18 @@ import {
   type AssetIdsResult,
   type AssetListOptions,
   type AssetListResult,
+  type Availability,
   type Collection,
   type ColorLabel,
   type ColorLabelFilter,
+  type FingerprintStatus,
   type Flag,
   type FlagFilter,
   type ImportBatch,
   type Library,
   type LibraryFolders,
   type ScanResult,
+  type StorageCheck,
   type StorageConfig,
   type TrashResult,
   type XmpSyncReport,
@@ -340,6 +346,7 @@ export default function ManagementApp() {
       }
     },
   );
+  const [checkingSourceIds, setCheckingSourceIds] = createSignal<ReadonlySet<string>>(new Set());
   async function refreshLibraries() {
     try {
       setLibraries(await execute<Library[]>('library.list'));
@@ -356,6 +363,82 @@ export default function ManagementApp() {
   }
   function updateSource(source: StorageConfig) {
     setSources((previous) => [...previous.filter((item) => item.id !== source.id), source]);
+    if (source.connected !== undefined || source.availability) {
+      const nextAvailability: Availability =
+        source.availability ?? (source.connected ? 'online' : 'unchecked');
+      if (nextAvailability !== 'unchecked') {
+        setLibraries((previous) =>
+          previous.map((library) =>
+            library.storage_id === source.id
+              ? {
+                  ...library,
+                  connected: nextAvailability === 'online',
+                  availability: nextAvailability,
+                }
+              : library,
+          ),
+        );
+      }
+    }
+  }
+  async function checkRemoteSources(targets: StorageConfig[], force = false) {
+    if (!desktop || !targets.length) return;
+    const currentLibs = libraries();
+    const candidates = targets.filter(
+      (item) =>
+        item.kind !== 'local' &&
+        (force ||
+          ((!item.availability || item.availability === 'unchecked') &&
+            !currentLibs.some(
+              (lib) =>
+                lib.storage_id === item.id && lib.availability && lib.availability !== 'unchecked',
+            ))),
+    );
+    if (!candidates.length) return;
+    setCheckingSourceIds((previous) => {
+      const next = new Set(previous);
+      for (const item of candidates) next.add(item.id);
+      return next;
+    });
+    await Promise.allSettled(
+      candidates.map(async (item) => {
+        try {
+          const result = await execute<StorageCheck>('storage.check', { id: item.id });
+          if (disposed) return;
+          const availability: Availability =
+            result.availability ?? (result.connected ? 'online' : 'error');
+          setSources((previous) =>
+            previous.map((entry) =>
+              entry.id === item.id
+                ? {
+                    ...entry,
+                    connected: result.connected,
+                    availability,
+                    credential_status: result.credential_status,
+                  }
+                : entry,
+            ),
+          );
+          setLibraries((previous) =>
+            previous.map((library) =>
+              library.storage_id === item.id
+                ? { ...library, connected: result.connected, availability }
+                : library,
+            ),
+          );
+        } catch {
+          // Startup auto-probes stay non-disruptive if an unconfigured or test source rejects.
+        } finally {
+          if (!disposed) {
+            setCheckingSourceIds((previous) => {
+              const next = new Set(previous);
+              next.delete(item.id);
+              return next;
+            });
+          }
+        }
+      }),
+    );
   }
   createEffect(
     on(visibleLibraries, () => {
@@ -368,11 +451,13 @@ export default function ManagementApp() {
       execute<StorageConfig[]>('storage.list'),
       execute<Record<string, unknown>>('system.info'),
     ]);
-    if (results[0].status === 'fulfilled') setSources(results[0].value);
+    const initialSources = results[0].status === 'fulfilled' ? results[0].value : [];
+    if (results[0].status === 'fulfilled') setSources(initialSources);
     else setError(errorMessage(results[0].reason));
     if (results[1].status === 'fulfilled') setSystem(results[1].value);
     setReady(true);
     if (section() === 'libraries') openInitialLibrary();
+    void checkRemoteSources(initialSources);
   }
   function listOptions(): AssetListOptions {
     return {
@@ -905,19 +990,107 @@ export default function ManagementApp() {
       await loadAssets(false, true);
     }
   }
-  function runPregenerate(library: Library) {
-    if (tasks.isRunning('pregenerate', library.id)) return;
-    void tasks
-      .run(
-        {
-          kind: 'pregenerate',
+  interface PregenerateProgressPayload {
+    library_id: string;
+    processed: number;
+    total: number;
+    status: 'running' | 'completed' | 'cancelled' | 'failed';
+    rendered: number;
+    cached: number;
+    failed: number;
+  }
+  let activePregenerate:
+    | { taskId: string; libraryId: string; fallbackTimer?: ReturnType<typeof setTimeout> }
+    | undefined;
+  const fingerprintTrackers = new Map<
+    string,
+    { taskId: string; libraryName: string; timer?: ReturnType<typeof setTimeout> }
+  >();
+
+  function syncFingerprintTask(library: Library, status: FingerprintStatus) {
+    const job = status.job;
+    const running = !!job && ['running', 'stopping'].includes(job.status);
+    let tracker = fingerprintTrackers.get(library.id);
+    if (running && job) {
+      const detail = `${job.processed} / ${job.total} · 已读取 ${bytes(job.bytes_read)}`;
+      if (!tracker) {
+        const taskId = tasks.start({
+          kind: 'fingerprint',
           libraryId: library.id,
-          title: `生成缩略图 · ${library.name}`,
-        },
-        () => pregeneratePreviews(library.id, gridTier(thumbSize(), devicePixelRatio())),
-        () => '缩略图已就绪',
-      )
-      .catch(() => undefined);
+          title: `内容指纹 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+        tracker = { taskId, libraryName: library.name };
+        fingerprintTrackers.set(library.id, tracker);
+      } else {
+        tasks.progress(tracker.taskId, {
+          title: `内容指纹 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+      }
+      if (!tracker.timer && !disposed) {
+        const currentTracker = tracker;
+        currentTracker.timer = setTimeout(async () => {
+          currentTracker.timer = undefined;
+          if (disposed) return;
+          try {
+            const next = await execute<FingerprintStatus>('library.fingerprint.status', {
+              library_id: library.id,
+            });
+            if (!disposed) syncFingerprintTask(library, next);
+          } catch {
+            /* Next status check or dialog open reconciles. */
+          }
+        }, 1000);
+      }
+      return;
+    }
+    if (tracker) {
+      if (tracker.timer) clearTimeout(tracker.timer);
+      fingerprintTrackers.delete(library.id);
+      if (job?.status === 'failed') {
+        tasks.fail(tracker.taskId, job.error || '内容指纹任务未完成');
+      } else if (job?.status === 'cancelled') {
+        tasks.complete(tracker.taskId, `已停止（${job.processed} / ${job.total}）`);
+      } else {
+        tasks.complete(
+          tracker.taskId,
+          job ? `已完成 ${job.processed} / ${job.total}` : '内容指纹已就绪',
+        );
+      }
+    }
+  }
+
+  function runPregenerate(library: Library) {
+    if (!desktop || !readPregenerate() || tasks.isRunning('pregenerate', library.id)) return;
+    if (activePregenerate) {
+      if (activePregenerate.fallbackTimer) clearTimeout(activePregenerate.fallbackTimer);
+      tasks.dismiss(activePregenerate.taskId);
+      activePregenerate = undefined;
+    }
+    const taskId = tasks.start({
+      kind: 'pregenerate',
+      libraryId: library.id,
+      title: `生成缩略图 · ${library.name}`,
+    });
+    const fallbackTimer = setTimeout(() => {
+      if (activePregenerate?.taskId === taskId) {
+        tasks.complete(taskId, '缩略图已就绪');
+        activePregenerate = undefined;
+      }
+    }, 1200);
+    activePregenerate = { taskId, libraryId: library.id, fallbackTimer };
+    void pregeneratePreviews(library.id, gridTier(thumbSize(), devicePixelRatio())).catch((e) => {
+      if (activePregenerate?.taskId === taskId) {
+        if (activePregenerate.fallbackTimer) clearTimeout(activePregenerate.fallbackTimer);
+        tasks.fail(taskId, errorMessage(e));
+        activePregenerate = undefined;
+      }
+    });
   }
   async function scan(library: Library) {
     if (tasks.isRunning('scan', library.id)) return;
@@ -1936,6 +2109,7 @@ export default function ManagementApp() {
     }),
   );
   let stopLibraryWatch: (() => void) | undefined;
+  let stopPregenerateWatch: (() => void) | undefined;
   async function registerLibraryWatch() {
     if (!desktop) return;
     const stop = await listen<{ library_id: string }>('library-changed', (event) => {
@@ -1945,6 +2119,40 @@ export default function ManagementApp() {
     if (!stop) return;
     if (disposed) stop();
     else stopLibraryWatch = stop;
+  }
+  async function registerPregenerateWatch() {
+    if (!desktop) return;
+    const stop = await listen<PregenerateProgressPayload>('pregenerate-progress', (event) => {
+      const payload = event.payload;
+      if (!activePregenerate || activePregenerate.libraryId !== payload.library_id) return;
+      if (activePregenerate.fallbackTimer) {
+        clearTimeout(activePregenerate.fallbackTimer);
+        activePregenerate.fallbackTimer = undefined;
+      }
+      const { taskId } = activePregenerate;
+      if (payload.status === 'running') {
+        tasks.progress(taskId, {
+          processed: payload.processed,
+          total: payload.total,
+          detail: payload.total > 0 ? `${payload.processed} / ${payload.total}` : undefined,
+        });
+      } else if (payload.status === 'completed') {
+        tasks.complete(
+          taskId,
+          payload.total > 0 ? `已准备 ${payload.total} 张缩略图` : '缩略图已就绪',
+        );
+        activePregenerate = undefined;
+      } else if (payload.status === 'cancelled') {
+        tasks.dismiss(taskId);
+        activePregenerate = undefined;
+      } else {
+        tasks.fail(taskId, '部分缩略图生成未完成');
+        activePregenerate = undefined;
+      }
+    }).catch(() => undefined);
+    if (!stop) return;
+    if (disposed) stop();
+    else stopPregenerateWatch = stop;
   }
   async function registerAssetListener() {
     if (!desktop || disposed || unlisten || registeringListener) return;
@@ -1975,6 +2183,7 @@ export default function ManagementApp() {
   onMount(() => {
     void updates.start();
     void registerLibraryWatch();
+    void registerPregenerateWatch();
     if (desktop) {
       let stopDrop: (() => void) | undefined;
       void getCurrentWebview()
@@ -2010,6 +2219,12 @@ export default function ManagementApp() {
       disposed = true;
       unlisten?.();
       stopLibraryWatch?.();
+      stopPregenerateWatch?.();
+      if (activePregenerate?.fallbackTimer) clearTimeout(activePregenerate.fallbackTimer);
+      for (const tracker of fingerprintTrackers.values()) {
+        if (tracker.timer) clearTimeout(tracker.timer);
+      }
+      fingerprintTrackers.clear();
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', focusRefresh);
       navigationMedia.removeEventListener('change', updateNavigationMode);
@@ -2055,6 +2270,9 @@ export default function ManagementApp() {
             collectionId={collectionId()}
             usable={(library) => availabilityPresentation(library).usable}
             unavailableLabel={(library) => availabilityPresentation(library).label}
+            checking={(library) =>
+              !!library.storage_id && checkingSourceIds().has(library.storage_id)
+            }
             location={libraryLocation}
             demoLabel={!desktop}
             onLibrary={(library) => enterLibrary(library)}
@@ -2385,6 +2603,8 @@ export default function ManagementApp() {
                   <Show when={desktop && sort() === 'captured_at'}>
                     <CaptureIndexControl
                       libraryId={library().id}
+                      libraryName={library().name}
+                      tasks={tasks}
                       onSettled={async (status) => {
                         const job = status.job;
                         if (!job || completedCaptureJobs.has(job.id)) return;
@@ -2483,6 +2703,18 @@ export default function ManagementApp() {
                         >
                           <EmptyState
                             icon="photo"
+                            loading={
+                              tasks.isRunning('scan', library().id) &&
+                              !activeCollection() &&
+                              !filtered()
+                            }
+                            role={
+                              tasks.isRunning('scan', library().id) &&
+                              !activeCollection() &&
+                              !filtered()
+                                ? 'status'
+                                : undefined
+                            }
                             title={
                               loading()
                                 ? '正在读取图片…'
@@ -2490,7 +2722,9 @@ export default function ManagementApp() {
                                   ? '此精选集尚无照片'
                                   : filtered()
                                     ? '没有匹配的照片'
-                                    : '图片库尚无照片'
+                                    : tasks.isRunning('scan', library().id)
+                                      ? '正在扫描图片库…'
+                                      : '图片库尚无照片'
                             }
                             description={
                               activeCollection() && !filtered()
@@ -2499,13 +2733,20 @@ export default function ManagementApp() {
                                   : '在照片网格中右键或使用批量操作坞即可将照片加入此精选集。'
                                 : filtered()
                                   ? '调整搜索词、评级、旗标、色标或关键词筛选。'
-                                  : desktop
-                                    ? '扫描此目录建立索引，照片在原位置保留。'
-                                    : '选择本地图片开始体验。'
+                                  : tasks.isRunning('scan', library().id)
+                                    ? '正在扫描目录并建立照片索引，照片在原位置保留，完成后将自动展示。'
+                                    : desktop
+                                      ? '扫描此目录建立索引，照片在原位置保留。'
+                                      : '选择本地图片开始体验。'
                             }
                             actions={
                               <Show when={!loading()}>
                                 <Button
+                                  disabled={
+                                    tasks.isRunning('scan', library().id) &&
+                                    !activeCollection() &&
+                                    !filtered()
+                                  }
                                   onClick={() =>
                                     activeCollection() && !filtered()
                                       ? setCollectionId('')
@@ -2516,13 +2757,24 @@ export default function ManagementApp() {
                                           : fileInput.click()
                                   }
                                 >
+                                  <Show
+                                    when={
+                                      tasks.isRunning('scan', library().id) &&
+                                      !activeCollection() &&
+                                      !filtered()
+                                    }
+                                  >
+                                    <Spinner size="sm" />
+                                  </Show>
                                   {activeCollection() && !filtered()
                                     ? '返回全部照片'
                                     : filtered()
                                       ? '清除筛选'
-                                      : desktop
-                                        ? '扫描图片库'
-                                        : '选择本地图片'}
+                                      : tasks.isRunning('scan', library().id)
+                                        ? '正在扫描…'
+                                        : desktop
+                                          ? '扫描图片库'
+                                          : '选择本地图片'}
                                 </Button>
                               </Show>
                             }
@@ -2712,6 +2964,7 @@ export default function ManagementApp() {
         <div class="persistent-workspace" hidden={section() !== 'sources'}>
           <StorageWorkspace
             sources={sources()}
+            checkingIds={checkingSourceIds()}
             removableLibraries={removableLibraries()}
             onRelocateLibrary={(library) => void relocateLibrary(library)}
             onAdd={() => editSource()}
@@ -2755,6 +3008,10 @@ export default function ManagementApp() {
           initialRoot={libraryRoot()}
           existing={editingLibrary()}
           onClose={() => setDialog(null)}
+          onFingerprintStatus={(status) => {
+            const lib = editingLibrary();
+            if (lib) syncFingerprintTask(lib, status);
+          }}
           onAdded={(library, bindingChanged) => {
             const wasEditing = !!editingLibrary();
             setLibraries((items) => [...items.filter((item) => item.id !== library.id), library]);
@@ -2805,11 +3062,18 @@ export default function ManagementApp() {
         <StorageDialog
           existing={editingSource()}
           onClose={() => setDialog(null)}
-          onAdded={(source) => {
-            updateSource(source);
+          onAdded={(source, verified) => {
+            updateSource(
+              verified ? { ...source, connected: true, availability: 'online' } : source,
+            );
+            void checkRemoteSources([source], true);
             setDialog(null);
             setSection('sources');
-            setNotice(`已保存 ${source.name}。请测试连接或浏览目录验证访问。`);
+            setNotice(
+              verified
+                ? `已保存并连接 ${source.name}。`
+                : `已保存 ${source.name}，正在自动验证连接状态…`,
+            );
           }}
         />
       </Show>

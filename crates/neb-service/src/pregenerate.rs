@@ -23,15 +23,29 @@ impl Service {
         tier: PreviewTier,
         cancel: &AtomicBool,
     ) -> Result<PregenerateReport, CommandError> {
+        self.pregenerate_previews_with_progress(library_id, tier, cancel, |_, _| {})
+    }
+
+    pub fn pregenerate_previews_with_progress(
+        &self,
+        library_id: &str,
+        tier: PreviewTier,
+        cancel: &AtomicBool,
+        mut on_progress: impl FnMut(usize, usize),
+    ) -> Result<PregenerateReport, CommandError> {
         let mut report = PregenerateReport::default();
         if self
             .cache
             .preview_policy()
             .is_ok_and(|policy| policy == "memory_only")
         {
+            on_progress(0, 0);
             return Ok(report);
         }
-        for id in self.core.local_asset_ids(library_id)? {
+        let ids = self.core.local_asset_ids(library_id)?;
+        let total = ids.len();
+        on_progress(0, total);
+        for (idx, id) in ids.into_iter().enumerate() {
             if cancel.load(Ordering::Acquire) {
                 report.cancelled = true;
                 break;
@@ -53,6 +67,10 @@ impl Service {
                 Ok(true) => report.rendered += 1,
                 Ok(false) => report.cached += 1,
                 Err(_) => report.failed += 1,
+            }
+            let done = idx + 1;
+            if done == total || done % 4 == 0 {
+                on_progress(done, total);
             }
         }
         Ok(report)

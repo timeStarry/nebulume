@@ -10,7 +10,7 @@
 }
 .nl-menu--floating {
   position: fixed;
-  z-index: 40;
+  z-index: 200;
   max-height: calc(100vh - 16px);
   overflow-y: auto;
 }

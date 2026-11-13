@@ -65,6 +65,26 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
           case 'storage.list':
             result = [nas];
             break;
+          case 'storage.check':
+            result = {
+              id: String(call.params.id),
+              connected: true,
+              availability: 'online',
+              credential_status: 'system',
+              checked_at: '2026-11-13T00:00:00Z',
+              error: null,
+            };
+            break;
+          case 'storage.probe':
+            result = {
+              id: 'probe',
+              connected: true,
+              availability: 'online',
+              credential_status: 'system',
+              checked_at: '2026-11-13T00:00:00Z',
+              error: null,
+            };
+            break;
           case 'system.info':
             result = { originals_read_only: true };
             break;
@@ -1619,4 +1639,124 @@ test('the library rail item opens the last library, not the overview', async ({ 
   await expect(
     page.locator('.nl-page-header:visible').getByRole('heading', { name: '本地摄影' }),
   ).toBeVisible();
+});
+
+test('sidebar overflow menu floats in body portal without clipping or scrolling sidebar, and subnav sections collapse', async ({
+  page,
+}) => {
+  await fixture(page, (call) => {
+    if (call.command === 'collection.list')
+      return [
+        {
+          id: 'coll-1',
+          library_id: local.id,
+          name: '年度精选',
+          kind: 'manual',
+          item_count: 12,
+          created_at: '2026-11-01',
+        },
+      ];
+    if (call.command === 'library.folders')
+      return {
+        library_id: local.id,
+        total: 10,
+        folders: [{ path: '2026-11', name: '2026-11', count: 10, children: [] }],
+      };
+  });
+
+  const sidebar = page.getByRole('complementary', { name: '图片库与文件夹' });
+  const list = sidebar.locator('.nav-library-list');
+
+  // Open the library-level '...' overflow menu.
+  await sidebar.getByRole('button', { name: '本地摄影 更多操作' }).click();
+  const menu = page.getByRole('menu', { name: '本地摄影 更多操作' });
+  await expect(menu).toBeVisible();
+
+  // Verify the menu is portaled to document.body (outside .library-sidebar), fixed-positioned,
+  // and never scrolls .nav-library-list horizontally.
+  const layout = await page.evaluate(() => {
+    const sidebarEl = document.querySelector('.library-sidebar')!;
+    const listEl = document.querySelector('.nav-library-list') as HTMLElement;
+    const menuEl = document.querySelector('[role="menu"][aria-label="本地摄影 更多操作"]') as HTMLElement;
+    const style = window.getComputedStyle(menuEl);
+    const rect = menuEl.getBoundingClientRect();
+    return {
+      insideSidebar: sidebarEl.contains(menuEl),
+      position: style.position,
+      zIndex: Number(style.zIndex),
+      listScrollLeft: listEl.scrollLeft,
+      sidebarScrollLeft: sidebarEl.scrollLeft,
+      rectRight: rect.right,
+      sidebarRight: sidebarEl.getBoundingClientRect().right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(layout.insideSidebar).toBe(false);
+  expect(layout.position).toBe('fixed');
+  expect(layout.zIndex).toBeGreaterThanOrEqual(200);
+  expect(layout.listScrollLeft).toBe(0);
+  expect(layout.sidebarScrollLeft).toBe(0);
+  expect(layout.rectRight).toBeLessThanOrEqual(layout.viewportWidth - 8);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+
+  // Collapsible 精选集 and 文件夹 sections.
+  await expect(sidebar.getByText('年度精选')).toBeVisible();
+  await expect(sidebar.getByText('2026-11')).toBeVisible();
+
+  await sidebar.getByRole('button', { name: '收起精选集' }).click();
+  await expect(sidebar.getByText('年度精选')).toHaveCount(0);
+  await sidebar.getByRole('button', { name: '收起文件夹' }).click();
+  await expect(sidebar.getByText('2026-11')).toHaveCount(0);
+
+  await sidebar.getByRole('button', { name: '展开精选集' }).click();
+  await expect(sidebar.getByText('年度精选')).toBeVisible();
+  await sidebar.getByRole('button', { name: '展开文件夹' }).click();
+  await expect(sidebar.getByText('2026-11')).toBeVisible();
+});
+
+test('startup auto-probes remote connections, empty library scan shows loading state, and TaskPill renders accurate progress bar', async ({
+  page,
+}) => {
+  let releaseScan!: (res: { indexed: number; skipped: number; errors: never[] }) => void;
+  const emptyLocal: Library = { ...local, id: 'lib-empty', name: '新图库', asset_count: 0 };
+  let indexedItems: Asset[] = [];
+
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list') return [emptyLocal, remote];
+    if (call.command === 'asset.list')
+      return {
+        items: call.params.library_id === emptyLocal.id ? indexedItems : [photo],
+        total: call.params.library_id === emptyLocal.id ? indexedItems.length : 1,
+      };
+    if (call.command === 'library.scan')
+      return new Promise((resolve) => {
+        releaseScan = resolve;
+      });
+  });
+
+  // 1. Startup auto-probe checks 'nas' automatically without opening Locations, turning NAS library dot green.
+  await expect
+    .poll(() => calls.some((c) => c.command === 'storage.check' && c.params.id === nas.id))
+    .toBe(true);
+  await expect(page.getByRole('button', { name: /打开图片库 NAS 旅行/ })).toHaveAccessibleName(
+    '打开图片库 NAS 旅行，在线',
+  );
+
+  // 2. Scanning an empty library shows the indexing loading state in the center empty view + indeterminate TaskPill progress.
+  await expect(page.getByRole('heading', { name: '图片库尚无照片' })).toBeVisible();
+  await page.getByRole('button', { name: '扫描图片库' }).click();
+  await expect(page.getByRole('heading', { name: '正在扫描图片库…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正在扫描…' })).toBeDisabled();
+
+  // Open TaskPill popover while scan is running -> indeterminate progressbar is shown.
+  await page.getByRole('button', { name: /后台任务：扫描 新图库/ }).click();
+  await expect(
+    page.getByRole('dialog', { name: '后台任务列表' }).getByRole('progressbar'),
+  ).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  indexedItems = [{ ...photo, library_id: emptyLocal.id }];
+  releaseScan({ indexed: 1, skipped: 0, errors: [] });
+  await expect(page.getByRole('button', { name: /Mountain\.png/ })).toBeVisible();
 });

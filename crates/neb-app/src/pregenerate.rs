@@ -3,9 +3,21 @@
 use crate::viewer;
 use neb_core::PreviewTier;
 use neb_service::{CommandError, Service};
+use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
+
+#[derive(Clone, Serialize)]
+pub struct PregenerateProgressEvent {
+    pub library_id: String,
+    pub processed: usize,
+    pub total: usize,
+    pub status: &'static str,
+    pub rendered: usize,
+    pub cached: usize,
+    pub failed: usize,
+}
 
 #[derive(Default)]
 pub struct Pregeneration {
@@ -29,6 +41,7 @@ impl Pregeneration {
 
 #[tauri::command]
 pub fn pregenerate_previews(
+    app: AppHandle,
     service: State<'_, Arc<Service>>,
     state: State<'_, Pregeneration>,
     library_id: String,
@@ -43,8 +56,68 @@ pub fn pregenerate_previews(
     std::thread::Builder::new()
         .name("preview-pregeneration".into())
         .spawn(move || {
+            let mut last_total = 0usize;
+            let mut last_done = 0usize;
             // Failures are per photo and already counted; on-demand loading still covers them.
-            let _ = service.pregenerate_previews(&library_id, tier, &cancel);
+            let outcome = service.pregenerate_previews_with_progress(
+                &library_id,
+                tier,
+                &cancel,
+                |done, total| {
+                    last_done = done;
+                    last_total = total;
+                    let _ = app.emit(
+                        "pregenerate-progress",
+                        PregenerateProgressEvent {
+                            library_id: library_id.clone(),
+                            processed: done,
+                            total,
+                            status: "running",
+                            rendered: 0,
+                            cached: 0,
+                            failed: 0,
+                        },
+                    );
+                },
+            );
+            match outcome {
+                Ok(report) => {
+                    let _ = app.emit(
+                        "pregenerate-progress",
+                        PregenerateProgressEvent {
+                            library_id,
+                            processed: if report.cancelled {
+                                last_done
+                            } else {
+                                last_total
+                            },
+                            total: last_total,
+                            status: if report.cancelled {
+                                "cancelled"
+                            } else {
+                                "completed"
+                            },
+                            rendered: report.rendered,
+                            cached: report.cached,
+                            failed: report.failed,
+                        },
+                    );
+                }
+                Err(_) => {
+                    let _ = app.emit(
+                        "pregenerate-progress",
+                        PregenerateProgressEvent {
+                            library_id,
+                            processed: last_done,
+                            total: last_total,
+                            status: "failed",
+                            rendered: 0,
+                            cached: 0,
+                            failed: 1,
+                        },
+                    );
+                }
+            }
         })
         .map_err(|error| viewer::error("E_WORKER", error.to_string()))?;
     Ok(())

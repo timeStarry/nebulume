@@ -1,4 +1,5 @@
 import { For, Show, onCleanup, onMount } from 'solid-js';
+import { Portal } from 'solid-js/web';
 import Icon, { type IconName } from '../Icon';
 import './Menu.css';
 
@@ -153,12 +154,14 @@ export default function ContextMenu(props: { menu: ContextMenuState; onClose: ()
     });
   });
   return (
-    <MenuList
-      ref={(el) => (list = el)}
-      class="nl-menu--floating context-menu"
-      label={props.menu.label}
-      items={props.menu.items}
-      onClose={(refocus) => close(refocus)}
-    />
+    <Portal>
+      <MenuList
+        ref={(el) => (list = el)}
+        class="nl-menu--floating context-menu"
+        label={props.menu.label}
+        items={props.menu.items}
+        onClose={(refocus) => close(refocus)}
+      />
+    </Portal>
   );
 }

@@ -1,11 +1,14 @@
 import { Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import { execute } from './api';
 import { errorMessage, type CaptureIndexStatus } from './model';
+import type { TaskCenter } from './tasks';
 import Icon from './Icon';
 import './capture-index.css';
 
 export default function CaptureIndexControl(props: {
   libraryId: string;
+  libraryName?: string;
+  tasks?: TaskCenter;
   onSettled: (status: CaptureIndexStatus) => void | Promise<void>;
 }) {
   const [state, setState] = createSignal<CaptureIndexStatus>();
@@ -15,6 +18,7 @@ export default function CaptureIndexControl(props: {
   let request = 0;
   let disposed = false;
   let watchedJobId: string | undefined;
+  let trackedTaskId: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const active = () => ['running', 'stopping'].includes(state()?.job?.status || '');
   const summary = () => {
@@ -36,8 +40,45 @@ export default function CaptureIndexControl(props: {
       throw new Error('未返回当前图片库的拍摄时间索引状态。');
     setState(value);
     const job = value.job;
-    if (job && ['running', 'stopping'].includes(job.status)) watchedJobId = job.id;
+    const title = props.libraryName
+      ? `拍摄时间索引 · ${props.libraryName}`
+      : '拍摄时间索引';
+    if (job && ['running', 'stopping'].includes(job.status)) {
+      watchedJobId = job.id;
+      if (props.tasks) {
+        if (!trackedTaskId) {
+          trackedTaskId = props.tasks.start({
+            kind: 'capture_index',
+            libraryId: props.libraryId,
+            title,
+            processed: job.processed,
+            total: job.total,
+            detail: `${job.processed} / ${job.total}`,
+          });
+        } else {
+          props.tasks.progress(trackedTaskId, {
+            title,
+            processed: job.processed,
+            total: job.total,
+            detail: `${job.processed} / ${job.total}`,
+          });
+        }
+      }
+    }
     if (job && !['running', 'stopping'].includes(job.status)) {
+      if (trackedTaskId && props.tasks) {
+        if (job.status === 'failed') {
+          props.tasks.fail(trackedTaskId, job.error || '拍摄时间索引未完成');
+        } else if (job.status === 'cancelled') {
+          props.tasks.complete(trackedTaskId, `已停止（${job.processed} / ${job.total}）`);
+        } else {
+          props.tasks.complete(
+            trackedTaskId,
+            `已完成 ${job.processed} / ${job.total}${job.failed ? `，${job.failed} 项待重试` : ''}`,
+          );
+        }
+        trackedTaskId = undefined;
+      }
       if (job.status === 'failed') setError(job.error || '拍摄时间索引未完成，可重试剩余照片。');
       else if (job.status === 'cancelled') setNotice('已停止，已读取的结果已保留。');
       else setNotice(`拍摄时间索引完成${job.failed ? `，${job.failed} 项待重试` : ''}。`);
@@ -89,6 +130,10 @@ export default function CaptureIndexControl(props: {
     props.libraryId;
     ++request;
     clearPoll();
+    if (trackedTaskId && props.tasks) {
+      props.tasks.dismiss(trackedTaskId);
+      trackedTaskId = undefined;
+    }
     setState(undefined);
     setNotice('');
     setError('');
@@ -100,6 +145,10 @@ export default function CaptureIndexControl(props: {
     disposed = true;
     ++request;
     clearPoll();
+    if (trackedTaskId && props.tasks) {
+      props.tasks.dismiss(trackedTaskId);
+      trackedTaskId = undefined;
+    }
   });
   return (
     <div class="capture-index-control" aria-label="拍摄时间索引">

@@ -95,9 +95,8 @@
 .nav-library-more:has([aria-expanded='true']) {
   opacity: 1;
 }
-.nav-library-more .nl-menu--anchored {
-  left: 0;
-  right: auto;
+.nav-library-list {
+  overflow-x: hidden;
 }
 .library-subnav {
   display: grid;
@@ -111,10 +110,34 @@
   align-items: center;
   justify-content: space-between;
   min-height: 22px;
-  padding: 0 var(--nl-s-1) 0 var(--nl-s-2);
+  padding: 0 var(--nl-s-1) 0 0;
   color: var(--nl-text-3);
   font-size: var(--nl-t-11);
   font-weight: 500;
+}
+.library-subnav-toggle {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0 var(--nl-s-1) 0 0;
+  border: 0;
+  border-radius: var(--nl-r-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.library-subnav-toggle:hover {
+  background: var(--nl-hover);
+  color: var(--nl-text-2);
+}
+.library-subnav-toggle:focus-visible {
+  outline: 2px solid var(--nl-ring);
+  outline-offset: 1px;
 }
 .collection-nav-list {
   display: grid;

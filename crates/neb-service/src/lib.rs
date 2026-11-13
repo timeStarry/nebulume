@@ -1209,6 +1209,16 @@ impl Service {
                     .open_writer(id)?;
                 Ok(serde_json::to_value(writer.probe())?)
             }
+            "storage.probe" => {
+                let request: AddStorageRequest =
+                    serde_json::from_value(params).context("Invalid storage configuration")?;
+                let browser = self
+                    .storage
+                    .lock()
+                    .map_err(|_| anyhow!("Storage state unavailable"))?
+                    .open_probe(request)?;
+                Ok(serde_json::to_value(browser.check()?)?)
+            }
             "storage.check" => {
                 let id = string(&params, "id")?;
                 let (snapshot, config) = {

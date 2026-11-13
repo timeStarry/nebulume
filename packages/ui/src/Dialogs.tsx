@@ -1,6 +1,13 @@
 import { For, Show, createSignal, onCleanup, onMount, type JSX } from 'solid-js';
 import { chooseDirectory, desktop, execute } from './api';
-import { errorMessage, type Library, type StorageConfig } from './model';
+import {
+  errorMessage,
+  type FingerprintStatus,
+  type Library,
+  type StorageCheck,
+  type StorageConfig,
+} from './model';
+import { checkedConnection } from './workspace';
 import Icon from './Icon';
 import TlsCertificatePanel from './TlsCertificatePanel';
 import StorageError from './StorageError';
@@ -95,6 +102,7 @@ export function LibraryDialog(props: {
   existing?: Library;
   onClose: () => void;
   onAdded: (library: Library, bindingChanged?: boolean) => void;
+  onFingerprintStatus?: (status: FingerprintStatus) => void;
 }) {
   const [name, setName] = createSignal(
     props.existing?.name ||
@@ -318,7 +326,10 @@ export function LibraryDialog(props: {
           同目录内各有一份的同名 RAW 与 JPEG 合并为一项，评级与裁剪分别保存。
         </p>
         <Show when={desktop && props.existing && !bindingChanged()}>
-          <FingerprintControl libraryId={props.existing!.id} />
+          <FingerprintControl
+            libraryId={props.existing!.id}
+            onStatus={props.onFingerprintStatus}
+          />
         </Show>
         <Show when={bindingChanged()}>
           <Banner
@@ -416,7 +427,7 @@ export function ConfirmDialog(props: {
 
 export function StorageDialog(props: {
   onClose: () => void;
-  onAdded: (storage: StorageConfig) => void;
+  onAdded: (storage: StorageConfig, verified?: boolean) => void;
   existing?: StorageConfig;
 }) {
   const [kind, setKind] = createSignal<'local' | 'webdav' | 's3'>(props.existing?.kind || 'webdav');
@@ -431,16 +442,72 @@ export function StorageDialog(props: {
   const [secretKey, setSecretKey] = createSignal('');
   const [remember, setRemember] = createSignal(props.existing?.remember_credentials ?? true);
   const [busy, setBusy] = createSignal(false);
+  const [probing, setProbing] = createSignal(false);
+  const [probeSuccess, setProbeSuccess] = createSignal('');
   const [error, setError] = createSignal('');
   const [trustPin, setTrustPin] = createSignal<string | null | undefined>(
     props.existing?.tls_certificate_sha256 ? undefined : null,
   );
+  const working = () => busy() || probing();
+  function clearProbe() {
+    setProbeSuccess('');
+  }
   const locationChanged = () =>
     !!props.existing &&
     (kind() !== props.existing.kind ||
       endpoint().trim() !== props.existing.endpoint ||
       root().trim() !== (props.existing.root || '') ||
       bucket().trim() !== (props.existing.bucket || ''));
+
+  function buildPayload(fallbackName?: string) {
+    return {
+      name: name().trim() || fallbackName || '',
+      kind: kind(),
+      endpoint: endpoint().trim(),
+      root: root().trim(),
+      bucket: bucket().trim(),
+      region: region().trim(),
+      username: username() || undefined,
+      password: password() || undefined,
+      access_key: accessKey() || undefined,
+      secret_key: secretKey() || undefined,
+      remember_credentials: remember(),
+      tls_certificate_sha256: kind() === 'local' ? null : trustPin(),
+    };
+  }
+
+  async function testConnection() {
+    if (!desktop) {
+      setError('连接远程存储与读取设备证书需要 Lumen 桌面版。');
+      return;
+    }
+    if (!endpoint().trim()) {
+      setError(kind() === 'local' ? '请选择文件夹路径。' : '请输入服务端地址。');
+      return;
+    }
+    if (kind() === 's3' && !bucket().trim()) {
+      setError('请输入存储桶名称。');
+      return;
+    }
+    if (kind() !== 'local' && trustPin() === undefined) {
+      setError('请先读取当前地址的设备证书，核对指纹并确认信任。');
+      return;
+    }
+    setProbing(true);
+    setError('');
+    setProbeSuccess('');
+    try {
+      const check = await execute<StorageCheck>('storage.probe', buildPayload('连接测试'));
+      const status = checkedConnection(check);
+      if (status.ok) setProbeSuccess(status.message);
+      else setError(status.message);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setProbing(false);
+    }
+  }
+
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (!desktop) {
@@ -451,26 +518,14 @@ export function StorageDialog(props: {
       setError('请先读取当前地址的设备证书，核对指纹并确认信任。');
       return;
     }
+    const wasVerified = !!probeSuccess();
     setBusy(true);
     setError('');
     try {
-      const storage = await execute<StorageConfig>('storage.add', {
-        name: name().trim(),
-        kind: kind(),
-        endpoint: endpoint().trim(),
-        root: root().trim(),
-        bucket: bucket().trim(),
-        region: region().trim(),
-        username: username() || undefined,
-        password: password() || undefined,
-        access_key: accessKey() || undefined,
-        secret_key: secretKey() || undefined,
-        remember_credentials: remember(),
-        tls_certificate_sha256: kind() === 'local' ? null : trustPin(),
-      });
+      const storage = await execute<StorageConfig>('storage.add', buildPayload());
       setPassword('');
       setSecretKey('');
-      props.onAdded(storage);
+      props.onAdded(storage, wasVerified);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -481,7 +536,7 @@ export function StorageDialog(props: {
     <Modal
       title={props.existing ? '连接设置 / 重连' : '添加网络位置'}
       onClose={props.onClose}
-      busy={busy()}
+      busy={working()}
     >
       <form class="dialog-form storage-connection-form" onSubmit={submit} autocomplete="off">
         <Show when={!desktop}>
@@ -496,18 +551,24 @@ export function StorageDialog(props: {
           <button
             classList={{ active: kind() === 'webdav' }}
             aria-pressed={kind() === 'webdav'}
-            onClick={() => setKind('webdav')}
+            onClick={() => {
+              setKind('webdav');
+              clearProbe();
+            }}
             type="button"
-            disabled={busy()}
+            disabled={working()}
           >
             WebDAV
           </button>
           <button
             classList={{ active: kind() === 's3' }}
             aria-pressed={kind() === 's3'}
-            onClick={() => setKind('s3')}
+            onClick={() => {
+              setKind('s3');
+              clearProbe();
+            }}
             type="button"
-            disabled={busy()}
+            disabled={working()}
           >
             S3 兼容存储
           </button>
@@ -519,7 +580,7 @@ export function StorageDialog(props: {
             onInput={(e) => setName(e.currentTarget.value)}
             placeholder="例如：家庭 NAS"
             required
-            disabled={busy()}
+            disabled={working()}
           />
         </label>
         <label>
@@ -527,7 +588,10 @@ export function StorageDialog(props: {
           <input
             type={kind() === 'local' ? 'text' : 'url'}
             value={endpoint()}
-            onInput={(e) => setEndpoint(e.currentTarget.value)}
+            onInput={(e) => {
+              setEndpoint(e.currentTarget.value);
+              clearProbe();
+            }}
             placeholder={
               kind() === 'local'
                 ? '选择本机文件夹'
@@ -536,18 +600,21 @@ export function StorageDialog(props: {
                   : 'https://s3.example.com'
             }
             required
-            disabled={busy()}
+            disabled={working()}
           />
         </label>
         <Show when={kind() === 'local'}>
           <button
             class="button local-source-picker"
             type="button"
-            disabled={busy() || !desktop}
+            disabled={working() || !desktop}
             onClick={async () => {
               try {
                 const path = await chooseDirectory('选择存储源文件夹');
-                if (path) setEndpoint(path);
+                if (path) {
+                  setEndpoint(path);
+                  clearProbe();
+                }
               } catch (e) {
                 setError(errorMessage(e));
               }
@@ -561,8 +628,11 @@ export function StorageDialog(props: {
             endpoint={endpoint()}
             savedFingerprint={props.existing?.tls_certificate_sha256}
             savedEndpoint={props.existing?.endpoint}
-            disabled={busy()}
-            onTrustChange={setTrustPin}
+            disabled={working()}
+            onTrustChange={(pin) => {
+              setTrustPin(pin);
+              clearProbe();
+            }}
           />
           <Show
             when={kind() === 'webdav'}
@@ -573,30 +643,49 @@ export function StorageDialog(props: {
                     存储桶
                     <input
                       value={bucket()}
-                      onInput={(e) => setBucket(e.currentTarget.value)}
+                      onInput={(e) => {
+                        setBucket(e.currentTarget.value);
+                        clearProbe();
+                      }}
                       required
+                      disabled={working()}
                     />
                   </label>
                   <label>
                     区域
                     <input
                       value={region()}
-                      onInput={(e) => setRegion(e.currentTarget.value)}
+                      onInput={(e) => {
+                        setRegion(e.currentTarget.value);
+                        clearProbe();
+                      }}
                       required
+                      disabled={working()}
                     />
                   </label>
                 </div>
                 <label>
                   Access key
-                  <input value={accessKey()} onInput={(e) => setAccessKey(e.currentTarget.value)} />
+                  <input
+                    value={accessKey()}
+                    onInput={(e) => {
+                      setAccessKey(e.currentTarget.value);
+                      clearProbe();
+                    }}
+                    disabled={working()}
+                  />
                 </label>
                 <label>
                   Secret key
                   <input
                     type="password"
                     value={secretKey()}
-                    onInput={(e) => setSecretKey(e.currentTarget.value)}
+                    onInput={(e) => {
+                      setSecretKey(e.currentTarget.value);
+                      clearProbe();
+                    }}
                     autocomplete="new-password"
+                    disabled={working()}
                   />
                 </label>
               </>
@@ -607,8 +696,12 @@ export function StorageDialog(props: {
                 用户名
                 <input
                   value={username()}
-                  onInput={(e) => setUsername(e.currentTarget.value)}
+                  onInput={(e) => {
+                    setUsername(e.currentTarget.value);
+                    clearProbe();
+                  }}
                   autocomplete="off"
+                  disabled={working()}
                 />
               </label>
               <label>
@@ -616,8 +709,12 @@ export function StorageDialog(props: {
                 <input
                   type="password"
                   value={password()}
-                  onInput={(e) => setPassword(e.currentTarget.value)}
+                  onInput={(e) => {
+                    setPassword(e.currentTarget.value);
+                    clearProbe();
+                  }}
                   autocomplete="new-password"
+                  disabled={working()}
                 />
               </label>
             </div>
@@ -627,6 +724,7 @@ export function StorageDialog(props: {
               type="checkbox"
               checked={remember()}
               onChange={(e) => setRemember(e.currentTarget.checked)}
+              disabled={working()}
             />
             将凭据保存到系统安全存储
           </label>
@@ -644,8 +742,12 @@ export function StorageDialog(props: {
           {kind() === 'webdav' ? '根目录' : '对象前缀'}（可选）
           <input
             value={root()}
-            onInput={(e) => setRoot(e.currentTarget.value)}
+            onInput={(e) => {
+              setRoot(e.currentTarget.value);
+              clearProbe();
+            }}
             placeholder="photos/"
+            disabled={working()}
           />
         </label>
         <Show when={locationChanged()}>
@@ -653,16 +755,35 @@ export function StorageDialog(props: {
             地址、类型、根目录或存储桶已改变，将保存为新连接；原连接仍保留。
           </FieldHint>
         </Show>
+        <Show when={probeSuccess()}>
+          <Banner tone="pick" role="status" message={probeSuccess()} />
+        </Show>
         <Show when={error()}>
           <StorageError error={error()} />
         </Show>
         <footer class="modal-footer">
-          <button class="button" type="button" onClick={props.onClose} disabled={busy()}>
+          <Show when={kind() !== 'local'}>
+            <button
+              class="button modal-footer-leading"
+              type="button"
+              onClick={() => void testConnection()}
+              disabled={
+                working() ||
+                !desktop ||
+                !endpoint().trim() ||
+                (kind() === 's3' && !bucket().trim()) ||
+                trustPin() === undefined
+              }
+            >
+              {probing() ? '正在测试…' : '测试连接'}
+            </button>
+          </Show>
+          <button class="button" type="button" onClick={props.onClose} disabled={working()}>
             取消
           </button>
           <button
             class="button primary"
-            disabled={busy() || !desktop || (kind() !== 'local' && trustPin() === undefined)}
+            disabled={working() || !desktop || (kind() !== 'local' && trustPin() === undefined)}
           >
             {busy()
               ? '正在保存…'

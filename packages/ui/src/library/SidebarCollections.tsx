@@ -1,7 +1,25 @@
-import { For, Show } from 'solid-js';
+import { For, Show, createSignal } from 'solid-js';
 import Icon from '../Icon';
 import OverflowMenu from '../OverflowMenu';
 import type { Collection } from '../model';
+
+const COLLECTIONS_COLLAPSED_KEY = 'nebulume.collections-collapsed';
+
+function readCollectionsCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLECTIONS_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeCollectionsCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(COLLECTIONS_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    /* Applies to this session. */
+  }
+}
 
 export function SidebarCollections(props: {
   collections: Collection[];
@@ -11,10 +29,30 @@ export function SidebarCollections(props: {
   onEdit: (collection: Collection) => void;
   onDelete: (collection: Collection) => void;
 }) {
+  const [collapsed, setCollapsed] = createSignal(readCollectionsCollapsed());
+  const toggleCollapsed = () => {
+    const next = !collapsed();
+    setCollapsed(next);
+    writeCollectionsCollapsed(next);
+  };
   return (
     <div class="sidebar-collections" aria-label="精选集">
       <div class="library-subnav-head">
-        <span>精选集</span>
+        <button
+          type="button"
+          class="library-subnav-toggle"
+          aria-expanded={!collapsed()}
+          aria-label={collapsed() ? '展开精选集' : '收起精选集'}
+          onClick={toggleCollapsed}
+        >
+          <span class="tree-chevron" classList={{ open: !collapsed() }} aria-hidden="true">
+            <Icon name="right" size={12} />
+          </span>
+          <span>精选集</span>
+          <Show when={collapsed() && props.collections.length > 0}>
+            <span class="tree-count">{props.collections.length}</span>
+          </Show>
+        </button>
         <OverflowMenu
           size="xs"
           icon="plus"
@@ -23,17 +61,29 @@ export function SidebarCollections(props: {
             {
               label: '新建精选集…',
               icon: 'layout-grid',
-              onSelect: () => props.onCreate('manual'),
+              onSelect: () => {
+                if (collapsed()) {
+                  setCollapsed(false);
+                  writeCollectionsCollapsed(false);
+                }
+                props.onCreate('manual');
+              },
             },
             {
               label: '新建智能精选集…',
               icon: 'filter',
-              onSelect: () => props.onCreate('smart'),
+              onSelect: () => {
+                if (collapsed()) {
+                  setCollapsed(false);
+                  writeCollectionsCollapsed(false);
+                }
+                props.onCreate('smart');
+              },
             },
           ]}
         />
       </div>
-      <Show when={props.collections.length}>
+      <Show when={!collapsed() && props.collections.length}>
         <ul class="collection-nav-list" aria-label="精选集列表">
           <For each={props.collections}>
             {(item) => (

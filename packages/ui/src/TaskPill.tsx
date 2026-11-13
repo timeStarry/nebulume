@@ -28,6 +28,14 @@ export default function TaskPill(props: { tasks: TaskCenter }) {
     return '后台任务已完成';
   };
 
+  const pillRatio = () => {
+    const running = active();
+    if (running.length === 1 && running[0].total && running[0].total > 0) {
+      return Math.max(0, Math.min(1, (running[0].processed ?? 0) / running[0].total));
+    }
+    return undefined;
+  };
+
   return (
     <Show when={all().length > 0}>
       <div class="task-pill-anchor">
@@ -51,6 +59,11 @@ export default function TaskPill(props: { tasks: TaskCenter }) {
             <Spinner size="sm" />
           </Show>
           <span class="task-pill-label">{summary()}</span>
+          <Show when={pillRatio() !== undefined}>
+            <span class="task-pill-bar" aria-hidden="true">
+              <span style={{ transform: `scaleX(${pillRatio()!})` }} />
+            </span>
+          </Show>
         </button>
 
         <Show when={open()}>
@@ -107,9 +120,13 @@ export default function TaskPill(props: { tasks: TaskCenter }) {
                         />
                       </Show>
                     </div>
-                    <Show when={task.status === 'running' && task.total && task.total > 0}>
+                    <Show when={task.status === 'running'}>
                       <Progress
-                        value={Math.round(((task.processed ?? 0) / Math.max(1, task.total!)) * 100)}
+                        value={
+                          task.total && task.total > 0
+                            ? (task.processed ?? 0) / Math.max(1, task.total)
+                            : undefined
+                        }
                         label={task.title}
                       />
                     </Show>
