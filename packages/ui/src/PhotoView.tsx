@@ -1,8 +1,8 @@
 import {
+  batch,
   createEffect,
   For,
   createMemo,
-  createResource,
   createSignal,
   on,
   onCleanup,
@@ -24,25 +24,53 @@ import {
   type FocusRegion,
 } from './model';
 import Icon from './Icon';
+import {
+  acquireViewerImage,
+  getViewerFrame,
+  rememberViewerFrame,
+  viewerFrameKey,
+} from './viewer-frame-cache';
+
+interface DecodedPreviewEntry {
+  url: string;
+  width?: number;
+  height?: number;
+}
 
 /**
- * URLs of previews this window has already decoded (grid thumbnails, prefetched viewer tiers),
- * by asset and revision. The viewer shows them as an instant placeholder: no new request.
+ * URLs and intrinsic aspect ratios of previews this window has already decoded (grid thumbnails,
+ * prefetched viewer tiers), by asset and revision.
  */
-const decodedThumbnails = new Map<string, string>();
+const decodedThumbnails = new Map<string, DecodedPreviewEntry>();
 const thumbnailKey = (asset: Pick<Asset, 'id' | 'preview_revision'>) =>
   `${asset.id}:${asset.preview_revision || 0}`;
-export function rememberDecodedPreview(asset: Pick<Asset, 'id' | 'preview_revision'>, url: string) {
+export function rememberDecodedPreview(
+  asset: Pick<Asset, 'id' | 'preview_revision'>,
+  url: string,
+  width?: number,
+  height?: number,
+) {
   const key = thumbnailKey(asset);
+  const previous = decodedThumbnails.get(key);
   decodedThumbnails.delete(key);
-  decodedThumbnails.set(key, url);
+  decodedThumbnails.set(key, {
+    url,
+    width: width && width > 0 ? width : previous?.width,
+    height: height && height > 0 ? height : previous?.height,
+  });
   if (decodedThumbnails.size > 1000)
     decodedThumbnails.delete(decodedThumbnails.keys().next().value!);
 }
 export function decodedThumbnail(
   asset: Pick<Asset, 'id' | 'preview_revision'>,
 ): string | undefined {
-  return decodedThumbnails.get(thumbnailKey(asset));
+  return decodedThumbnails.get(thumbnailKey(asset))?.url;
+}
+export function decodedThumbnailDims(
+  asset: Pick<Asset, 'id' | 'preview_revision'>,
+): { width: number; height: number } | undefined {
+  const entry = decodedThumbnails.get(thumbnailKey(asset));
+  return entry?.width && entry?.height ? { width: entry.width, height: entry.height } : undefined;
 }
 const visibilityTargets = new Map<Element, (visible: boolean) => void>();
 let visibilityObserver: IntersectionObserver | undefined;
@@ -127,7 +155,7 @@ export function Thumbnail(props: {
     setLayers((list) => [...list, layer]);
     const request = loadImage(url, image);
     request.then(
-      () => rememberDecodedPreview(asset, url),
+      (decoded) => rememberDecodedPreview(asset, url, decoded.naturalWidth, decoded.naturalHeight),
       () => undefined,
     );
     layer.request = request;
@@ -334,6 +362,14 @@ export default function PhotoView(props: {
     source?: string;
   }) => void;
 }) {
+  interface DisplayedFrame {
+    requestKey: string;
+    asset: Asset;
+    cropMode: boolean;
+    data: Preview;
+    image: HTMLImageElement;
+  }
+
   let stage!: HTMLDivElement;
   let wrap!: HTMLDivElement;
   const [size, setSize] = createSignal({ width: 1, height: 1 });
@@ -342,6 +378,12 @@ export default function PhotoView(props: {
   const [dragging, setDragging] = createSignal(false);
   const [fetching, setFetching] = createSignal(false);
   const [fetchError, setFetchError] = createSignal('');
+  const [displayed, setDisplayed] = createSignal<DisplayedFrame | null>(null);
+  const [pendingLoading, setPendingLoading] = createSignal(true);
+  const [pastHold, setPastHold] = createSignal(true);
+  const [pastSpinnerDelay, setPastSpinnerDelay] = createSignal(false);
+  const [previewError, setPreviewError] = createSignal('');
+  const [reloadTick, setReloadTick] = createSignal(0);
   const [fullLayer, setFullLayer] = createSignal<{ key: string; image: HTMLImageElement } | null>(
     null,
   );
@@ -349,8 +391,17 @@ export default function PhotoView(props: {
   let disposed = false;
   let previewController: AbortController | undefined;
   let fullController: AbortController | undefined;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  let spinnerTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearTimers = () => {
+    clearTimeout(holdTimer);
+    clearTimeout(spinnerTimer);
+    holdTimer = undefined;
+    spinnerTimer = undefined;
+  };
   onCleanup(() => {
     disposed = true;
+    clearTimers();
     previewController?.abort();
     fullController?.abort();
   });
@@ -359,114 +410,230 @@ export default function PhotoView(props: {
   const requestKey = createMemo(() =>
     imageRequestKey(props.asset, props.cropMode, effectivePreferRaw()),
   );
-  const [preview, { refetch }] = createResource(
-    requestKey,
-    async (key) => {
+  // While p2560 decodes on a cold photo, an already decoded thumbnail can sit inside the exact
+  // same locked-aspect-ratio `.photo-wrap` box instead of stretching edge-to-edge.
+  const placeholder = () => (props.cropMode ? undefined : decodedThumbnail(props.asset));
+
+  const frameCacheKey = createMemo(() => viewerFrameKey(requestKey(), props.asset));
+
+  createEffect(
+    on([requestKey, frameCacheKey, reloadTick], ([key, fKey]) => {
+      const assetSnap = props.asset;
+
+      clearTimers();
+      previewController?.abort();
+      fullController?.abort();
+      setFullLoading(false);
+
+      const warm = getViewerFrame(fKey, assetSnap.filename);
+      if (warm) {
+        batch(() => {
+          setDisplayed({
+            requestKey: key,
+            asset: assetSnap,
+            cropMode: props.cropMode,
+            data: warm.data,
+            image: warm.image,
+          });
+          setPendingLoading(false);
+          setPastHold(false);
+          setPastSpinnerDelay(false);
+          setPreviewError('');
+        });
+        props.onPreviewStateChange?.({
+          key,
+          loading: false,
+          failed: false,
+          mapping: warm.data.coordinate_mapping,
+          asset: warm.data.asset,
+          source: warm.data.source,
+        });
+        return;
+      }
+
+      const hasPreviousFrame = displayed() !== null;
+      batch(() => {
+        setPreviewError('');
+        setPendingLoading(true);
+        setPastHold(!hasPreviousFrame);
+        setPastSpinnerDelay(!hasPreviousFrame && !placeholder());
+      });
+      props.onPreviewStateChange?.({ key, loading: true, failed: false });
+
+      if (hasPreviousFrame) {
+        holdTimer = setTimeout(() => setPastHold(true), 60);
+      }
+      spinnerTimer = setTimeout(() => setPastSpinnerDelay(true), 240);
+
       const { id, uncropped, revision, preferRaw } = JSON.parse(key) as {
         id: string;
         uncropped: boolean;
         revision: number;
         preferRaw?: boolean;
       };
-      previewController?.abort();
-      fullController?.abort();
-      setFullLoading(false);
       const controller = (previewController = new AbortController());
       const lane = {
-        source: props.asset.source_key ? ('remote' as const) : ('local' as const),
+        source: assetSnap.source_key ? ('remote' as const) : ('local' as const),
         priority: 'viewer' as const,
         signal: controller.signal,
       };
-      try {
-        // IPC carries metadata and errors (E_DOWNLOAD_REQUIRED); pixels come from the protocol.
-        const data = await execute<Preview>(
-          'asset.preview',
-          { id, tier: 'p2560', uncropped, ...(preferRaw ? { prefer_raw: true } : {}) },
-          lane,
-        );
-        const url = await previewUrl(
-          { id, preview_revision: revision },
-          data.tier || 'p2560',
-          uncropped,
-          !!preferRaw,
-        );
-        // The element that decodes is the element shown: one request, one decode.
-        const image = document.createElement('img');
-        image.className = 'main-photo';
-        image.alt = props.asset.filename;
-        image.draggable = false;
-        await schedulePreview(() => loadImage(url, image), {
-          ...lane,
-          rejectInFlightOnAbort: true,
-        });
-        // Coming back to this photo, or leaving it, can show this decode at once.
-        if (!uncropped && !preferRaw)
-          rememberDecodedPreview({ id, preview_revision: revision }, url);
-        return { data, image, error: '' };
-      } catch (error) {
-        return { data: null, image: null, error: isQueueAbort(error) ? '' : errorMessage(error) };
-      }
-    },
+
+      void (async () => {
+        try {
+          // IPC carries metadata and errors (E_DOWNLOAD_REQUIRED); pixels come from the protocol.
+          const data = await execute<Preview>(
+            'asset.preview',
+            { id, tier: 'p2560', uncropped, ...(preferRaw ? { prefer_raw: true } : {}) },
+            lane,
+          );
+          const url = await previewUrl(
+            { id, preview_revision: revision },
+            data.tier || 'p2560',
+            uncropped,
+            !!preferRaw,
+          );
+          const image = await acquireViewerImage(url, assetSnap.filename, lane);
+          if (disposed || controller.signal.aborted || requestKey() !== key) return;
+          clearTimers();
+          if (!uncropped && !preferRaw) {
+            rememberDecodedPreview(
+              { id, preview_revision: revision },
+              url,
+              image.naturalWidth,
+              image.naturalHeight,
+            );
+          }
+          rememberViewerFrame(viewerFrameKey(key, props.asset), data, image);
+          batch(() => {
+            setDisplayed({
+              requestKey: key,
+              asset: props.asset,
+              cropMode: uncropped,
+              data,
+              image,
+            });
+            setPendingLoading(false);
+            setPastHold(false);
+            setPastSpinnerDelay(false);
+            setPreviewError('');
+          });
+          props.onPreviewStateChange?.({
+            key,
+            loading: false,
+            failed: false,
+            mapping: data.coordinate_mapping,
+            asset: data.asset,
+            source: data.source,
+          });
+        } catch (error) {
+          if (disposed || controller.signal.aborted || isQueueAbort(error) || requestKey() !== key)
+            return;
+          clearTimers();
+          const message = errorMessage(error);
+          batch(() => {
+            setPreviewError(message);
+            setPendingLoading(false);
+            setPastHold(true);
+            setPastSpinnerDelay(false);
+          });
+          props.onPreviewStateChange?.({
+            key,
+            loading: false,
+            failed: true,
+          });
+        }
+      })();
+    }),
   );
-  // While p2560 decodes, show an already decoded thumbnail scaled up instead of an empty stage.
-  // Crop mode shows the uncropped frame, which no thumbnail matches.
-  const placeholder = () => (props.cropMode ? undefined : decodedThumbnail(props.asset));
+
   createEffect(() => {
-    const image = preview()?.image;
-    if (image) image.alt = props.asset.filename;
+    const frame = displayed();
+    if (frame?.asset.id === props.asset.id) frame.image.alt = props.asset.filename;
     const hi = fullLayer()?.image;
     if (hi) hi.alt = props.asset.filename;
   });
-  createEffect(() =>
-    props.onPreviewStateChange?.({
-      key: requestKey(),
-      loading: preview.loading,
-      failed: !!preview()?.error,
-      mapping: preview()?.data?.coordinate_mapping,
-      asset: preview()?.data?.asset,
-      source: preview()?.data?.source,
-    }),
-  );
+
   async function fetchOriginal() {
     const id = props.asset.id;
     setFetching(true);
     setFetchError('');
     try {
       await execute('asset.fetch_original', { id });
-      if (!disposed && id === props.asset.id) await refetch();
+      if (!disposed && id === props.asset.id) setReloadTick((n) => n + 1);
     } catch (error) {
       if (!disposed && id === props.asset.id) setFetchError(errorMessage(error));
     } finally {
       setFetching(false);
     }
   }
-  const sourceDims = createMemo(() => {
-    const p = preview()?.data;
-    if (!p) return { width: 1, height: 1 };
+
+  function dimsFromPreview(p: Preview, asset: Asset, cropMode: boolean) {
     const m = p.coordinate_mapping;
     if (m) {
-      const cw = props.cropMode ? 1 : m.crop.width;
-      const ch = props.cropMode ? 1 : m.crop.height;
+      const cw = cropMode ? 1 : m.crop.width;
+      const ch = cropMode ? 1 : m.crop.height;
       return {
         width: Math.max(p.width, Math.round(m.full_width * cw)),
         height: Math.max(p.height, Math.round(m.full_height * ch)),
       };
     }
-    if (!props.cropMode && props.asset.crop) return { width: p.width, height: p.height };
+    if (!cropMode && asset.crop) return { width: p.width, height: p.height };
     return {
-      width: Math.max(p.width, props.asset.width || p.width),
-      height: Math.max(p.height, props.asset.height || p.height),
+      width: Math.max(p.width, asset.width || p.width),
+      height: Math.max(p.height, asset.height || p.height),
     };
+  }
+
+  function estimatedDimsFromAsset(asset: Asset, cropMode: boolean) {
+    if (asset.width && asset.height) {
+      const cw = !cropMode && asset.crop ? asset.crop.width : 1;
+      const ch = !cropMode && asset.crop ? asset.crop.height : 1;
+      return {
+        width: Math.max(1, Math.round(asset.width * cw)),
+        height: Math.max(1, Math.round(asset.height * ch)),
+      };
+    }
+    const thumbDims = decodedThumbnailDims(asset);
+    if (thumbDims) {
+      const scale = Math.max(1, 2560 / Math.max(thumbDims.width, thumbDims.height));
+      return {
+        width: Math.max(1, Math.round(thumbDims.width * scale)),
+        height: Math.max(1, Math.round(thumbDims.height * scale)),
+      };
+    }
+    return { width: 2560, height: 1707 };
+  }
+
+  const showingCurrentFrame = createMemo(
+    () => displayed()?.requestKey === requestKey() && !previewError(),
+  );
+  const useTargetPlaceholder = createMemo(
+    () => !showingCurrentFrame() && !previewError() && pastHold() && !!placeholder(),
+  );
+  const holdingDisplayedFrame = createMemo(
+    () => !showingCurrentFrame() && !previewError() && !useTargetPlaceholder() && !!displayed(),
+  );
+
+  const sourceDims = createMemo(() => {
+    const frame = displayed();
+    if (showingCurrentFrame() && frame) {
+      return dimsFromPreview(frame.data, props.asset, props.cropMode);
+    }
+    if (holdingDisplayedFrame() && frame) {
+      return dimsFromPreview(frame.data, frame.asset, frame.cropMode);
+    }
+    return estimatedDimsFromAsset(props.asset, props.cropMode);
   });
+
   const fitScale = createMemo(() => {
-    const p = preview()?.data;
-    if (!p) return 1;
     const src = sourceDims();
+    const padX = props.fill ? 0 : 48;
+    const padY = props.fill ? 0 : 32;
     return Math.max(
       0.01,
       Math.min(
-        (size().width - (props.fill ? 0 : 96)) / src.width,
-        (size().height - (props.fill ? 0 : 72)) / src.height,
+        Math.max(1, size().width - padX) / src.width,
+        Math.max(1, size().height - padY) / src.height,
         1,
       ),
     );
@@ -477,13 +644,12 @@ export default function PhotoView(props: {
   }));
   // Seamless background upgrade to `full` native pixel tier when zoomed past p2560.
   createEffect(() => {
-    const base = preview();
     const key = requestKey();
     const src = sourceDims();
     const wantFull =
       !props.cropMode &&
-      !preview.loading &&
-      !!base?.data &&
+      showingCurrentFrame() &&
+      !pendingLoading() &&
       needsFullTier(
         imageSize().width,
         imageSize().height,
@@ -546,8 +712,12 @@ export default function PhotoView(props: {
   });
   const activeImage = createMemo(() => {
     const key = requestKey();
-    if (!props.cropMode && fullLayer()?.key === key) return fullLayer()!.image;
-    return preview()?.image ?? null;
+    if (showingCurrentFrame()) {
+      if (!props.cropMode && fullLayer()?.key === key) return fullLayer()!.image;
+      return displayed()?.image ?? null;
+    }
+    if (holdingDisplayedFrame()) return displayed()?.image ?? null;
+    return null;
   });
   function fit() {
     setZoom(1);
@@ -571,8 +741,11 @@ export default function PhotoView(props: {
     if (Math.abs(zoom() - 1) < 0.001) zoomAt(1 / fitScale(), clientX, clientY);
     else fit();
   }
+  const activeVisualAssetId = createMemo(() =>
+    holdingDisplayedFrame() ? displayed()?.asset.id : props.asset.id,
+  );
   createEffect(() => {
-    props.asset.id;
+    activeVisualAssetId();
     fit();
   });
   createEffect(() => {
@@ -601,7 +774,7 @@ export default function PhotoView(props: {
     };
   };
   function pointerDown(event: PointerEvent) {
-    if (event.button !== 0 || !preview()?.data) return;
+    if (event.button !== 0 || !showingCurrentFrame()) return;
     if ((event.target as HTMLElement).closest('button')) return;
     if (props.cropMode) {
       const p = point(event);
@@ -630,6 +803,9 @@ export default function PhotoView(props: {
     drag = undefined;
     setDragging(false);
   }
+  const hasStageFrame = () =>
+    !previewError() && (showingCurrentFrame() || holdingDisplayedFrame() || useTargetPlaceholder());
+
   return (
     <div class="viewer">
       <div
@@ -655,109 +831,106 @@ export default function PhotoView(props: {
           toggleActual(event.clientX, event.clientY);
         }}
       >
-        <Show
-          when={!preview.loading}
-          fallback={
-            <>
-              <Show when={placeholder()}>
-                {(src) => <img class="photo-placeholder" src={src()} alt="" aria-hidden="true" />}
+        <Show when={previewError() && !pendingLoading()}>
+          <div class="viewer-message error" role="status">
+            <Icon name="photo" size={36} />
+            <strong>暂时无法预览</strong>
+            <p>{previewError()}</p>
+            <Show when={previewError().includes('E_DOWNLOAD_REQUIRED')}>
+              <button class="button primary" disabled={fetching()} onClick={fetchOriginal}>
+                {fetching() ? '正在下载…' : '下载原图并预览'}
+              </button>
+              <Show when={fetchError()}>
+                <p role="alert">{fetchError()}</p>
               </Show>
-              <div
-                class="viewer-message"
-                classList={{ 'over-placeholder': !!placeholder() }}
-                role="status"
-                aria-live="polite"
-              >
-                <span class="spinner" />
-                正在解析影像…
-              </div>
-            </>
-          }
-        >
-          <Show
-            when={preview()?.data}
-            fallback={
-              <div class="viewer-message error" role="status">
-                <Icon name="photo" size={36} />
-                <strong>暂时无法预览</strong>
-                <p>{preview()?.error}</p>
-                <Show when={preview()?.error?.includes('E_DOWNLOAD_REQUIRED')}>
-                  <button class="button primary" disabled={fetching()} onClick={fetchOriginal}>
-                    {fetching() ? '正在下载…' : '下载原图并预览'}
-                  </button>
-                  <Show when={fetchError()}>
-                    <p role="alert">{fetchError()}</p>
-                  </Show>
-                </Show>
-              </div>
-            }
+            </Show>
+          </div>
+        </Show>
+        <Show when={hasStageFrame()}>
+          <div
+            ref={wrap}
+            class="photo-wrap"
+            classList={{ 'holding-previous': holdingDisplayedFrame() && pastSpinnerDelay() }}
+            style={{
+              width: `${imageSize().width}px`,
+              height: `${imageSize().height}px`,
+              transform: `translate(${pan().x}px, ${pan().y}px)`,
+            }}
           >
-            {(data) => (
+            <Show
+              when={!useTargetPlaceholder()}
+              fallback={
+                <img class="photo-placeholder" src={placeholder()!} alt="" aria-hidden="true" />
+              }
+            >
+              {activeImage()}
+            </Show>
+            <ClippingOverlay
+              image={showingCurrentFrame() ? activeImage() : null}
+              enabled={!!props.clippingEnabled && !props.cropMode && showingCurrentFrame()}
+            />
+            <Show when={props.cropMode && showingCurrentFrame()}>
               <div
-                ref={wrap}
-                class="photo-wrap"
+                class="crop-overlay editable"
                 style={{
-                  width: `${imageSize().width}px`,
-                  height: `${imageSize().height}px`,
-                  transform: `translate(${pan().x}px, ${pan().y}px)`,
+                  left: `${props.crop.x * 100}%`,
+                  top: `${props.crop.y * 100}%`,
+                  width: `${props.crop.width * 100}%`,
+                  height: `${props.crop.height * 100}%`,
                 }}
               >
-                {activeImage()}
-                <ClippingOverlay
-                  image={activeImage()}
-                  enabled={!!props.clippingEnabled && !props.cropMode}
-                />
-                <Show when={props.cropMode}>
-                  <div
-                    class="crop-overlay editable"
-                    style={{
-                      left: `${props.crop.x * 100}%`,
-                      top: `${props.crop.y * 100}%`,
-                      width: `${props.crop.width * 100}%`,
-                      height: `${props.crop.height * 100}%`,
-                    }}
-                  >
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                    <span class="crop-corner top-left" />
-                    <span class="crop-corner top-right" />
-                    <span class="crop-corner bottom-left" />
-                    <span class="crop-corner bottom-right" />
-                  </div>
-                </Show>
-                <Show
-                  when={
-                    props.focusEnabled &&
-                    !props.cropMode &&
-                    !preview.loading &&
-                    props.focusRegions?.length
-                  }
-                >
-                  <div
-                    class="focus-overlay"
-                    role="img"
-                    aria-label={`相机记录的 ${props.focusRegions!.length} 处对焦区域`}
-                  >
-                    <For each={props.focusRegions}>
-                      {(region) => (
-                        <div
-                          class={`focus-region ${region.kind}`}
-                          style={{
-                            left: `${region.x * 100}%`,
-                            top: `${region.y * 100}%`,
-                            width: `${region.width * 100}%`,
-                            height: `${region.height * 100}%`,
-                          }}
-                        />
-                      )}
-                    </For>
-                  </div>
-                </Show>
+                <i />
+                <i />
+                <i />
+                <i />
+                <span class="crop-corner top-left" />
+                <span class="crop-corner top-right" />
+                <span class="crop-corner bottom-left" />
+                <span class="crop-corner bottom-right" />
               </div>
-            )}
+            </Show>
+            <Show
+              when={
+                props.focusEnabled &&
+                !props.cropMode &&
+                showingCurrentFrame() &&
+                !pendingLoading() &&
+                props.focusRegions?.length
+              }
+            >
+              <div
+                class="focus-overlay"
+                role="img"
+                aria-label={`相机记录的 ${props.focusRegions!.length} 处对焦区域`}
+              >
+                <For each={props.focusRegions}>
+                  {(region) => (
+                    <div
+                      class={`focus-region ${region.kind}`}
+                      style={{
+                        left: `${region.x * 100}%`,
+                        top: `${region.y * 100}%`,
+                        width: `${region.width * 100}%`,
+                        height: `${region.height * 100}%`,
+                      }}
+                    />
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
+          <Show when={pendingLoading() && pastSpinnerDelay()}>
+            <div class="viewer-message over-placeholder" role="status" aria-live="polite">
+              <span class="spinner" />
+              正在解析影像…
+            </div>
           </Show>
+        </Show>
+        <Show when={!previewError() && !hasStageFrame()}>
+          <div class="viewer-message" role="status" aria-live="polite">
+            <span class="spinner" />
+            正在解析影像…
+          </div>
         </Show>
         <Show when={!props.cropMode}>
           <button

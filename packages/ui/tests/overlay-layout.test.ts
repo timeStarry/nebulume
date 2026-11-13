@@ -5,10 +5,12 @@ import {
   moveWidget,
   readOverlay,
   readOverlayFades,
+  readToolbarAutoHide,
   removeWidget,
   shiftWidget,
   widgetsNotIn,
   writeOverlay,
+  writeToolbarAutoHide,
 } from '../src/overlay-layout';
 
 const store = (value: string | null) => ({ getItem: () => value });
@@ -77,6 +79,12 @@ describe('overlay layout', () => {
   test('fades default to off', () => {
     expect(readOverlayFades(store(null))).toBe(false);
     expect(readOverlayFades(store('true'))).toBe(true);
+  });
+  test('toolbar auto-hide defaults to off and round-trips', () => {
+    expect(readToolbarAutoHide(store(null))).toBe(false);
+    let saved: string | null = null;
+    writeToolbarAutoHide({ setItem: (_key: string, value: string) => (saved = value) }, true);
+    expect(readToolbarAutoHide(store(saved))).toBe(true);
   });
 });
 

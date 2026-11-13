@@ -1,6 +1,6 @@
 .nl-overlay {
   position: absolute;
-  inset: 48px 0 0;
+  inset: var(--nl-h-lg) 0 0;
   z-index: 4;
   pointer-events: none;
 }
@@ -51,7 +51,7 @@
   pointer-events: auto;
 }
 .nl-overlay--editing {
-  inset: 48px 0 0;
+  inset: var(--nl-h-lg) 0 0;
   z-index: 8;
   background: var(--nl-v-dim);
   pointer-events: auto;

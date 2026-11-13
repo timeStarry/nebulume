@@ -1,7 +1,7 @@
 /* Synchronized 2-up / 4-up compare stage inside immersive culling viewer. */
 .compare-stage-wrap {
   position: absolute;
-  inset: 56px var(--nl-s-4) var(--nl-s-4);
+  inset: calc(var(--nl-h-lg) + var(--nl-s-3)) var(--nl-s-4) var(--nl-s-4);
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: var(--nl-s-2);

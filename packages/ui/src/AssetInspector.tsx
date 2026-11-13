@@ -191,14 +191,21 @@ export default function AssetInspector(props: {
       aria-busy={props.loading || undefined}
     >
       <div class="inspector-heading">
-        <span>影像信息</span>
-        <button class="icon-button" aria-label="关闭影像详情" onClick={props.onClose}>
-          <Icon name="close" size={16} />
+        <button
+          type="button"
+          class="icon-button inspector-collapse"
+          aria-label="收起影像详情"
+          title="收起详情侧栏（I）"
+          onClick={props.onClose}
+        >
+          <Icon name="chevron-right" size={16} />
         </button>
+        <h2 class="inspector-title" title={props.asset.filename}>
+          {props.asset.filename}
+        </h2>
+        <span class="inspector-filetype">{props.asset.extension.toUpperCase()}</span>
       </div>
       <div class="inspector-file">
-        <span class="inspector-filetype">{props.asset.extension.toUpperCase()}</span>
-        <h2 title={props.asset.filename}>{props.asset.filename}</h2>
         <p>
           {inspectedAsset().width && inspectedAsset().height
             ? `${embeddedPreview() ? '预览尺寸 ' : ''}${inspectedAsset().width} × ${inspectedAsset().height} px`

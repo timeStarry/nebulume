@@ -1201,7 +1201,7 @@ test('the inspector shows the selected photo at once and keeps its layout while 
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   const inspector = page.getByRole('complementary', { name: '影像详情' });
   await expect(inspector).toHaveAttribute('aria-busy', 'true');
-  await expect(inspector.locator('.inspector-file h2')).toHaveText(selected!.split('，')[0]);
+  await expect(inspector.locator('.inspector-heading h2')).toHaveText(selected!.split('，')[0]);
   await expect(inspector.locator('.spinner')).toHaveCount(0);
   release();
   await expect(inspector).not.toHaveAttribute('aria-busy');

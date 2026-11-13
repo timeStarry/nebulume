@@ -973,7 +973,7 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
     .poll(() => calls.filter((call) => call.command === 'asset.histogram').length)
     .toBeGreaterThan(histogramsBefore);
   await page.keyboard.press('ArrowRight');
-  await expect(page.locator('.inspector-file h2')).toHaveText('Second.png');
+  await expect(page.locator('.inspector-heading h2')).toHaveText('Second.png');
   await expect
     .poll(() =>
       calls

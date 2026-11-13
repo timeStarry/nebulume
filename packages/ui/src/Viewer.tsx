@@ -19,16 +19,16 @@ import {
   execute,
   openExternal,
   revealInFolder,
-  schedulePreview,
   viewerContext,
 } from './api';
 import ExportDialog from './ExportDialog';
 import type { ExportRecipe } from './export-presets';
-import { loadImage, previewUrl } from './preview-url';
+import { previewUrl } from './preview-url';
 import AssetInspector from './AssetInspector';
 import CompareStage from './CompareStage';
 import { fitCropToAspect, resolveAspectRatio, type AspectPreset } from './crop-aspect';
 import PhotoView, { decodedThumbnail, rememberDecodedPreview } from './PhotoView';
+import { prefetchViewerImage } from './viewer-frame-cache';
 import Icon from './Icon';
 import {
   errorMessage,
@@ -63,7 +63,7 @@ import CullPanel, { CullStatus } from './CullPanel';
 import { IconButton, Segmented, Toggle, createHud } from './ui';
 import { createUndoHistory, keyToColorLabel, markHudText, type UndoEntry } from './undo';
 import ViewerOverlay from './ViewerOverlay';
-import { readOverlayFades } from './overlay-layout';
+import { readOverlayFades, readToolbarAutoHide } from './overlay-layout';
 import CullStrip from './CullStrip';
 import CullReview from './CullReview';
 import {
@@ -89,6 +89,7 @@ export interface CullQueue {
 export default function Viewer(props: {
   initialAssetId?: string;
   initialAssetIds?: string[];
+  initialAssets?: Asset[];
   initialMode?: ViewerMode;
   initialQueue?: CullQueue;
   onClose?: () => void;
@@ -99,21 +100,29 @@ export default function Viewer(props: {
   onTrashed?: () => void;
 }) {
   const focusHelpId = createUniqueId();
+  const initialMap: Record<string, Asset> = {};
+  if (props.initialAssets) {
+    for (const each of props.initialAssets) initialMap[each.id] = each;
+  }
+  const initialKnown = props.initialAssetId ? initialMap[props.initialAssetId] : undefined;
   const [ids, setIds] = createSignal<string[]>(props.initialAssetIds || []);
   const [id, setId] = createSignal(props.initialAssetId);
-  const [asset, setAsset] = createSignal<Asset>();
+  const [asset, setAsset] = createSignal<Asset | undefined>(initialKnown);
   // The photo shown before the current load began; its frame stays dimmed behind the
   // spinner when the next photo has no decoded thumbnail yet, so the stage never flashes empty.
   const [previousFrame, setPreviousFrame] = createSignal<string>();
-  const [loading, setLoading] = createSignal(true);
+  const [loading, setLoading] = createSignal(!initialKnown);
   const [error, setError] = createSignal('');
   const [notice, setNotice] = createSignal('');
   const [busy, setBusy] = createSignal('');
   const [info, setInfo] = createSignal(false);
   const [cropMode, setCropMode] = createSignal(false);
-  const [crop, setCrop] = createSignal<Crop>({ ...fullCrop });
+  const [crop, setCrop] = createSignal<Crop>({ ...(initialKnown?.crop || fullCrop) });
   const [controls, setControls] = createSignal(true);
   const [controlFocus, setControlFocus] = createSignal(false);
+  const [toolbarAutoHide, setToolbarAutoHide] = createSignal(readToolbarAutoHide(localStorage));
+  const [toolbarAwake, setToolbarAwake] = createSignal(true);
+  const [navDir, setNavDir] = createSignal<1 | -1>(1);
   const [previewPending, setPreviewPending] = createSignal(true);
   const [previewFailed, setPreviewFailed] = createSignal(false);
   const [previewKey, setPreviewKey] = createSignal('');
@@ -144,8 +153,8 @@ export default function Viewer(props: {
   const [outside, setOutside] = createSignal(false);
   const [menu, setMenu] = createSignal<ContextMenuState>();
   const [exportTargets, setExportTargets] = createSignal<string[] | null>(null);
-  // Culling: the queue's photos for the strip and counts, those already looked at, and the review.
-  const [items, setItems] = createSignal<Record<string, Asset>>({});
+  // Culling & instant navigation: known photos for the strip, counts, and zero-jump switching.
+  const [items, setItems] = createSignal<Record<string, Asset>>(initialMap);
   const [seen, setSeen] = createSignal(new Set<string>());
   const [review, setReview] = createSignal(false);
   const remember = (list: Asset[]) =>
@@ -185,60 +194,66 @@ export default function Viewer(props: {
   let pendingAdvance: (() => void) | undefined;
   let container!: HTMLDivElement;
   let timer: ReturnType<typeof setTimeout>;
+  let toolbarTimer: ReturnType<typeof setTimeout> | undefined;
   let request = 0;
   let focusRequest = 0;
   const revisions = new Map<string, number>();
   const focusCache = new Map<string, Promise<FocusInfo>>();
   const index = createMemo(() => ids().indexOf(id() || ''));
-  // Between photos asset() is briefly empty: fill the stage with an already decoded thumbnail.
+  // Between cold unindexed photos asset() may still be empty: fill the stage with a decoded thumb.
   const stagePlaceholder = () => {
     const next = id();
     return next ? decodedThumbnail({ id: next, preview_revision: revisions.get(next) }) : undefined;
   };
-  // Once a local photo is shown, render the next one's viewer tier in the background (one lane
-  // of two, so the photo the user opens never waits). Moving on cancels it if not yet started.
-  const prefetched = new Map<string, HTMLImageElement>();
+  // Once a local photo is on screen, pre-decode adjacent viewer-tier frames in both travel
+  // directions (`+dir`, `-dir`, `+2*dir`) into the shared viewer pool so `PhotoView` swaps in 0ms.
   createEffect(
-    on(asset, (current) => {
+    on([asset, navDir], ([current, dir]) => {
       if (!current || current.source_key || compareIds().length) return;
       const position = ids().indexOf(current.id);
+      if (position < 0) return;
       const browser = folder();
-      const ahead = ids()[position + 1] ?? ids()[position - 1];
-      if (browser && ahead && FolderBrowser.isPlaceholder(ahead)) {
-        // Index the next file of the folder in the background; prefetch it once it has an id.
+      const firstAhead = ids()[position + dir] ?? ids()[position - dir];
+      if (browser && firstAhead && FolderBrowser.isPlaceholder(firstAhead)) {
         void browser
-          .resolve(ahead)
-          .then(() => setIds([...browser.ids]))
+          .resolve(firstAhead)
+          .then((resolved) => {
+            remember([resolved]);
+            setIds([...browser.ids]);
+          })
           .catch(() => undefined);
         return;
       }
-      const neighbours = [ahead].filter(
-        (neighbour): neighbour is string => !!neighbour && !prefetched.has(neighbour),
-      );
+      const candidates = [
+        ids()[position + dir],
+        ids()[position - dir],
+        ids()[position + dir * 2],
+      ];
+      const seenNeighbours = new Set<string>();
+      const neighbours = candidates.filter((each): each is string => {
+        if (!each || each === current.id || FolderBrowser.isPlaceholder(each) || seenNeighbours.has(each))
+          return false;
+        seenNeighbours.add(each);
+        return true;
+      });
       if (!neighbours.length) return;
       const controller = new AbortController();
       const delay = setTimeout(() => {
         for (const neighbour of neighbours) {
-          const url = previewUrl(
-            { id: neighbour, preview_revision: revisions.get(neighbour) },
-            'p2560',
-          );
-          void schedulePreview(
-            async () => {
-              const image = await loadImage(await url);
-              prefetched.set(neighbour, image);
+          const rev = revisions.get(neighbour) ?? items()[neighbour]?.preview_revision;
+          void Promise.resolve(previewUrl({ id: neighbour, preview_revision: rev }, 'p2560'))
+            .then((url) => prefetchViewerImage(url, controller.signal))
+            .then((image) =>
               rememberDecodedPreview(
-                { id: neighbour, preview_revision: revisions.get(neighbour) },
+                { id: neighbour, preview_revision: rev },
                 image.src,
-              );
-              // Keep only a handful decoded; older ones fall back to the backend cache.
-              while (prefetched.size > 4) prefetched.delete(prefetched.keys().next().value!);
-              return image;
-            },
-            { source: 'local', priority: 'viewer', signal: controller.signal },
-          ).catch(() => undefined);
+                image.naturalWidth,
+                image.naturalHeight,
+              ),
+            )
+            .catch(() => undefined);
         }
-      }, 250);
+      }, 24);
       onCleanup(() => {
         clearTimeout(delay);
         controller.abort();
@@ -292,7 +307,7 @@ export default function Viewer(props: {
     return data ? focusPresentation(data, previewMapping()) : { regions: [], message: '' };
   });
   const focusUnavailableReason = createMemo(() => {
-    if (!asset() || loading()) return '正在读取影像…';
+    if (!asset() || asset()?.id !== id() || loading()) return '正在读取影像…';
     if (cropMode()) return '裁剪时暂不显示对焦点';
     if (refreshing() || focusLoading()) return '正在检测对焦信息…';
     if (focusError()) return `对焦信息读取失败：${focusError()}`;
@@ -308,11 +323,16 @@ export default function Viewer(props: {
     controls() ||
     controlFocus() ||
     cropMode() ||
-    loading() ||
-    previewPending() ||
+    editingOverlay() ||
     previewFailed() ||
-    focusLoading() ||
     !!busy() ||
+    !!error();
+  const showToolbar = () =>
+    !toolbarAutoHide() ||
+    toolbarAwake() ||
+    cropMode() ||
+    editingOverlay() ||
+    !!menu() ||
     !!error();
   function isControl(target: EventTarget | null) {
     return (
@@ -332,34 +352,67 @@ export default function Viewer(props: {
       preferred?.isConnected && !preferred.matches(':disabled') ? preferred : container;
     target.focus({ preventScroll: true });
   }
+  function scheduleToolbarSleep() {
+    clearTimeout(toolbarTimer);
+    toolbarTimer = setTimeout(() => {
+      toolbarTimer = undefined;
+      setToolbarAwake(false);
+    }, 1500);
+  }
   function activity() {
     setControls(true);
     clearTimeout(timer);
     timer = setTimeout(() => setControls(false), 2400);
   }
+  function pointerMoveActivity(event: PointerEvent) {
+    activity();
+    if (!toolbarAutoHide()) return;
+    const inTopZone =
+      event.clientY <= 64 ||
+      (event.target instanceof HTMLElement && !!event.target.closest('.nl-viewer-bar'));
+    if (inTopZone) {
+      clearTimeout(toolbarTimer);
+      toolbarTimer = undefined;
+      setToolbarAwake(true);
+    } else if (toolbarAwake() && !toolbarTimer) {
+      scheduleToolbarSleep();
+    }
+  }
   async function loadAsset(nextId: string) {
     const token = ++request;
-    setLoading(true);
-    setPreviewPending(true);
     setPreviewFailed(false);
-    setPreviewKey('');
-    setPreviewMapping(undefined);
     setError('');
     setNotice('');
-    const leaving = asset();
-    if (leaving && leaving.id !== nextId)
-      setPreviousFrame(
-        decodedThumbnail({ id: leaving.id, preview_revision: revisions.get(leaving.id) }),
-      );
-    setAsset(undefined);
     setCropMode(false);
     setCropPreset('free');
     setCropSwapped(false);
+
+    const browser = folder();
+    const known = !FolderBrowser.isPlaceholder(nextId) ? items()[nextId] : undefined;
+    if (known) {
+      const pending = optimistic.get(nextId);
+      const immediate = pending
+        ? { ...known, rating: pending.rating, flag: pending.flag }
+        : known;
+      const rev = revisions.get(nextId) ?? immediate.preview_revision;
+      setAsset({ ...immediate, ...(rev !== undefined ? { preview_revision: rev } : {}) });
+      setCrop({ ...(immediate.crop || fullCrop) });
+      setLoading(false);
+    } else {
+      setLoading(true);
+      const leaving = asset();
+      if (leaving && leaving.id !== nextId) {
+        setPreviousFrame(
+          decodedThumbnail({ id: leaving.id, preview_revision: revisions.get(leaving.id) }),
+        );
+      }
+    }
+
     try {
-      const browser = folder();
       if (browser && FolderBrowser.isPlaceholder(nextId)) {
         const opened = await browser.resolve(nextId);
         if (token !== request || id() !== nextId) return;
+        remember([opened]);
         setIds([...browser.ids]);
         setId(opened.id);
         return;
@@ -367,15 +420,32 @@ export default function Viewer(props: {
       const loaded = await execute<Asset>('asset.get', { id: nextId });
       const pending = optimistic.get(nextId);
       const next = pending ? { ...loaded, rating: pending.rating, flag: pending.flag } : loaded;
+      remember([next]);
       if (token === request && id() === nextId) {
-        setAsset({ ...next, preview_revision: revisions.get(next.id) });
+        const rev = revisions.get(next.id) ?? next.preview_revision;
+        setAsset((previous) => {
+          const keepEnrichedMeta =
+            previous?.id === next.id &&
+            Object.keys(next.metadata || {}).length === 0 &&
+            Object.keys(previous.metadata || {}).length > 0;
+          return {
+            ...next,
+            width: next.width || (previous?.id === next.id ? previous.width : undefined),
+            height: next.height || (previous?.id === next.id ? previous.height : undefined),
+            metadata: keepEnrichedMeta ? previous!.metadata : next.metadata,
+            ...(rev !== undefined ? { preview_revision: rev } : {}),
+          };
+        });
         setCrop({ ...(next.crop || fullCrop) });
         document.title = `${next.filename} — Nebulume`;
         // Only a viewer window names itself; inside the library window the title stays.
         if (desktop && !props.onClose) await getCurrentWindow().setTitle(document.title);
       }
     } catch (e) {
-      if (token === request) setError(errorMessage(e));
+      if (token === request && id() === nextId) {
+        if (!known) setAsset(undefined);
+        setError(errorMessage(e));
+      }
     } finally {
       if (token === request) setLoading(false);
     }
@@ -595,10 +665,20 @@ export default function Viewer(props: {
       setError('此查看窗口没有影像上下文，请从图片库打开照片。');
     }
     activity();
+    if (toolbarAutoHide()) scheduleToolbarSleep();
+    const syncStorage = () => {
+      const nextAutoHide = readToolbarAutoHide(localStorage);
+      setToolbarAutoHide(nextAutoHide);
+      if (nextAutoHide) scheduleToolbarSleep();
+      else setToolbarAwake(true);
+    };
+    window.addEventListener('storage', syncStorage);
     window.addEventListener('keydown', keyboard);
     onCleanup(() => {
       clearTimeout(timer);
+      clearTimeout(toolbarTimer);
       clearTimeout(pulseTimer);
+      window.removeEventListener('storage', syncStorage);
       window.removeEventListener('keydown', keyboard);
       request++;
       focusRequest++;
@@ -608,10 +688,10 @@ export default function Viewer(props: {
   });
   function move(direction: number) {
     if (cropMode() || busy()) return;
-    if (loading() && mode() !== 'cull') return;
+    if (!asset() && loading() && mode() !== 'cull') return;
+    setNavDir(direction < 0 ? -1 : 1);
     const next = ids()[index() + direction];
     if (next) setId(next);
-    activity();
   }
   // Culling: optimistic marks, short confirmation, then optional auto-advance.
   function finishPulse() {
@@ -1400,10 +1480,19 @@ export default function Viewer(props: {
     <div
       ref={container}
       tabIndex={-1}
-      class={`immersive-viewer ${mode() === 'cull' ? 'culling' : ''} ${mode() === 'cull' && asset()?.flag === 'reject' ? 'rejected' : ''} ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${info() ? 'with-info' : ''} ${readOverlayFades(localStorage) ? 'overlay-fades' : ''}`}
-      onPointerMove={activity}
+      class={`immersive-viewer ${mode() === 'cull' ? 'culling' : ''} ${mode() === 'cull' && asset()?.flag === 'reject' ? 'rejected' : ''} ${props.onClose ? 'viewer-overlay' : ''} ${showControls() ? '' : 'controls-hidden'} ${toolbarAutoHide() ? 'toolbar-autohide' : ''} ${showToolbar() ? '' : 'toolbar-hidden'} ${info() ? 'with-info' : ''} ${readOverlayFades(localStorage) ? 'overlay-fades' : ''}`}
+      onPointerMove={pointerMoveActivity}
       onPointerDown={(event) => {
         activity();
+        if (
+          toolbarAutoHide() &&
+          (event.clientY <= 64 ||
+            (event.target instanceof HTMLElement && !!event.target.closest('.nl-viewer-bar')))
+        ) {
+          clearTimeout(toolbarTimer);
+          toolbarTimer = undefined;
+          setToolbarAwake(true);
+        }
         if ((event.target as HTMLElement).closest('.photo-stage') && !isControl(event.target))
           container.focus({ preventScroll: true });
       }}
@@ -1494,14 +1583,6 @@ export default function Viewer(props: {
             </span>
             <IconButton
               size="sm"
-              icon="info"
-              label="影像信息（I）"
-              shortcut="I"
-              pressed={info()}
-              onClick={() => setInfo((value) => !value)}
-            />
-            <IconButton
-              size="sm"
               icon="crop"
               label={cropMode() ? '退出裁剪' : '裁剪（C）'}
               shortcut="C"
@@ -1515,6 +1596,14 @@ export default function Viewer(props: {
               label="更多"
               aria-haspopup="menu"
               onClick={moreMenu}
+            />
+            <IconButton
+              size="sm"
+              icon="layout-sidebar-right"
+              label="影像信息（I）"
+              shortcut="I"
+              pressed={info()}
+              onClick={() => setInfo((value) => !value)}
             />
             <Show when={!props.onClose}>
               <IconButton
@@ -1674,7 +1763,7 @@ export default function Viewer(props: {
                 focusEnabled={focusVisible()}
                 focusRegions={focus().regions}
                 zoomToggle={zoomToggle()}
-                fill={!props.onClose && mode() === 'view' && !info()}
+                fill={false}
                 preferRaw={preferRaw()}
                 onTogglePreferRaw={
                   rawUnavailable(current()) ? undefined : () => toggleRawMode(false)
@@ -1697,6 +1786,15 @@ export default function Viewer(props: {
                       state.asset.height !== current().height)
                   ) {
                     const inspected = state.asset;
+                    const enriched: Asset = {
+                      ...current(),
+                      width: inspected.width,
+                      height: inspected.height,
+                      metadata: inspected.metadata,
+                      availability: inspected.availability,
+                      cache_pinned: inspected.cache_pinned,
+                    };
+                    remember([enriched]);
                     setAsset(
                       (previous) =>
                         previous && {

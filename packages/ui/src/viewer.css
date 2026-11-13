@@ -1,5 +1,6 @@
 /* Photo rendering stays neutral in both themes; color is reserved for controls. */
 .immersive-viewer {
+  --viewer-bar-offset: var(--nl-h-lg);
   position: relative;
   display: flex;
   width: 100%;
@@ -11,6 +12,9 @@
   color: var(--nl-v-text);
   color-scheme: dark;
   outline: none;
+}
+.immersive-viewer.toolbar-autohide {
+  --viewer-bar-offset: 0px;
 }
 .viewer-overlay {
   position: fixed;
@@ -36,7 +40,7 @@
 }
 .immersive-viewer .viewer {
   position: absolute;
-  inset: 0;
+  inset: var(--viewer-bar-offset) 0 0;
   min-height: 0;
 }
 .photo-stage {
@@ -61,6 +65,10 @@
   position: relative;
   flex: none;
   overflow: hidden;
+}
+.photo-wrap.holding-previous {
+  opacity: 0.72;
+  transition: opacity var(--nl-d-fast) var(--nl-ease);
 }
 .main-photo {
   display: block;
@@ -156,11 +164,12 @@
   right: 0;
   display: flex;
   align-items: center;
-  min-height: 64px;
-  gap: var(--nl-s-4);
-  padding: var(--nl-s-2) var(--nl-s-5);
+  height: var(--nl-h-lg);
+  min-height: var(--nl-h-lg);
+  gap: var(--nl-s-3);
+  padding: 0 var(--nl-s-3);
   background: var(--nl-v-overlay);
-  border-bottom: 1px solid var(--nl-line);
+  border-bottom: 1px solid var(--nl-v-line);
 }
 .viewer-filename {
   display: flex;
@@ -340,19 +349,16 @@
   background: var(--nl-v-overlay);
   font-size: var(--nl-t-13);
 }
-.viewer-chrome,
 .viewer-controls,
 .viewer-nav,
 .viewer-banner {
   transition: opacity var(--nl-d-base) var(--nl-ease);
 }
-.controls-hidden .viewer-chrome,
 .controls-hidden .viewer-controls,
 .controls-hidden .viewer-nav {
   opacity: 0;
   pointer-events: none;
 }
-.controls-hidden .viewer-chrome:focus-within,
 .controls-hidden .viewer-controls:focus-within,
 .controls-hidden .viewer-nav:focus-visible {
   opacity: 1;
@@ -360,7 +366,7 @@
 }
 .viewer-loading {
   position: absolute;
-  inset: 0;
+  inset: var(--viewer-bar-offset) 0 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -375,7 +381,7 @@
   z-index: 8;
   left: var(--nl-s-5);
   right: var(--nl-s-5);
-  top: 76px;
+  top: calc(var(--nl-h-lg) + var(--nl-s-3));
   display: flex;
   align-items: flex-start;
   gap: var(--nl-s-3);
@@ -462,8 +468,9 @@
   .immersive-toolbar {
     flex-wrap: wrap;
     gap: var(--nl-s-1) var(--nl-s-2);
-    min-height: 104px;
-    padding: var(--nl-s-2);
+    height: auto;
+    min-height: var(--nl-h-lg);
+    padding: var(--nl-s-1) var(--nl-s-2);
   }
   .viewer-filename {
     flex-basis: calc(100% - 56px);
@@ -477,7 +484,7 @@
     height: var(--nl-h-md);
   }
   .viewer-alert {
-    top: 120px;
+    top: 96px;
     left: var(--nl-s-3);
     right: var(--nl-s-3);
   }
@@ -504,14 +511,14 @@
 @media (pointer: coarse) {
   .immersive-viewer .icon-button,
   .viewer-toolbar-actions .icon-button {
-    min-width: var(--nl-h-lg);
-    height: var(--nl-h-lg);
+    min-width: var(--nl-h-md);
+    height: var(--nl-h-md);
   }
   .zoom-controls button:not(.icon-button) {
-    min-height: var(--nl-h-lg);
+    min-height: var(--nl-h-md);
   }
   .immersive-toolbar {
-    min-height: 72px;
+    min-height: var(--nl-h-lg);
   }
 }
 .viewer-overlay {
@@ -557,7 +564,7 @@
 .viewer-banner {
   position: absolute;
   z-index: 7;
-  top: 76px;
+  top: calc(var(--nl-h-lg) + var(--nl-s-3));
   left: 50%;
   display: flex;
   align-items: center;

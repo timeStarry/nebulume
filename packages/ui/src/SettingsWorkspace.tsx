@@ -21,7 +21,12 @@ import {
   Switch,
 } from './ui';
 import { readAutoAdvance, writeAutoAdvance } from './culling';
-import { readOverlayFades, writeOverlayFades } from './overlay-layout';
+import {
+  readOverlayFades,
+  readToolbarAutoHide,
+  writeOverlayFades,
+  writeToolbarAutoHide,
+} from './overlay-layout';
 import { setThemePreference, themeNotice, themePreference, type ThemePreference } from './theme';
 import { motionPreference, setMotionPreference, type MotionPreference } from './motion';
 import CacheSettings from './CacheSettings';
@@ -33,6 +38,7 @@ function CullingSettings() {
   const [auto, setAuto] = createSignal(readAutoAdvance());
   const [pregenerate, setPregenerate] = createSignal(readPregenerate());
   const [watching, setWatching] = createSignal(readWatchLibraries());
+  const [toolbarAutoHide, setToolbarAutoHide] = createSignal(readToolbarAutoHide(localStorage));
   const [fades, setFades] = createSignal(readOverlayFades(localStorage));
   const [xmpAutoWrite, setXmpAutoWrite] = createSignal(false);
   onMount(() => {
@@ -52,6 +58,20 @@ function CullingSettings() {
             onChange={(value) => {
               setAuto(value);
               writeAutoAdvance(value);
+            }}
+          />
+        }
+      />
+      <ListRow
+        title="自动隐藏查看器顶栏"
+        description="开启后窄顶栏半透明悬浮于画面顶部，鼠标离开顶部区域后自动隐去，靠近顶部即唤出；关闭时固定常驻且绝不遮挡图像。"
+        control={
+          <Switch
+            label="自动隐藏查看器顶栏"
+            checked={toolbarAutoHide()}
+            onChange={(value) => {
+              setToolbarAutoHide(value);
+              writeToolbarAutoHide(localStorage, value);
             }}
           />
         }

@@ -1265,6 +1265,10 @@ export default function ManagementApp() {
     setOverlay({ id: asset.id, ids });
     if (image)
       fly(image, image.getBoundingClientRect(), () => {
+        const wrapRect = document
+          .querySelector('.viewer-overlay .photo-wrap')
+          ?.getBoundingClientRect();
+        if (wrapRect && wrapRect.width >= 2 && wrapRect.height >= 2) return wrapRect;
         const stage = document
           .querySelector('.viewer-overlay .photo-stage')
           ?.getBoundingClientRect();
@@ -2825,6 +2829,7 @@ export default function ManagementApp() {
           <Viewer
             initialAssetId={context().id}
             initialAssetIds={context().ids}
+            initialAssets={assets()}
             initialMode={context().mode}
             initialQueue={context().queue}
             onClose={closeOverlay}
