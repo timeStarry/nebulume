@@ -45,7 +45,13 @@ pub(crate) fn normalize_pin(pin: Option<&str>) -> Result<Option<String>> {
 
 fn is_lan(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                // RFC 6598 Shared Address Space (100.64.0.0/10): Tailscale / ZeroTier / FN Connect LANs.
+                || (ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64)
+        }
         IpAddr::V6(ip) => {
             if let Some(v4) = ip.to_ipv4_mapped() {
                 return is_lan(IpAddr::V4(v4));
@@ -144,19 +150,12 @@ impl ServerCertVerifier for FingerprintVerifier {
         _ocsp_response: &[u8],
         now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, Error> {
-        let (remaining, certificate) = parse_x509_certificate(end_entity.as_ref())
+        let (remaining, _certificate) = parse_x509_certificate(end_entity.as_ref())
             .map_err(|_| Error::InvalidCertificate(CertificateError::BadEncoding))?;
         if !remaining.is_empty() {
             return Err(Error::InvalidCertificate(CertificateError::BadEncoding));
         }
-        let now = i64::try_from(now.as_secs())
-            .map_err(|_| Error::InvalidCertificate(CertificateError::BadEncoding))?;
-        if now < certificate.validity().not_before.timestamp() {
-            return Err(Error::InvalidCertificate(CertificateError::NotValidYet));
-        }
-        if now > certificate.validity().not_after.timestamp() {
-            return Err(Error::InvalidCertificate(CertificateError::Expired));
-        }
+        let _ = now;
         if self
             .expected
             .as_ref()
@@ -167,7 +166,7 @@ impl ServerCertVerifier for FingerprintVerifier {
                     .into(),
             ));
         }
-        // Identity is the explicit leaf pin (or untrusted discovery), not its CA/name.
+        // Identity is the explicit leaf pin (or untrusted discovery), not its CA/name/expiry.
         // TLS CertificateVerify is still verified cryptographically below.
         Ok(ServerCertVerified::assertion())
     }
@@ -340,6 +339,9 @@ mod tests {
             "172.16.0.1",
             "172.31.255.255",
             "192.168.1.1",
+            "100.64.0.1",
+            "100.99.0.4",
+            "100.127.255.254",
             "127.9.8.7",
             "169.254.1.1",
             "::1",
@@ -348,6 +350,7 @@ mod tests {
             "fe80::1",
             "febf::1",
             "::ffff:192.168.1.1",
+            "::ffff:100.99.0.4",
         ] {
             assert!(is_lan(ip.parse().unwrap()), "{ip}");
         }
@@ -357,7 +360,8 @@ mod tests {
             "172.15.255.255",
             "172.32.0.1",
             "192.169.0.1",
-            "100.64.0.1",
+            "100.63.255.255",
+            "100.128.0.1",
             "224.0.0.1",
             "::",
             "2001:db8::1",

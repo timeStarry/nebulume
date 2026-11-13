@@ -5,6 +5,7 @@ import Icon from './Icon';
 import TlsCertificatePanel from './TlsCertificatePanel';
 import StorageError from './StorageError';
 import FingerprintControl from './FingerprintControl';
+import { Banner, FieldHint } from './ui';
 
 export function Modal(props: {
   title: string;
@@ -320,27 +321,24 @@ export function LibraryDialog(props: {
           <FingerprintControl libraryId={props.existing!.id} />
         </Show>
         <Show when={bindingChanged()}>
-          <div class="workspace-message error" role="alert">
-            <span>
-              更改存储位置将清空此库的旧索引、评级和裁剪配方，再扫描新目录。原始文件不会移动或删除。
-            </span>
-          </div>
+          <Banner
+            tone="warn"
+            role="alert"
+            message="更改存储位置将清空此库的旧索引、评级和裁剪配方，再扫描新目录。"
+            detail="原始文件不会移动或删除。"
+          />
         </Show>
         <Show when={confirmBinding() && bindingChanged()}>
-          <div class="note binding-confirmation">
-            <p>
-              请确认将“{props.existing?.name}”改为{' '}
-              {sourceType() === 'local'
-                ? localRoot()
-                : `${remoteSources().find((source) => source.id === sourceId())?.name || props.existing?.source_name || '远端存储源'} / ${prefix() || '根目录'}`}
-              。
-            </p>
-          </div>
+          <FieldHint tone="info">
+            请确认将“{props.existing?.name}”改为{' '}
+            {sourceType() === 'local'
+              ? localRoot()
+              : `${remoteSources().find((source) => source.id === sourceId())?.name || props.existing?.source_name || '远端存储源'} / ${prefix() || '根目录'}`}
+            。
+          </FieldHint>
         </Show>
         <Show when={error()}>
-          <div class="form-error" role="alert">
-            <StorageError error={error()} />
-          </div>
+          <StorageError error={error()} />
         </Show>
         <footer class="modal-footer">
           <button class="button" type="button" onClick={props.onClose} disabled={busy()}>
@@ -487,9 +485,12 @@ export function StorageDialog(props: {
     >
       <form class="dialog-form storage-connection-form" onSubmit={submit} autocomplete="off">
         <Show when={!desktop}>
-          <p class="native-required" role="status">
-            连接远程存储与读取设备证书需要 Nebulume 桌面版。浏览器演示不访问局域网设备。
-          </p>
+          <Banner
+            tone="info"
+            role="status"
+            message="连接远程存储与读取设备证书需要 Nebulume 桌面版。"
+            detail="浏览器演示不访问局域网设备。"
+          />
         </Show>
         <div class="segmented storage-type">
           <button
@@ -648,14 +649,12 @@ export function StorageDialog(props: {
           />
         </label>
         <Show when={locationChanged()}>
-          <p class="connection-location-note">
+          <FieldHint tone="info">
             地址、类型、根目录或存储桶已改变，将保存为新连接；原连接仍保留。
-          </p>
+          </FieldHint>
         </Show>
         <Show when={error()}>
-          <div class="form-error" role="alert">
-            <StorageError error={error()} />
-          </div>
+          <StorageError error={error()} />
         </Show>
         <footer class="modal-footer">
           <button class="button" type="button" onClick={props.onClose} disabled={busy()}>

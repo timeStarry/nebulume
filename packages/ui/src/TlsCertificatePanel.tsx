@@ -15,7 +15,7 @@ import {
   startCertificateInspection,
   trustedFingerprint,
 } from './tls-trust';
-import Icon from './Icon';
+import { FieldHint } from './ui';
 import StorageError from './StorageError';
 
 export default function TlsCertificatePanel(props: {
@@ -70,11 +70,9 @@ export default function TlsCertificatePanel(props: {
   return (
     <>
       <Show when={endpointProtocol(props.endpoint) === 'http:'}>
-        <div class="connection-transport http">
-          <Icon name="info" size={14} />
-          <strong>HTTP · 未加密</strong>
-          <span>仅支持本机与局域网地址。</span>
-        </div>
+        <FieldHint tone="warn">
+          <strong>HTTP · 未加密</strong>，仅支持本机、局域网与组网内网（100.64.x.x）。
+        </FieldHint>
       </Show>
       <Show when={endpointProtocol(props.endpoint) === 'https:'}>
         <fieldset class="tls-policy" disabled={props.disabled}>
@@ -125,9 +123,7 @@ export default function TlsCertificatePanel(props: {
                     : '读取设备证书'}
               </button>
               <Show when={trust().error}>
-                <div class="form-error" role="alert">
-                  <StorageError error={trust().error} />
-                </div>
+                <StorageError error={trust().error} />
               </Show>
               <Show when={trust().certificate}>
                 {(certificate) => (
@@ -160,7 +156,12 @@ export default function TlsCertificatePanel(props: {
                         normalizeFingerprint(props.savedFingerprint) !== certificate().sha256
                       }
                     >
-                      <p class="certificate-changed">设备证书与之前保存的指纹不同，请重新核对。</p>
+                      <FieldHint tone="warn">设备证书与之前保存的指纹不同，请重新核对。</FieldHint>
+                    </Show>
+                    <Show when={isExpiredCertificate(certificate().not_after)}>
+                      <FieldHint tone="warn">
+                        该设备自签证书已过期，确认核对指纹并信任后仍可连接。
+                      </FieldHint>
                     </Show>
                     <label class="checkbox-label certificate-confirm">
                       <input
@@ -189,4 +190,9 @@ export default function TlsCertificatePanel(props: {
 function certificateDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function isExpiredCertificate(value: string): boolean {
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) && time < Date.now();
 }

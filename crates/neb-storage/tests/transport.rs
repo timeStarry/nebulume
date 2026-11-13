@@ -191,17 +191,22 @@ fn changed_certificate_fingerprint_is_rejected_before_credentials_are_sent() {
 }
 
 #[test]
-fn expired_and_not_yet_valid_pinned_certificates_are_rejected() {
+fn expired_and_not_yet_valid_certificates_work_when_pinned_and_still_reject_mismatched_pin() {
     for validity in ["expired", "future"] {
         let server = TlsServer::new(validity, false, false);
+        let other = TlsServer::new("valid", false, false);
         let data = tempfile::tempdir().unwrap();
         let mut registry = StorageRegistry::open(data.path()).unwrap();
-        let config = registry
-            .add(request(&server.endpoint, "", Some(&server.pin)))
+        let info = inspect_tls(&server.endpoint).unwrap();
+        assert_eq!(info.sha256, server.pin);
+        let pinned = registry
+            .add(request(&server.endpoint, "pinned", Some(&server.pin)))
             .unwrap();
-        assert!(read_photo(&registry, &config.id).is_err(), "{validity}");
-        assert!(inspect_tls(&server.endpoint).is_err(), "{validity}");
-        assert!(server.requests.lock().unwrap().is_empty());
+        assert_eq!(read_photo(&registry, &pinned.id).unwrap(), "photo");
+        let mismatched = registry
+            .add(request(&server.endpoint, "wrong-pin", Some(&other.pin)))
+            .unwrap();
+        assert!(read_photo(&registry, &mismatched.id).is_err(), "{validity}");
     }
 }
 

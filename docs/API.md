@@ -154,9 +154,9 @@ WebDAV 列表按各 `propstat` 的成功状态合并属性，忽略失败属性�
 
 远端 `remember_credentials` 默认true，凭据安全存入Windows Credential Manager/macOS Keychain/Linux Secret Service，按用户数据目录、源id与具体位置绑定；启动不访问钥匙库或网络，首次操作按需恢复。设false为仅会话，系统库不可用时明确报错；配置/SQLite/日志/返回JSON不保存秘密。旧版会话凭据无法追溯，升级需首次重连。同位置编辑时省略/空秘密保留已有值；改身份须提供匹配秘密。按source id作用域的环境变量仍可用。
 
-HTTP 允许私有 IPv4、回环、链路本地地址及 IPv6 ULA。主机名须全部解析为允许的地址，连接固定这些解析结果并禁用代理/重定向；公网 HTTP 拒绝。标准 HTTPS 继续使用公共 CA 和主机名校验。
+HTTP 允许私有 IPv4、回环、链路本地、RFC 6598 组网内网（`100.64.0.0/10`，如 Tailscale / ZeroTier / 飞牛异地组网）及 IPv6 ULA。主机名须全部解析为允许的地址，连接固定这些解析结果并禁用代理/重定向；公网 HTTP 拒绝。标准 HTTPS 继续使用公共 CA 和主机名校验。
 
-`tls_certificate_sha256` 为用户明确确认的服务器叶证书 SHA-256，适用于局域网 HTTPS 自签证书或私有 CA。仅对应存储源生效，允许证书名称与访问地址不同，但仍校验证书有效期和 TLS 握手签名。证书变化会拒绝连接，须重新检查确认；缺省或 null 恢复标准校验。指纹作为非秘密连接配置持久化，原有配置缺少该字段时保持原行为。UI 将确认绑定本次 endpoint 与证书，地址变化或重新检查会清空确认。
+`tls_certificate_sha256` 为用户明确确认的服务器叶证书 SHA-256，适用于局域网或组网内网 HTTPS 自签证书或私有 CA。仅对应存储源生效，允许证书名称与访问地址不同及长期未续签的自签证书，但仍严格比对叶证书 SHA-256 指纹与 TLS 握手签名。证书指纹变化会拒绝连接，须重新检查确认；缺省或 null 恢复标准校验。指纹作为非秘密连接配置持久化，原有配置缺少该字段时保持原行为。UI 将确认绑定本次 endpoint 与证书，地址变化或重新检查会清空确认。
 
 `ImportPlan={id,source,destination,layout,deduplicate,items,total_bytes,duplicate_count,warnings,created_at}`。每个 item 包含 `source,source_relative_path,relative_path,size,status,sha256,date_source,duplicate_path,modified_nanos`。status 为 pending / duplicate；date_source 为 preserved / exif / paired_exif / unknown。`modified_nanos` 是 Rust 内部快照信息，前端不得以 JavaScript Number 重建其精确值；执行仅提交 plan_id，不接受客户端修改计划。
 

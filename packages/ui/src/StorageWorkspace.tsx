@@ -168,22 +168,18 @@ export default function StorageWorkspace(props: {
           />
         </Show>
         <Show when={error()}>
-          <div class="workspace-message error" role="alert">
-            <StorageError
-              error={error()}
-              disabled={!!busy()}
-              onSettings={
-                props.sources.some((item) => item.id === errorSourceId())
-                  ? () => props.onEdit(props.sources.find((item) => item.id === errorSourceId())!)
-                  : undefined
-              }
-            />
-          </div>
+          <StorageError
+            error={error()}
+            disabled={!!busy()}
+            onSettings={
+              props.sources.some((item) => item.id === errorSourceId())
+                ? () => props.onEdit(props.sources.find((item) => item.id === errorSourceId())!)
+                : undefined
+            }
+          />
         </Show>
         <Show when={notice()}>
-          <div class="workspace-message success" role="status">
-            {notice()}
-          </div>
+          <Banner tone="info" role="status" message={notice()} onClose={() => setNotice('')} />
         </Show>
         <Show when={props.removableLibraries?.length}>
           <Group title="外接移动硬盘与离线图库">

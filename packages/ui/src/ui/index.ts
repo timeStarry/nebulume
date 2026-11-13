@@ -19,7 +19,7 @@ export { default as Radio } from './Radio';
 export { default as Slider } from './Slider';
 export { Chip, Toggle, Badge, StatusDot } from './Chip';
 export type { Tone } from './Chip';
-export { Banner, Toast, Progress, EmptyState } from './Feedback';
+export { Banner, FieldHint, Toast, Progress, EmptyState } from './Feedback';
 export type { BannerTone } from './Feedback';
 export { Group, ListRow } from './Group';
 export { Dialog, Drawer } from './Dialog';

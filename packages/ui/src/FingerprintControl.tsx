@@ -1,6 +1,7 @@
 import { Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { execute } from './api';
 import { bytes, errorMessage, type FingerprintStatus } from './model';
+import { Banner, Button, FieldHint } from './ui';
 
 /** Explicit content-fingerprint task for one library, shown in library settings. */
 export default function FingerprintControl(props: { libraryId: string }) {
@@ -106,25 +107,28 @@ export default function FingerprintControl(props: { libraryId: string }) {
         )}
       </Show>
       <Show when={confirm()}>
-        <div class="workspace-message" role="alert">
-          <span>
-            这是网络图片库，需要完整下载 {state()?.pending} 个文件（约{' '}
-            {bytes(state()?.pending_bytes || 0)}
-            ）来计算指纹。下载内容不进入缓存，可随时停止，已完成的结果会保留。
-          </span>
-          <button class="button small primary" type="button" onClick={() => void operate('start')}>
-            开始下载并建立
-          </button>
-          <button class="button small" type="button" onClick={() => setConfirm(false)}>
-            取消
-          </button>
-        </div>
+        <Banner
+          tone="warn"
+          role="alert"
+          message={`这是网络图片库，需要完整下载 ${state()?.pending} 个文件（约 ${bytes(state()?.pending_bytes || 0)}）来计算指纹。`}
+          detail="下载内容不进入缓存，可随时停止，已完成的结果会保留。"
+          action={
+            <div class="fingerprint-confirm-actions">
+              <Button size="sm" variant="primary" onClick={() => void operate('start')}>
+                开始下载并建立
+              </Button>
+              <Button size="sm" onClick={() => setConfirm(false)}>
+                取消
+              </Button>
+            </div>
+          }
+        />
       </Show>
       <Show when={state()?.job?.status === 'cancelled'}>
-        <p class="field-note">已停止，已完成的指纹已保留。</p>
+        <FieldHint>已停止，已完成的指纹已保留。</FieldHint>
       </Show>
       <Show when={error()}>
-        <p class="form-error">{error()}</p>
+        <Banner tone="error" role="alert" message={error()} />
       </Show>
     </section>
   );
