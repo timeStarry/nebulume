@@ -1,9 +1,33 @@
-//! Update eligibility and pre-install quiescing. Only the Windows NSIS
-//! installer can self-update; portable and debug builds report why not.
+//! Update eligibility and pre-install quiescing. Windows NSIS installers and
+//! installed macOS `.app` bundles can self-update; portable, read-only disk
+//! images, AppTranslocation, Linux, and debug builds report why not.
 use neb_service::{CommandError, QuiesceReport, Service};
 use serde::Serialize;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::{Component, Path},
+    sync::Arc,
+    time::Duration,
+};
 use tauri::State;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Windows,
+    MacOs,
+    Other,
+}
+
+impl Platform {
+    const fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Other
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,15 +44,61 @@ pub struct UpdateSupport {
     kind: InstallKind,
 }
 
-pub fn install_kind(executable: &Path, debug: bool, windows: bool) -> InstallKind {
+fn macos_bundle_is_updatable(executable: &Path) -> bool {
+    let Some(macos_dir) = executable.parent() else {
+        return false;
+    };
+    if macos_dir.file_name().and_then(|name| name.to_str()) != Some("MacOS") {
+        return false;
+    }
+    let Some(contents_dir) = macos_dir.parent() else {
+        return false;
+    };
+    if contents_dir.file_name().and_then(|name| name.to_str()) != Some("Contents") {
+        return false;
+    }
+    let Some(bundle_dir) = contents_dir.parent() else {
+        return false;
+    };
+    if bundle_dir.extension().and_then(|ext| ext.to_str()) != Some("app")
+        || bundle_dir.file_stem().is_none()
+    {
+        return false;
+    }
+    // Apps opened directly from a mounted DMG (/Volumes/...) or Gatekeeper
+    // AppTranslocation sit on read-only filesystems and cannot self-update.
+    let mut components = bundle_dir.components();
+    if matches!(
+        (components.next(), components.next()),
+        (Some(Component::RootDir), Some(Component::Normal(first))) if first == "Volumes"
+    ) {
+        return false;
+    }
+    !bundle_dir
+        .components()
+        .any(|part| part.as_os_str() == "AppTranslocation")
+}
+
+pub fn install_kind(executable: &Path, debug: bool, platform: Platform) -> InstallKind {
     if debug {
-        InstallKind::Development
-    } else if !windows {
-        InstallKind::UnsupportedPlatform
-    } else if executable.with_file_name("uninstall.exe").is_file() {
-        InstallKind::Installer
-    } else {
-        InstallKind::Portable
+        return InstallKind::Development;
+    }
+    match platform {
+        Platform::Windows => {
+            if executable.with_file_name("uninstall.exe").is_file() {
+                InstallKind::Installer
+            } else {
+                InstallKind::Portable
+            }
+        }
+        Platform::MacOs => {
+            if macos_bundle_is_updatable(executable) {
+                InstallKind::Installer
+            } else {
+                InstallKind::Portable
+            }
+        }
+        Platform::Other => InstallKind::UnsupportedPlatform,
     }
 }
 
@@ -42,10 +112,11 @@ fn support(kind: InstallKind) -> UpdateSupport {
 #[tauri::command]
 pub fn update_support() -> UpdateSupport {
     // An unknown executable path cannot prove an installer layout.
+    let platform = Platform::current();
     let kind = match std::env::current_exe() {
-        Ok(executable) => install_kind(&executable, cfg!(debug_assertions), cfg!(windows)),
+        Ok(executable) => install_kind(&executable, cfg!(debug_assertions), platform),
         Err(_) if cfg!(debug_assertions) => InstallKind::Development,
-        Err(_) if !cfg!(windows) => InstallKind::UnsupportedPlatform,
+        Err(_) if platform == Platform::Other => InstallKind::UnsupportedPlatform,
         Err(_) => InstallKind::Portable,
     };
     support(kind)
@@ -72,17 +143,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_kind_uses_uninstaller_beside_executable() {
+    fn install_kind_uses_uninstaller_beside_executable_on_windows() {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("nebulume.exe");
         std::fs::write(&exe, b"MZ").unwrap();
-        assert_eq!(install_kind(&exe, false, true), InstallKind::Portable);
-        std::fs::write(dir.path().join("uninstall.exe"), b"MZ").unwrap();
-        assert_eq!(install_kind(&exe, false, true), InstallKind::Installer);
-        assert_eq!(install_kind(&exe, true, true), InstallKind::Development);
         assert_eq!(
-            install_kind(&exe, false, false),
+            install_kind(&exe, false, Platform::Windows),
+            InstallKind::Portable
+        );
+        std::fs::write(dir.path().join("uninstall.exe"), b"MZ").unwrap();
+        assert_eq!(
+            install_kind(&exe, false, Platform::Windows),
+            InstallKind::Installer
+        );
+        assert_eq!(
+            install_kind(&exe, true, Platform::Windows),
+            InstallKind::Development
+        );
+        assert_eq!(
+            install_kind(&exe, false, Platform::Other),
             InstallKind::UnsupportedPlatform
+        );
+    }
+
+    #[test]
+    fn macos_app_bundle_supports_updates_except_volumes_and_translocation() {
+        let installed = Path::new("/Applications/Lumen.app/Contents/MacOS/nebulume");
+        assert_eq!(
+            install_kind(installed, false, Platform::MacOs),
+            InstallKind::Installer
+        );
+        assert_eq!(
+            install_kind(installed, true, Platform::MacOs),
+            InstallKind::Development
+        );
+        let user_apps = Path::new("/Users/demo/Applications/Lumen.app/Contents/MacOS/nebulume");
+        assert_eq!(
+            install_kind(user_apps, false, Platform::MacOs),
+            InstallKind::Installer
+        );
+        let dmg_mount = Path::new("/Volumes/Lumen 0.2.2/Lumen.app/Contents/MacOS/nebulume");
+        assert_eq!(
+            install_kind(dmg_mount, false, Platform::MacOs),
+            InstallKind::Portable
+        );
+        let translocated = Path::new(
+            "/private/var/folders/xx/yy/T/AppTranslocation/1234/d/Lumen.app/Contents/MacOS/nebulume",
+        );
+        assert_eq!(
+            install_kind(translocated, false, Platform::MacOs),
+            InstallKind::Portable
+        );
+        let bare_binary = Path::new("/usr/local/bin/nebulume");
+        assert_eq!(
+            install_kind(bare_binary, false, Platform::MacOs),
+            InstallKind::Portable
         );
     }
 
@@ -91,7 +206,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("nebulume.exe");
         std::fs::create_dir(dir.path().join("uninstall.exe")).unwrap();
-        assert_eq!(install_kind(&exe, false, true), InstallKind::Portable);
+        assert_eq!(
+            install_kind(&exe, false, Platform::Windows),
+            InstallKind::Portable
+        );
     }
 
     #[test]

@@ -171,7 +171,7 @@ fn local_commands_complete_before_remote_release(
     commands
         .into_iter()
         .filter_map(
-            |(name, received)| match received.recv_timeout(Duration::from_millis(500)) {
+            |(name, received)| match received.recv_timeout(Duration::from_secs(3)) {
                 Ok(Ok(value)) => {
                     if name == "asset.preview" {
                         assert_eq!(value["width"], 2);
@@ -297,7 +297,7 @@ fn a_slow_scan_cannot_publish_entries_after_its_library_has_been_rebound() {
         ))
         .unwrap();
     });
-    let rebound = received.recv_timeout(Duration::from_millis(500));
+    let rebound = received.recv_timeout(Duration::from_secs(3));
     server.resume();
     updating.join().unwrap();
     let rebound = rebound

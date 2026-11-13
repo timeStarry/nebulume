@@ -1,8 +1,8 @@
 # 发布指南
 
-本指南用于从已提交源码构建和发布 Windows x64 包。macOS/Linux 的工作流配置不等于已完成发布验收；只有对应版本具备构建、测试和实机证据时才提供平台包。
+本指南用于从已提交源码构建和发布 **Windows x64** 与 **macOS Universal** 双平台发行包。Linux 的工作流配置不等于已完成发布验收；只有对应版本具备构建、测试和实机证据时才提供平台包。
 
-正式发布由 `.github/workflows/release.yml` 完成：推送 `v<版本>` 标签后，流水线在 Windows 上运行全部检查、构建并签名 NSIS 安装器、打包、创建草稿 Release 并回读核对，由人工确认后转为正式发布。下文的本地步骤在流水线不可用时作为备用路径，规则相同。
+正式发布由 `.github/workflows/release.yml` 完成：推送 `v<版本>` 标签后，流水线先在 macOS 上测试并构建签名通用架构（`universal-apple-darwin`）DMG 与更新归档，再在 Windows 上运行全部检查、构建并签名 NSIS 安装器、汇总双平台资产打包、创建草稿 Release 并回读核对，确认无误后转为正式发布。下文的本地步骤在流水线不可用时作为备用路径，规则相同。
 
 ## 更新签名密钥
 
@@ -105,23 +105,26 @@ pnpm exec tauri build --bundles nsis -- --locked
 在仓库根目录执行：
 
 ```powershell
-python scripts/package-release.py --version 0.2.1 --target-dir target --output-dir artifacts/releases/v0.2.1 --validation artifacts/release-validation-v0.2.1.json --notes-from CHANGELOG.md
+python scripts/package-release.py --version 0.2.2 --target-dir target --macos-dir artifacts/macos-dist --output-dir artifacts/releases/v0.2.2 --validation artifacts/release-validation-v0.2.2.json --notes-from CHANGELOG.md
 ```
 
 验证 JSON 可由 `scripts/collect-validation.py` 根据 cargo 测试日志、Vitest 与 Playwright 的 JSON 报告生成，流水线即使用此方式。
 
-`--target-dir` 必须对应构建使用的目录。脚本核对版本、Cargo.lock、提交、工作区、验证记录、产物格式、构建输入时间及复制前后摘要。输出目录必须全新，失败后保留部分输出供排查。
+`--target-dir` 必须对应 Windows 构建使用的目录，`--macos-dir` 指向已完成通用架构校验与签名核验的 macOS 产物目录。脚本核对版本、Cargo.lock、提交、工作区、验证记录、产物格式、macOS `.app.tar.gz` 包内结构与 `_CodeSignature`、构建输入时间及复制前后摘要。输出目录必须全新，失败后保留部分输出供排查。
 
-上传目录仅包含以下六份文件：
+上传目录包含以下九份文件：
 
 - `Lumen_<版本>_x64-setup.exe`
 - `Lumen_<版本>_x64-setup.exe.sig`
 - `Lumen_<版本>_windows_x64.zip`
+- `Lumen_<版本>_universal.dmg`
+- `Lumen_<版本>_macos_universal.app.tar.gz`
+- `Lumen_<版本>_macos_universal.app.tar.gz.sig`
 - `latest.json`
 - `manifest.json`
 - `SHA256SUMS.txt`
 
-`latest.json` 只列出 `windows-x86_64`。任何一个平台条目格式错误都会让所有平台的更新失败，因此只写入已验收的平台，脚本拒绝写出版本、签名或日期不合规的清单。`SHA256SUMS.txt` 覆盖其余五份文件。
+`latest.json` 同时列出 `windows-x86_64`、`darwin-aarch64` 与 `darwin-x86_64`。任何一个平台条目格式错误都会让所有平台的更新失败，因此只写入已校验签名的平台，`verify-release.py` 会回读并核验三个平台条目及其对应的 `.sig`。`SHA256SUMS.txt` 覆盖其余八份文件。
 
 ZIP 内仅有独立程序、使用说明、运行清单和校验表。独立程序仍使用系统应用数据目录，不在程序旁保存图库。清单记录版本、源码提交、验证和产物摘要；脚本检查 ZIP CRC、成员大小、SHA-256 及上传文件白名单，不读取应用数据或替换运行进程。
 

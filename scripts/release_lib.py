@@ -66,6 +66,25 @@ def changelog_notes(text: str, version: str) -> str:
     return notes
 
 
+def _clean_filename(value: object, label: str) -> str:
+    if not isinstance(value, str) or SAFE_FILENAME.fullmatch(value) is None:
+        raise ReleaseError(f"{label} is not a plain file name: {value!r}")
+    return value
+
+
+def _clean_signature(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ReleaseError(f"{label} must be text")
+    cleaned = value.strip()
+    if not cleaned or "\n" in cleaned or "\r" in cleaned:
+        raise ReleaseError(f"{label} must be a single non-empty line")
+    try:
+        base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ReleaseError(f"{label} is not valid base64") from error
+    return cleaned
+
+
 def updater_manifest(
     version: str,
     installer_name: str,
@@ -73,21 +92,16 @@ def updater_manifest(
     notes: str,
     pub_date: str,
     repository: str = "timeStarry/lumen",
+    macos_updater_name: str | None = None,
+    macos_signature: str | None = None,
 ) -> dict:
     """Build the Tauri updater `latest.json`, refusing anything malformed."""
     if not is_stable_semver(version):
         raise ReleaseError(f"Updater version must be stable semver: {version!r}")
-    if not isinstance(installer_name, str) or SAFE_FILENAME.fullmatch(installer_name) is None:
-        raise ReleaseError(f"Installer name is not a plain file name: {installer_name!r}")
-    if not isinstance(signature, str):
-        raise ReleaseError("Updater signature must be text")
-    signature = signature.strip()
-    if not signature or "\n" in signature or "\r" in signature:
-        raise ReleaseError("Updater signature must be a single non-empty line")
-    try:
-        base64.b64decode(signature, validate=True)
-    except (binascii.Error, ValueError) as error:
-        raise ReleaseError("Updater signature is not valid base64") from error
+    installer_name = _clean_filename(installer_name, "Installer name")
+    signature = _clean_signature(signature, "Updater signature")
+    if (macos_updater_name is None) != (macos_signature is None):
+        raise ReleaseError("macOS updater archive name and signature must be provided together")
     if not isinstance(notes, str) or not notes.strip():
         raise ReleaseError("Updater notes must be non-empty")
     if not isinstance(pub_date, str) or RFC3339_UTC.fullmatch(pub_date) is None:
@@ -98,19 +112,32 @@ def updater_manifest(
         raise ReleaseError(f"pub_date is not a real time: {pub_date!r}") from error
     if re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repository) is None:
         raise ReleaseError(f"Repository must be owner/name: {repository!r}")
+    platforms: dict[str, dict[str, str]] = {
+        "windows-x86_64": {
+            "signature": signature,
+            "url": (
+                f"https://github.com/{repository}/releases/download/"
+                f"v{version}/{installer_name}"
+            ),
+        }
+    }
+    if macos_updater_name is not None and macos_signature is not None:
+        clean_macos_name = _clean_filename(macos_updater_name, "macOS updater name")
+        clean_macos_sig = _clean_signature(macos_signature, "macOS updater signature")
+        macos_entry = {
+            "signature": clean_macos_sig,
+            "url": (
+                f"https://github.com/{repository}/releases/download/"
+                f"v{version}/{clean_macos_name}"
+            ),
+        }
+        platforms["darwin-aarch64"] = dict(macos_entry)
+        platforms["darwin-x86_64"] = dict(macos_entry)
     return {
         "version": version,
         "notes": notes,
         "pub_date": pub_date,
-        "platforms": {
-            "windows-x86_64": {
-                "signature": signature,
-                "url": (
-                    f"https://github.com/{repository}/releases/download/"
-                    f"v{version}/{installer_name}"
-                ),
-            }
-        },
+        "platforms": platforms,
     }
 
 

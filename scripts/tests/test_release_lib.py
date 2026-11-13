@@ -83,6 +83,33 @@ class UpdaterManifestTest(unittest.TestCase):
         )
         self.assertEqual(list(manifest["platforms"]), ["windows-x86_64"])
 
+    def test_updater_manifest_dual_platform_shape(self) -> None:
+        manifest = updater_manifest(
+            **self.ARGS,
+            macos_updater_name="Lumen_0.2.2_macos_universal.app.tar.gz",
+            macos_signature="bWFjb3Mtc2ln\n",
+        )
+        self.assertEqual(
+            list(manifest["platforms"]),
+            ["windows-x86_64", "darwin-aarch64", "darwin-x86_64"],
+        )
+        expected_macos = {
+            "signature": "bWFjb3Mtc2ln",
+            "url": "https://github.com/timeStarry/lumen/releases/download/v0.2.2/Lumen_0.2.2_macos_universal.app.tar.gz",
+        }
+        self.assertEqual(manifest["platforms"]["darwin-aarch64"], expected_macos)
+        self.assertEqual(manifest["platforms"]["darwin-x86_64"], expected_macos)
+        with self.assertRaises(ReleaseError):
+            updater_manifest(**self.ARGS, macos_updater_name="Lumen_0.2.2_macos_universal.app.tar.gz")
+        with self.assertRaises(ReleaseError):
+            updater_manifest(**self.ARGS, macos_signature="bWFjb3Mtc2ln")
+        with self.assertRaises(ReleaseError):
+            updater_manifest(
+                **self.ARGS,
+                macos_updater_name="../evil.tar.gz",
+                macos_signature="bWFjb3Mtc2ln",
+            )
+
     def test_updater_manifest_strips_trailing_newline(self) -> None:
         manifest = updater_manifest(**{**self.ARGS, "signature": "dW50cnVzdGVk\n"})
         self.assertEqual(manifest["platforms"]["windows-x86_64"]["signature"], "dW50cnVzdGVk")
@@ -227,6 +254,71 @@ class PackageReleaseTest(unittest.TestCase):
         os.symlink(sig, link)
         with self.assertRaises(ReleaseError):
             self.package.read_signature(link, 0)
+
+    def test_macos_artifact_checks_and_verify_latest_json(self) -> None:
+        import io
+        import tarfile
+
+        dmg = self.dir / "Lumen_0.2.2_universal.dmg"
+        dmg.write_bytes(b"dmg-bytes")
+        dmg_record = self.package.check_macos_dmg(dmg)
+        self.assertEqual(dmg_record["bytes"], 9)
+
+        updater_tar = self.dir / "Lumen_0.2.2_macos_universal.app.tar.gz"
+        with tarfile.open(updater_tar, "w:gz") as archive:
+            for member_name, payload in (
+                ("Lumen.app/Contents/Info.plist", b"<plist/>"),
+                ("Lumen.app/Contents/MacOS/nebulume", b"\xcf\xfa\xed\xfe"),
+                ("Lumen.app/Contents/_CodeSignature/CodeResources", b"<plist/>"),
+            ):
+                info = tarfile.TarInfo(member_name)
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+        tar_record = self.package.check_macos_updater_archive(updater_tar)
+        self.assertGreater(int(tar_record["bytes"]), 0)
+
+        incomplete_tar = self.dir / "incomplete.app.tar.gz"
+        with tarfile.open(incomplete_tar, "w:gz") as archive:
+            info = tarfile.TarInfo("Lumen.app/Contents/Info.plist")
+            info.size = 8
+            archive.addfile(info, io.BytesIO(b"<plist/>"))
+        with self.assertRaises(ReleaseError):
+            self.package.check_macos_updater_archive(incomplete_tar)
+
+        verify = load_script("verify-release.py")
+        release_dir = self.dir / "release-check"
+        release_dir.mkdir()
+        win_installer = "Lumen_0.2.2_x64-setup.exe"
+        mac_updater = "Lumen_0.2.2_macos_universal.app.tar.gz"
+        (release_dir / f"{win_installer}.sig").write_bytes(b"dW50cnVzdGVk\n")
+        (release_dir / f"{mac_updater}.sig").write_bytes(b"bWFjb3Mtc2ln\n")
+        (release_dir / "latest.json").write_bytes(
+            self.package.latest_json(
+                "0.2.2",
+                win_installer,
+                "dW50cnVzdGVk",
+                "- dual release",
+                "2026-11-13T00:00:00Z",
+                macos_updater_name=mac_updater,
+                macos_signature="bWFjb3Mtc2ln",
+            )
+        )
+        names = {
+            win_installer,
+            f"{win_installer}.sig",
+            mac_updater,
+            f"{mac_updater}.sig",
+            "latest.json",
+        }
+        self.assertEqual(verify.check_latest_json(release_dir, names), [])
+        # Windows-only latest.json must be rejected by verify-release.py
+        (release_dir / "latest.json").write_bytes(
+            self.package.latest_json(
+                "0.2.2", win_installer, "dW50cnVzdGVk", "- win only", "2026-11-13T00:00:00Z"
+            )
+        )
+        problems = verify.check_latest_json(release_dir, names)
+        self.assertTrue(any("darwin-aarch64" in item for item in problems))
 
 
 class CollectValidationTest(unittest.TestCase):

@@ -4,7 +4,7 @@
 
 目录升级到 schema14（在 schema13 性能基座基础上新增 Stage 4 完整虚拟组织层：`color_label` 色标体系、`collections`/`collection_items` 手动与智能精选集、`keywords`/`asset_keywords` 层级关键词树）；未知结构拒绝迁移，旧程序回退需要恢复备份。具体检查结果见 TESTING.md。
 
-当前发布 Windows x64 安装器和独立程序。Rust 核心、CLI 与 Tauri 桌面界面共用命令服务；其他平台尚未完成本版本构建与实机验收。
+当前同步发布 **Windows x64**（NSIS 安装器与独立程序 ZIP）和 **macOS Universal**（Apple Silicon 与 Intel 通用 DMG 安装镜像及应用内更新包）。Rust 核心、CLI 与 Tauri 桌面界面共用命令服务；Linux 尚未完成本版本发布包验收。
 
 ## 已实现
 

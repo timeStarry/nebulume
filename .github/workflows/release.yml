@@ -5,17 +5,111 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag such as v0.2.0
+        description: Existing release tag such as v0.2.2
         required: true
         type: string
 permissions:
   contents: write
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 jobs:
+  build-macos:
+    runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-universal-release
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve macOS TMPDIR
+        run: echo "TMPDIR=$(cd "$TMPDIR" && pwd -P)/" >> "$GITHUB_ENV"
+
+      - name: Guard tag, version and published release
+        id: guard
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Tag must be vX.Y.Z: $TAG" >&2
+            exit 1
+          fi
+          version="${TAG#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [[ "$pkg_version" != "$version" ]]; then
+            echo "Tag $TAG does not match package.json version $pkg_version" >&2
+            exit 1
+          fi
+          head_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if [[ "$head_sha" != "$tag_sha" ]]; then
+            echo "Checked-out HEAD $head_sha is not the commit of $TAG" >&2
+            exit 1
+          fi
+          if existing="$(gh release view "$TAG" --json isDraft 2>/dev/null)"; then
+            is_draft="$(printf '%s' "$existing" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("isDraft"))')"
+            if [[ "$is_draft" != "True" ]]; then
+              echo "A published release for $TAG already exists; nothing is changed" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - run: pnpm install --frozen-lockfile
+      - run: cargo test --workspace --locked
+
+      - name: Build signed macOS Universal DMG and updater bundle
+        working-directory: crates/neb-app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm exec tauri build --ci --target universal-apple-darwin --bundles app,dmg -- --locked
+
+      - name: Verify Universal binary, bundle signature and updater signature
+        env:
+          VERSION: ${{ steps.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          archs="$(lipo -archs target/universal-apple-darwin/release/nebulume)"
+          echo "Universal binary architectures: $archs"
+          [[ " $archs " == *" x86_64 "* ]] && [[ " $archs " == *" arm64 "* ]]
+          codesign --verify --deep --strict -vvv target/universal-apple-darwin/release/bundle/macos/Lumen.app
+          updater_tar="target/universal-apple-darwin/release/bundle/macos/Lumen.app.tar.gz"
+          cargo run --locked -p neb-app --example verify_update -- "$updater_tar" "${updater_tar}.sig" crates/neb-app/tauri.conf.json
+          mkdir -p artifacts/macos-dist
+          cp "target/universal-apple-darwin/release/bundle/dmg/Lumen_${VERSION}_universal.dmg" "artifacts/macos-dist/Lumen_${VERSION}_universal.dmg"
+          cp "$updater_tar" "artifacts/macos-dist/Lumen_${VERSION}_macos_universal.app.tar.gz"
+          cp "${updater_tar}.sig" "artifacts/macos-dist/Lumen_${VERSION}_macos_universal.app.tar.gz.sig"
+          ls -lh artifacts/macos-dist
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist-${{ inputs.tag || github.ref_name }}
+          path: artifacts/macos-dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   release:
+    needs: [build-macos]
     runs-on: windows-latest
-    concurrency:
-      group: release-${{ inputs.tag || github.ref_name }}
-      cancel-in-progress: false
     defaults:
       run:
         shell: pwsh
@@ -67,6 +161,12 @@ jobs:
           "commit=$head" >> $env:GITHUB_OUTPUT
           New-Item -ItemType Directory -Force artifacts | Out-Null
 
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dist-${{ inputs.tag || github.ref_name }}
+          path: artifacts/macos-dist
+
       - run: pnpm install --frozen-lockfile
       - run: python -m unittest discover -s scripts/tests -v
       - run: pnpm --filter @nebulume/ui check:design
@@ -113,12 +213,15 @@ jobs:
           $unsigned = if ($status -eq 'Valid') { 'false' } else { 'true' }
           "unsigned=$unsigned" >> $env:GITHUB_OUTPUT
 
-      - name: Verify updater signature with the embedded public key
+      - name: Verify updater signatures with the embedded public key
         env:
           VERSION: ${{ steps.guard.outputs.version }}
         run: |
           $installer = "target/release/bundle/nsis/Lumen_${env:VERSION}_x64-setup.exe"
           cargo run --locked -p neb-app --example verify_update -- $installer "$installer.sig" crates/neb-app/tauri.conf.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $macosUpdater = "artifacts/macos-dist/Lumen_${env:VERSION}_macos_universal.app.tar.gz"
+          cargo run --locked -p neb-app --example verify_update -- $macosUpdater "$macosUpdater.sig" crates/neb-app/tauri.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect validation
@@ -136,8 +239,8 @@ jobs:
           VERSION: ${{ steps.guard.outputs.version }}
         run: >-
           python scripts/package-release.py --version $env:VERSION --target-dir target
-          --output-dir "artifacts/releases/$env:TAG" --validation artifacts/release-validation.json
-          --notes-from CHANGELOG.md
+          --macos-dir artifacts/macos-dist --output-dir "artifacts/releases/$env:TAG"
+          --validation artifacts/release-validation.json --notes-from CHANGELOG.md
 
       - name: Write release notes
         env:
@@ -152,9 +255,9 @@ jobs:
           notes = changelog_notes(Path("CHANGELOG.md").read_text(encoding="utf-8-sig"), os.environ["VERSION"])
           signing = "未签名" if os.environ["UNSIGNED"] == "true" else "已签名"
           footer = (
-              "平台：Windows x64（NSIS 安装器与独立程序 ZIP）。\n"
-              f"Windows 代码签名：{signing}。安装器附带应用内更新所用的更新签名（.sig）。\n"
-              "SHA256SUMS.txt 覆盖其余五份上传文件，可用 Get-FileHash -Algorithm SHA256 核对。\n"
+              "平台：Windows x64（NSIS 安装器与独立程序 ZIP）、macOS Universal（Apple Silicon 与 Intel 通用 DMG 安装镜像及应用内更新包）。\n"
+              f"代码签名：Windows {signing}；macOS 采用 Ad-hoc 签名（首次打开如遇系统拦截，可在“系统设置 › 隐私与安全性”中允许打开）。Windows 安装器与 macOS 应用包均附带应用内更新签名（.sig）。\n"
+              "SHA256SUMS.txt 覆盖其余八份上传文件，可用 shasum -a 256 -c SHA256SUMS.txt（macOS）或 Get-FileHash -Algorithm SHA256（Windows）核对。\n"
           )
           Path("artifacts/release-notes.md").write_text(f"{notes}\n\n---\n\n{footer}", encoding="utf-8")
 
@@ -167,6 +270,9 @@ jobs:
             "$dir/Lumen_${env:VERSION}_x64-setup.exe" `
             "$dir/Lumen_${env:VERSION}_x64-setup.exe.sig" `
             "$dir/Lumen_${env:VERSION}_windows_x64.zip" `
+            "$dir/Lumen_${env:VERSION}_universal.dmg" `
+            "$dir/Lumen_${env:VERSION}_macos_universal.app.tar.gz" `
+            "$dir/Lumen_${env:VERSION}_macos_universal.app.tar.gz.sig" `
             "$dir/latest.json" `
             "$dir/manifest.json" `
             "$dir/SHA256SUMS.txt"

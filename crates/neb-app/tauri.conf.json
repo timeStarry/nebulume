@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "app"],
+    "targets": ["nsis", "app", "dmg"],
     "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
     "shortDescription": "Quiet, effortless photo library and culling tool",
     "category": "Photography",
