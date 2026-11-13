@@ -79,13 +79,13 @@ export function AboutPanel(props: { system?: Record<string, unknown> }) {
   return (
     <div class="about-panel" role="region" aria-labelledby="about-heading">
       <div class="about-hero">
-        <BrandMark size={36} />
+        <BrandMark size={40} />
         <div class="about-hero-copy">
-          <h2 id="about-heading">Lumen</h2>
-          <p class="about-version">
-            Lumen {__APP_VERSION__} · {desktop ? '桌面应用' : '浏览器演示'}
-          </p>
-          <p class="about-tagline">安静、顺手的照片库与选片工具 · 原片始终只读</p>
+          <div class="about-title-row">
+            <h2 id="about-heading">Lumen</h2>
+            <span class="about-version">v{__APP_VERSION__}</span>
+          </div>
+          <p class="about-tagline">安静、顺手的照片库与选片工具</p>
         </div>
       </div>
 

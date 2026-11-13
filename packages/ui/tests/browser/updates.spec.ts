@@ -92,7 +92,8 @@ const calls = (page: Page) =>
 test('about panel shows the build version and a manual up-to-date check', async ({ page }) => {
   await mockDesktop(page, { support: { supported: true, kind: 'installer' }, update: null });
   const about = await openSettings(page);
-  await expect(about).toContainText(`Lumen ${appVersion} · 桌面应用`);
+  await expect(about).toContainText(`v${appVersion}`);
+  await expect(about).not.toContainText('桌面应用');
   await expect(about.locator('pre')).toHaveCount(0);
   await expect(about).not.toContainText('originals_read_only');
   await expect(about.getByRole('button', { name: '打开数据目录' })).toBeVisible();

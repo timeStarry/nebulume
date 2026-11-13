@@ -5,7 +5,7 @@
 }
 .about-hero {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--nl-s-4);
   padding: var(--nl-s-5);
   border: 1px solid var(--nl-line);
@@ -14,8 +14,13 @@
 }
 .about-hero-copy {
   display: grid;
-  gap: 2px;
+  gap: var(--nl-s-1);
   min-width: 0;
+}
+.about-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--nl-s-2);
 }
 .about-hero-copy h2 {
   margin: 0;
@@ -24,15 +29,15 @@
 }
 .about-version {
   margin: 0;
-  color: var(--nl-text-2);
-  font-size: var(--nl-t-13);
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-12);
+  font-family: var(--nl-mono);
   font-variant-numeric: tabular-nums;
 }
 .about-tagline {
-  margin: var(--nl-s-1) 0 0;
-  color: var(--nl-text-3);
-  font-size: var(--nl-t-12);
-  line-height: var(--nl-leading-prose);
+  margin: 0;
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-13);
 }
 .update-actions {
   display: flex;
