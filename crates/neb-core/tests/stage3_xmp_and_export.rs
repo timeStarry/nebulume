@@ -1,4 +1,4 @@
-use std::{fs, io::Cursor, path::PathBuf};
+use std::{fs, io::Cursor};
 
 use image::{
     codecs::jpeg::{JpegDecoder, JpegEncoder},
@@ -127,7 +127,10 @@ fn xmp_merge_preserves_foreign_lightroom_crs_settings_and_roundtrips_marks() {
         .flush_asset_xmp_for_handoff(&asset_id)
         .unwrap()
         .expect("sidecar path");
-    assert_eq!(flushed, fs::canonicalize(&sidecar_path).unwrap());
+    assert_eq!(
+        fs::canonicalize(&flushed).unwrap(),
+        fs::canonicalize(&sidecar_path).unwrap()
+    );
     assert_eq!(
         xmp::parse_xmp_str(&fs::read_to_string(&sidecar_path).unwrap())
             .unwrap()
@@ -176,7 +179,7 @@ fn export_with_options_resizes_embeds_target_icc_and_preserves_original() {
         )
         .unwrap();
     assert_eq!(
-        PathBuf::from(res["path"].as_str().unwrap()),
+        fs::canonicalize(res["path"].as_str().unwrap()).unwrap(),
         fs::canonicalize(&p3_out).unwrap()
     );
 
