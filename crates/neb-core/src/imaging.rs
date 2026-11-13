@@ -1229,6 +1229,62 @@ pub fn export_with_options(
     }))
 }
 
+pub fn export_original_file(source: &Path, destination: &Path) -> Result<Value> {
+    let meta =
+        std::fs::metadata(source).context("E_NOT_FOUND: Original image file is unavailable")?;
+    ensure!(meta.is_file(), "E_INVALID: Original source is not a file");
+    if destination.exists() {
+        bail!(
+            "E_EXISTS: Export destination already exists; originals and previous exports are never overwritten"
+        );
+    }
+    let file = File::open(source).context("E_IO: Cannot open original image file")?;
+    export_original_from_reader(file, Some(meta.len()), destination)
+}
+
+pub fn export_original_from_reader(
+    mut reader: impl Read,
+    expected_size: Option<u64>,
+    destination: &Path,
+) -> Result<Value> {
+    ensure!(
+        !destination.as_os_str().is_empty(),
+        "E_INVALID: Export destination is required"
+    );
+    ensure!(
+        !destination.exists(),
+        "E_EXISTS: Export destination already exists; originals and previous exports are never overwritten"
+    );
+    let parent = destination
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    ensure!(
+        parent.is_dir(),
+        "E_NOT_FOUND: Export destination folder does not exist"
+    );
+
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    let copied = std::io::copy(&mut reader, temp.as_file_mut())?;
+    if let Some(expected) = expected_size.filter(|size| *size > 0) {
+        ensure!(
+            copied == expected,
+            "E_CONFLICT: Original size changed during export; rescan the library before retrying"
+        );
+    }
+    temp.as_file().sync_all()?;
+    temp.persist_noclobber(destination).map_err(|e| {
+        anyhow!(
+            "E_EXISTS: Cannot commit export without replacing an existing file: {}",
+            e.error
+        )
+    })?;
+    Ok(json!({
+        "path": dunce::canonicalize(destination)?.to_string_lossy(),
+        "bytes": copied,
+    }))
+}
+
 #[cfg(test)]
 mod coordinate_tests {
     use super::*;

@@ -191,6 +191,9 @@ impl Service {
 
     fn asset_value(&self, asset: &Asset) -> Result<Value> {
         let mut value = serde_json::to_value(asset)?;
+        if let Some(variants) = self.core.asset_variants(asset)? {
+            value["variants"] = variants;
+        }
         if asset.source_key.is_some() {
             let pinned = self.cache.is_pinned(&asset.id)?;
             value["cache_pinned"] = json!(pinned);
@@ -928,6 +931,7 @@ impl Service {
                     | "asset.histogram"
                     | "asset.focus"
                     | "asset.export"
+                    | "asset.export_original"
                     | "asset.refresh"
             )
         {
@@ -1018,6 +1022,44 @@ impl Service {
                 let _slot = self.download_slot()?;
                 let _lease = self.original(&asset, false)?;
                 self.core.dispatch(command, params)
+            }
+            "asset.export_original" => {
+                let Some(key) = asset.source_key.as_deref() else {
+                    return self.core.dispatch(command, params);
+                };
+                let destination = string(&params, "destination")?;
+                if let Some(lease) = self.current_original(&asset)? {
+                    return neb_core::export_original_file(lease.path(), Path::new(destination));
+                }
+                ensure!(
+                    asset.size <= 512 * 1024 * 1024,
+                    "E_LIMIT: Remote image exceeds 512 MiB"
+                );
+                let _slot = self.download_slot()?;
+                let library = self.core.library(&asset.library_id)?;
+                let source = library
+                    .storage_id
+                    .as_deref()
+                    .context("E_NOT_FOUND: Remote library has no storage source")?;
+                let download_bound = if asset.size == 0 {
+                    512 * 1024 * 1024
+                } else {
+                    asset.size
+                };
+                let reader = self
+                    .storage
+                    .lock()
+                    .map_err(|_| anyhow!("Storage state unavailable"))?
+                    .open_reader(source, key)?;
+                let reader = BoundedImageReader {
+                    inner: reader,
+                    remaining: usize::try_from(download_bound)?,
+                };
+                neb_core::export_original_from_reader(
+                    reader,
+                    (asset.size > 0).then_some(asset.size),
+                    Path::new(destination),
+                )
             }
             "asset.rate" | "asset.flag" | "asset.label" | "asset.crop" | "asset.reset_crop" => {
                 self.core.dispatch(command, params.clone())?;

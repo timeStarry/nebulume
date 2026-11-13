@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { selectChoice } from './fixtures';
 
 test('stage 4: settings convergence, color labels, hierarchical keywords, collections, and command palette', async ({
   page,
@@ -102,15 +103,15 @@ test('stage 4: settings convergence, color labels, hierarchical keywords, collec
   const filterGroup = page.getByRole('group', { name: '筛选条件' });
   await expect(filterGroup).toBeVisible();
 
-  await filterGroup.getByLabel('色标筛选').selectOption('red');
+  await selectChoice(filterGroup.getByLabel('色标筛选'), 'red');
   await expect(page.getByRole('button', { name: /portrait-a\.png/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /landscape-b\.png/ })).toHaveCount(0);
 
-  await filterGroup.getByLabel('色标筛选').selectOption('any');
+  await selectChoice(filterGroup.getByLabel('色标筛选'), 'any');
   await expect(page.getByRole('button', { name: /landscape-b\.png/ })).toBeVisible();
 
   // Parent keyword `人像` matches `人像 > 客片`!
-  await filterGroup.getByLabel('关键词筛选').selectOption('人像');
+  await selectChoice(filterGroup.getByLabel('关键词筛选'), '人像');
   await expect(page.getByRole('button', { name: /portrait-a\.png/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /landscape-b\.png/ })).toHaveCount(0);
 
@@ -125,8 +126,8 @@ test('stage 4: settings convergence, color labels, hierarchical keywords, collec
   const smartDialog = page.getByRole('dialog', { name: '新建智能精选集' });
   await expect(smartDialog).toBeVisible();
   await smartDialog.getByLabel('精选集名称').fill('五星红标精选');
-  await smartDialog.getByLabel('最低星级').selectOption('5');
-  await smartDialog.getByLabel('色标状态').selectOption('red');
+  await selectChoice(smartDialog.getByLabel('最低星级'), '5');
+  await selectChoice(smartDialog.getByLabel('色标状态'), 'red');
   await smartDialog.getByRole('button', { name: '创建精选集', exact: true }).click();
 
   await expect(

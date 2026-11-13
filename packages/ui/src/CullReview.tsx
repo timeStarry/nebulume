@@ -19,6 +19,7 @@ export default function CullReview(props: {
   busy: boolean;
   onBack: () => void;
   onExport: (ids: string[]) => void;
+  onExportOriginal?: (ids: string[]) => void;
   onTrash: (ids: string[]) => void;
 }) {
   let back!: HTMLButtonElement;
@@ -71,6 +72,15 @@ export default function CullReview(props: {
             <Grid items={props.picks} />
           </Show>
           <div class="review-actions">
+            <Show when={props.onExportOriginal}>
+              <Button
+                icon="download"
+                disabled={!props.picks.length || props.busy}
+                onClick={() => props.onExportOriginal!(props.picks.map((item) => item.id))}
+              >
+                导出原片…
+              </Button>
+            </Show>
             <Button
               variant="primary"
               icon="export"

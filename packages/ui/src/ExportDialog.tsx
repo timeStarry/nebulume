@@ -138,7 +138,8 @@ export default function ExportDialog(props: {
                 onChange={selectPreset}
                 options={allPresets().map((preset) => ({
                   value: preset.id,
-                  label: `${preset.name} — ${preset.description}`,
+                  label: preset.name,
+                  description: preset.description,
                 }))}
               />
               <Button size="sm" onClick={() => setSavingPreset((v) => !v)}>

@@ -12,7 +12,7 @@ import Icon from './Icon';
 import TlsCertificatePanel from './TlsCertificatePanel';
 import StorageError from './StorageError';
 import FingerprintControl from './FingerprintControl';
-import { Banner, FieldHint } from './ui';
+import { Banner, FieldHint, Select } from './ui';
 
 export function Modal(props: {
   title: string;
@@ -229,18 +229,20 @@ export function LibraryDialog(props: {
         <Show when={desktop}>
           <label>
             来源类型
-            <select
+            <Select
+              aria-label="来源类型"
               value={sourceType()}
               disabled={busy()}
-              onChange={(event) => {
-                setSourceType(event.currentTarget.value as 'local' | 'remote');
+              options={[
+                { value: 'local', label: '本地目录' },
+                { value: 'remote', label: '远端存储源' },
+              ]}
+              onChange={(value) => {
+                setSourceType(value as 'local' | 'remote');
                 setConfirmBinding(false);
                 setError('');
               }}
-            >
-              <option value="local">本地目录</option>
-              <option value="remote">远端存储源</option>
-            </select>
+            />
           </label>
           <Show
             when={sourceType() === 'local'}
@@ -248,34 +250,37 @@ export function LibraryDialog(props: {
               <>
                 <label>
                   存储源
-                  <select
+                  <Select
                     value={sourceId()}
                     aria-label="存储源"
-                    onChange={(e) => {
-                      setSourceId(e.currentTarget.value);
+                    required
+                    disabled={busy()}
+                    options={[
+                      { value: '', label: '选择已连接的存储位置', disabled: true },
+                      ...(sourceId() &&
+                      !remoteSources().some((source) => source.id === sourceId())
+                        ? [
+                            {
+                              value: sourceId(),
+                              label:
+                                props.existing?.source_name ||
+                                existingSource?.name ||
+                                '当前远端存储源',
+                            },
+                          ]
+                        : []),
+                      ...remoteSources().map((source) => ({
+                        value: source.id,
+                        label: source.name,
+                      })),
+                    ]}
+                    onChange={(value) => {
+                      setSourceId(value);
                       setPrefix('');
                       setConfirmBinding(false);
                       setError('');
                     }}
-                    required
-                    disabled={busy()}
-                  >
-                    <option value="" disabled>
-                      选择已连接的存储位置
-                    </option>
-                    <Show
-                      when={
-                        sourceId() && !remoteSources().some((source) => source.id === sourceId())
-                      }
-                    >
-                      <option value={sourceId()}>
-                        {props.existing?.source_name || existingSource?.name || '当前远端存储源'}
-                      </option>
-                    </Show>
-                    <For each={remoteSources()}>
-                      {(source) => <option value={source.id}>{source.name}</option>}
-                    </For>
-                  </select>
+                  />
                 </label>
                 <Show when={!remoteSources().length && !sourceId()}>
                   <p class="field-help">请先在存储源中添加 WebDAV 或 S3 连接。</p>

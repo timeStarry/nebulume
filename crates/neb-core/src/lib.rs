@@ -26,8 +26,9 @@ pub use catalog::Core;
 pub use focus_points::read_from as remote_focus;
 pub use focus_points::{FocusInfo, FocusRegion};
 pub use imaging::{
-    downsample_preview, histogram_from_jpeg, remote_preview, remote_preview_bundle,
-    stream_preview_from_bytes, ExportColorSpace, ExportOptions,
+    downsample_preview, export_original_file, export_original_from_reader, histogram_from_jpeg,
+    remote_preview, remote_preview_bundle, stream_preview_from_bytes, ExportColorSpace,
+    ExportOptions,
 };
 pub use ingest_records::{Card, CardIdentity, ImportBatch, ImportPreset};
 pub use model::{Asset, Collection, Crop, Library, Location};

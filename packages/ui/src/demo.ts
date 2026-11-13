@@ -518,6 +518,26 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       };
       break;
     }
+    case 'asset.export_original': {
+      if (!asset) throw new Error('图片不存在。');
+      const file = files.get(asset.id);
+      if (!file) throw new Error('此图片已不在浏览器会话中，请重新选择文件。');
+      const requestedName =
+        typeof params.destination === 'string' && params.destination.trim()
+          ? params.destination.split(/[\\/]/).pop()!
+          : asset.filename;
+      const url = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = requestedName;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      result = {
+        path: link.download,
+        bytes: file.size,
+      };
+      break;
+    }
     case 'xmp.policy.get':
       result = { auto_write: demoXmpAutoWrite };
       break;

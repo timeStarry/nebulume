@@ -30,6 +30,7 @@ import {
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import ExportDialog from './ExportDialog';
+import OriginalExportDialog from './OriginalExportDialog';
 import type { ExportRecipe } from './export-presets';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, {
@@ -64,11 +65,17 @@ import './library/library.css';
 import './library/wall.css';
 import LibraryOverview from './LibraryOverview';
 import {
+  exportOriginals,
   exportPhotos,
   exportSummary,
+  originalExportSummary,
+  resolveOriginalExportPlan,
   restorePhotos,
+  targetsForOriginalChoice,
   trashPhotos,
   trashSummary,
+  type OriginalExportPlan,
+  type OriginalExportTarget,
 } from './photo-actions';
 import { Thumbnail } from './PhotoView';
 import { gridTier, watchDevicePixelRatio } from './preview-url';
@@ -262,6 +269,7 @@ export default function ManagementApp() {
   const { busy, setBusy, setError, setNotice, setSyncError, action } = feedback;
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const [exportDialogIds, setExportDialogIds] = createSignal<string[] | null>(null);
+  const [originalExportPlan, setOriginalExportPlan] = createSignal<OriginalExportPlan | null>(null);
   const [editingSource, setEditingSource] = createSignal<StorageConfig>();
   const [editingLibrary, setEditingLibrary] = createSignal<Library>();
   const [removing, setRemoving] = createSignal<
@@ -837,10 +845,10 @@ export default function ManagementApp() {
     setEditingSource(source);
     setDialog('storage');
   }
-  /** Renders every selected photo with its crop to a chosen folder in the background. */
-  async function exportSelection(ids = selectedIds()) {
-    if (!ids.length || tasks.isRunning('export')) return;
-    const directory = desktop ? await chooseDirectory('选择导出文件夹') : '';
+  /** Copies original files untouched (direct when unambiguous RAW/JPEG; prompts when paired or mixed). */
+  async function executeOriginalExport(targets: OriginalExportTarget[]) {
+    if (!targets.length || tasks.isRunning('export')) return;
+    const directory = desktop ? await chooseDirectory('选择原片导出文件夹') : '';
     if (desktop && !directory) return;
     setError('');
     setNotice('');
@@ -848,23 +856,38 @@ export default function ManagementApp() {
       const result = await tasks.run(
         {
           kind: 'export',
-          title: `导出 ${ids.length} 张照片`,
+          title: `导出 ${targets.length} 个原片`,
           processed: 0,
-          total: ids.length,
+          total: targets.length,
         },
         ({ progress }) =>
-          exportPhotos(
-            ids,
-            directory ?? '',
-            new Map(assets().map((item) => [item.id, item])),
-            (done, count) => progress({ processed: done, total: count, detail: `${done} / ${count}` }),
+          exportOriginals(targets, directory ?? '', (done, count) =>
+            progress({ processed: done, total: count, detail: `${done} / ${count}` }),
           ),
         (res) =>
-          `已导出 ${res.exported} 张${res.failures.length ? `，${res.failures.length} 张失败` : ''}`,
+          `已导出 ${res.exported} 个原片${res.failures.length ? `，${res.failures.length} 个失败` : ''}`,
       );
-      const summary = exportSummary(result, directory ?? '', desktop);
+      const summary = originalExportSummary(result, directory ?? '', desktop);
       if (summary.error) setError(summary.error);
       else setNotice(summary.notice!);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function exportSelection(ids = selectedIds()) {
+    if (!ids.length || tasks.isRunning('export')) return;
+    setError('');
+    try {
+      const plan = await resolveOriginalExportPlan(
+        ids,
+        new Map(assets().map((item) => [item.id, item])),
+      );
+      if (!plan.allTargets.length) return;
+      if (plan.needsFormatChoice) {
+        setOriginalExportPlan(plan);
+        return;
+      }
+      await executeOriginalExport(plan.allTargets);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -877,7 +900,7 @@ export default function ManagementApp() {
       const result = await tasks.run(
         {
           kind: 'export',
-          title: `按预设导出 ${ids.length} 张照片`,
+          title: `导出 ${ids.length} 张 JPEG`,
           processed: 0,
           total: ids.length,
         },
@@ -1637,6 +1660,7 @@ export default function ManagementApp() {
       event.key.toLowerCase() === 'k' &&
       !dialog() &&
       !exportDialogIds() &&
+      !originalExportPlan() &&
       !removing() &&
       !collectionEditor() &&
       !collectingIds() &&
@@ -1673,6 +1697,7 @@ export default function ManagementApp() {
     if (
       dialog() ||
       exportDialogIds() ||
+      originalExportPlan() ||
       removing() ||
       collectionEditor() ||
       collectingIds() ||
@@ -1823,11 +1848,9 @@ export default function ManagementApp() {
     else setSelectedId(asset.id);
     const count = selectedIds().length;
     const subject = count > 1 ? `所选 ${count} 张照片` : asset.filename;
-    const rateItems = [5, 4, 3, 2, 1, 0].map((value) => ({
-      label: value ? `评为 ${'★'.repeat(value)}` : '清除评级',
-      ariaLabel: value ? `将${subject}评为 ${value} 星` : `清除${subject}的评级`,
-      onSelect: () => void markSelection({ rating: value }),
-    }));
+    const localSingle = desktop && !asset.source_key && count === 1 && !!asset.path;
+    const canTrash =
+      currentLibrary()?.source_kind === 'local' || !currentLibrary()?.source_kind;
     setContextMenu({
       x: point.x,
       y: point.y,
@@ -1836,6 +1859,7 @@ export default function ManagementApp() {
       items: [
         {
           label: count > 1 ? '在查看器中打开（所选照片）' : '在查看器中打开',
+          icon: 'expand',
           onSelect: () =>
             void openAsset(asset, count > 1 ? selectedIds() : assets().map((item) => item.id)),
         },
@@ -1843,6 +1867,7 @@ export default function ManagementApp() {
           ? [
               {
                 label: '在新窗口中打开',
+                icon: 'app-window' as const,
                 onSelect: () =>
                   void openAssetWindow(
                     asset,
@@ -1853,29 +1878,14 @@ export default function ManagementApp() {
           : []),
         {
           label: '从此照片开始选图',
+          icon: 'check',
+          shortcut: '⇧C',
           onSelect: () => void startCulling(),
         },
         'separator',
-        ...rateItems,
-        'separator',
-        { label: '留用', onSelect: () => void markSelection({ flag: 'pick' }) },
-        {
-          label: '淘汰',
-          onSelect: () => void markSelection({ flag: 'reject' }),
-        },
-        {
-          label: '清除旗标',
-          onSelect: () => void markSelection({ flag: 'none' }),
-        },
-        'separator',
-        { label: '设为红色标', shortcut: '6', onSelect: () => void markSelection({ color_label: 'red' }) },
-        { label: '设为黄色标', shortcut: '7', onSelect: () => void markSelection({ color_label: 'yellow' }) },
-        { label: '设为绿色标', shortcut: '8', onSelect: () => void markSelection({ color_label: 'green' }) },
-        { label: '设为蓝色标', shortcut: '9', onSelect: () => void markSelection({ color_label: 'blue' }) },
-        { label: '清除色标', onSelect: () => void markSelection({ color_label: 'none' }) },
-        'separator',
         {
           label: count > 1 ? `将所选 ${count} 张加入精选集…` : '加入精选集…',
+          icon: 'folder-plus',
           onSelect: () => setCollectingIds([...selectedIds()]),
         },
         ...(activeCollection()?.kind === 'manual'
@@ -1888,86 +1898,71 @@ export default function ManagementApp() {
           : []),
         'separator',
         {
-          label: '显示详情',
-          onSelect: () => setInfo(true),
-        },
-        {
-          label: count > 1 ? `导出所选 ${count} 张为 JPEG…` : '导出为 JPEG…',
+          label: count > 1 ? `导出所选 ${count} 张原片…` : '导出原片…',
+          icon: 'download',
           disabled: tasks.isRunning('export'),
           onSelect: () => void exportSelection(),
         },
         {
-          label: count > 1 ? `按预设导出所选 ${count} 张…` : '按预设导出…',
+          label: count > 1 ? `导出所选 ${count} 张为 JPEG…` : '导出 JPEG…',
+          icon: 'export',
           shortcut: '⌘⇧E',
           disabled: tasks.isRunning('export'),
           onSelect: () => setExportDialogIds([...selectedIds()]),
         },
-        ...(desktop && !asset.source_key
+        ...(localSingle || (count === 1 && !!asset.path)
           ? [
-              {
-                label: '在文件夹中显示',
-                disabled: count > 1 || !asset.path,
-                onSelect: () =>
-                  void revealInFolder(asset.path).catch((e) => setError(errorMessage(e))),
-              },
-              {
-                label: '用默认应用打开',
-                disabled: count > 1 || !asset.path,
-                onSelect: () =>
-                  void openExternal({ id: asset.id, path: asset.path }).catch((e) =>
-                    setError(errorMessage(e)),
-                  ),
-              },
-              {
-                label: '选择外部精修软件打开…',
-                disabled: count > 1 || !asset.path,
-                onSelect: () =>
-                  void chooseExternalApp()
-                    .then((app) => {
-                      if (app) return openExternal({ id: asset.id, path: asset.path, appPath: app });
-                    })
-                    .catch((e) => setError(errorMessage(e))),
-              },
+              'separator' as const,
+              ...(localSingle
+                ? [
+                    {
+                      label: '在文件夹中显示',
+                      icon: 'folder-open' as const,
+                      onSelect: () =>
+                        void revealInFolder(asset.path).catch((e) => setError(errorMessage(e))),
+                    },
+                    {
+                      label: '选择外部精修软件打开…',
+                      icon: 'external-link' as const,
+                      onSelect: () =>
+                        void chooseExternalApp()
+                          .then((app) => {
+                            if (app) {
+                              return openExternal({
+                                id: asset.id,
+                                path: asset.path,
+                                appPath: app,
+                              });
+                            }
+                          })
+                          .catch((e) => setError(errorMessage(e))),
+                    },
+                  ]
+                : []),
+              ...(count === 1 && asset.path
+                ? [
+                    {
+                      label: '复制文件路径',
+                      icon: 'copy' as const,
+                      onSelect: () =>
+                        void navigator.clipboard
+                          .writeText(asset.path)
+                          .then(() => setNotice('已复制文件路径。'))
+                          .catch(() => setError('无法写入剪贴板。')),
+                    },
+                  ]
+                : []),
             ]
           : []),
-        ...(!asset.source_key
+        ...(desktop && canTrash
           ? [
-              {
-                label: '写入 .xmp 伴随文件',
-                disabled: !!busy(),
-                onSelect: () => void syncXmp('write', { ids: [...selectedIds()] }),
-              },
-              {
-                label: '从 .xmp 重新读取标记',
-                disabled: !!busy(),
-                onSelect: () => void syncXmp('read', { ids: [...selectedIds()] }),
-              },
-            ]
-          : []),
-        ...(currentLibrary()?.source_kind === 'local'
-          ? [
+              'separator' as const,
               {
                 label: count > 1 ? `将所选 ${count} 张移到废纸篓` : '移到废纸篓',
+                icon: 'trash' as const,
+                danger: true,
                 disabled: !!busy(),
                 onSelect: () => void trashSelection(),
-              },
-            ]
-          : []),
-        {
-          label: '复制文件路径',
-          disabled: count > 1 || !asset.path,
-          onSelect: () =>
-            void navigator.clipboard
-              .writeText(asset.path)
-              .then(() => setNotice('已复制文件路径。'))
-              .catch(() => setError('无法写入剪贴板。')),
-        },
-        ...(desktop
-          ? [
-              {
-                label: '重新读取原图',
-                disabled: count > 1 || !!busy(),
-                onSelect: () => void refreshOriginal(),
               },
             ]
           : []),
@@ -3195,6 +3190,20 @@ export default function ManagementApp() {
             );
           }}
         />
+      </Show>
+      <Show when={originalExportPlan()}>
+        {(plan) => (
+          <OriginalExportDialog
+            plan={plan()}
+            busy={tasks.isRunning('export')}
+            onClose={() => setOriginalExportPlan(null)}
+            onConfirm={(choice) => {
+              const targets = targetsForOriginalChoice(plan(), choice);
+              setOriginalExportPlan(null);
+              void executeOriginalExport(targets);
+            }}
+          />
+        )}
       </Show>
       <Show when={exportDialogIds()}>
         {(ids) => (

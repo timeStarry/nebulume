@@ -1,7 +1,10 @@
 /* Justified photo wall: true aspect ratios, day sections, chrome only on hover. */
+.collection-scroll:has(> .justified-grid) {
+  padding-top: 0;
+}
 .justified-grid.photo-grid {
   position: relative;
-  display: block;
+  display: flow-root;
 }
 .justified-tile {
   position: absolute;
@@ -182,11 +185,16 @@
   color: var(--nl-v-text);
   font-size: var(--nl-t-12);
 }
-.day-head {
-  position: absolute;
-  left: 0;
-  right: 0;
+.day-section {
+  position: relative;
   z-index: 3;
+  pointer-events: none;
+  overflow-anchor: none;
+}
+.day-head {
+  position: sticky;
+  top: 0;
+  pointer-events: auto;
   display: flex;
   align-items: baseline;
   gap: var(--nl-s-2);
@@ -201,7 +209,4 @@
 .day-head span {
   color: var(--nl-text-3);
   font-size: var(--nl-t-12);
-}
-.day-head.pinned {
-  z-index: 4;
 }

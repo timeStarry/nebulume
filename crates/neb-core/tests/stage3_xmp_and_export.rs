@@ -223,3 +223,77 @@ fn export_with_options_resizes_embeds_target_icc_and_preserves_original() {
     // Source photo remains strictly read-only.
     assert_eq!(fs::read(&photo_path).unwrap(), original_bytes);
 }
+
+#[test]
+fn export_original_copies_paired_raw_or_jpeg_untouched_without_overwriting() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib_dir = dir.path().join("lib");
+    let out_dir = dir.path().join("out");
+    fs::create_dir_all(&lib_dir).unwrap();
+    fs::create_dir_all(&out_dir).unwrap();
+
+    let jpg_path = lib_dir.join("DSC_0888.JPG");
+    let nef_path = lib_dir.join("DSC_0888.NEF");
+    let jpg_bytes = write_test_jpeg(&jpg_path, 640, 480, [120, 160, 210]);
+    let nef_bytes = b"II*\0\x08\0\0\0FAKE_RAW_SENSOR_PAYLOAD_BYTES_UNTOUCHED".to_vec();
+    fs::write(&nef_path, &nef_bytes).unwrap();
+
+    let core = Core::open(dir.path().join("data")).unwrap();
+    let lib = core
+        .dispatch(
+            "library.add",
+            json!({ "name": "Pairs", "root": lib_dir, "pair_raw_jpeg": true }),
+        )
+        .unwrap();
+    let lib_id = lib["id"].as_str().unwrap();
+    core.dispatch("library.scan", json!({ "library_id": lib_id }))
+        .unwrap();
+
+    let listed = core
+        .dispatch("asset.list", json!({ "library_id": lib_id }))
+        .unwrap();
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    let rep_id = items[0]["id"].as_str().unwrap();
+
+    // `asset.get` must also surface `variants` (`[raw, raster]`) for Viewer & Original Export.
+    let single = core.dispatch("asset.get", json!({ "id": rep_id })).unwrap();
+    let variants = single["variants"]
+        .as_array()
+        .expect("variants on asset.get");
+    assert_eq!(variants.len(), 2);
+    assert_eq!(variants[0]["kind"], "raw");
+    assert_eq!(variants[1]["kind"], "raster");
+
+    let raw_id = variants[0]["id"].as_str().unwrap();
+    let jpg_id = variants[1]["id"].as_str().unwrap();
+
+    let out_nef = out_dir.join("DSC_0888.NEF");
+    let out_jpg = out_dir.join("DSC_0888.JPG");
+    let res_raw = core
+        .dispatch(
+            "asset.export_original",
+            json!({ "id": raw_id, "destination": out_nef }),
+        )
+        .unwrap();
+    assert_eq!(res_raw["bytes"], nef_bytes.len() as u64);
+    assert_eq!(fs::read(&out_nef).unwrap(), nef_bytes);
+
+    let res_jpg = core
+        .dispatch(
+            "asset.export_original",
+            json!({ "id": jpg_id, "destination": out_jpg }),
+        )
+        .unwrap();
+    assert_eq!(res_jpg["bytes"], jpg_bytes.len() as u64);
+    assert_eq!(fs::read(&out_jpg).unwrap(), jpg_bytes);
+
+    // Must reject overwriting an existing file with E_EXISTS.
+    let err = core
+        .dispatch(
+            "asset.export_original",
+            json!({ "id": raw_id, "destination": out_nef }),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("E_EXISTS"));
+}

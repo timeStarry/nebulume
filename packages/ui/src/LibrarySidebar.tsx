@@ -72,8 +72,20 @@ export default function LibrarySidebar(props: {
   onCollapse?: () => void;
 }) {
   const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set());
+  const [collapsedLibraries, setCollapsedLibraries] = createSignal<ReadonlySet<string>>(new Set());
   const [foldersCollapsed, setFoldersCollapsed] = createSignal(readFoldersCollapsed());
   const [menu, setMenu] = createSignal<{ path: string; x: number; y: number }>();
+  const isLibraryExpanded = (id: string) =>
+    props.currentId === id && !collapsedLibraries().has(id);
+  const setLibraryCollapsed = (id: string, collapsed: boolean) =>
+    setCollapsedLibraries((previous) => {
+      const next = new Set(previous);
+      if (collapsed) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const toggleLibraryCollapsed = (id: string) =>
+    setLibraryCollapsed(id, !collapsedLibraries().has(id));
   createEffect(() => {
     if (!menu()) return;
     const dismiss = () => setMenu(undefined);
@@ -208,19 +220,55 @@ export default function LibrarySidebar(props: {
           {(library) => (
             <li>
               <div
-                class={`nav-library-row ${props.currentId === library.id && !props.folder && !props.collectionId ? 'active' : ''}`}
+                class={`nav-library-row ${
+                  props.currentId === library.id &&
+                  ((!props.folder && !props.collectionId) || !isLibraryExpanded(library.id))
+                    ? 'active'
+                    : ''
+                }`}
               >
+                <Show when={props.currentId === library.id}>
+                  <button
+                    type="button"
+                    class="tree-chevron nav-library-chevron"
+                    classList={{ open: isLibraryExpanded(library.id) }}
+                    aria-expanded={isLibraryExpanded(library.id)}
+                    aria-label={
+                      isLibraryExpanded(library.id)
+                        ? `折叠 ${library.name} 目录树`
+                        : `展开 ${library.name} 目录树`
+                    }
+                    title={isLibraryExpanded(library.id) ? '折叠图片库目录树（也可双击图片库）' : '展开图片库目录树'}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleLibraryCollapsed(library.id);
+                    }}
+                  >
+                    <Icon name="right" size={12} />
+                  </button>
+                </Show>
                 <button
                   class={`nav-library-item ${props.currentId === library.id ? 'active' : ''}`}
                   aria-current={props.currentId === library.id ? 'page' : undefined}
+                  aria-expanded={
+                    props.currentId === library.id ? isLibraryExpanded(library.id) : undefined
+                  }
                   aria-label={`打开图片库 ${library.name}，${props.unavailableLabel(library)}`}
-                  title={props.location(library)}
-                  onClick={() => {
+                  title={`${props.location(library)}${props.currentId === library.id ? ' · 双击可折叠或展开' : ''}`}
+                  onClick={(event) => {
                     if (props.currentId === library.id) {
-                      props.onCollection?.('');
-                      props.onFolder('');
+                      if (event.detail === 1) {
+                        props.onCollection?.('');
+                        props.onFolder('');
+                      }
                     } else {
+                      setLibraryCollapsed(library.id, false);
                       props.onLibrary(library);
+                    }
+                  }}
+                  onDblClick={() => {
+                    if (props.currentId === library.id) {
+                      toggleLibraryCollapsed(library.id);
                     }
                   }}
                 >
@@ -260,7 +308,7 @@ export default function LibrarySidebar(props: {
                   />
                 </span>
               </div>
-              <Show when={props.currentId === library.id}>
+              <Show when={isLibraryExpanded(library.id)}>
                 <div class="library-subnav">
                   <Show when={props.onCollection && props.onCreateCollection}>
                     <SidebarCollections

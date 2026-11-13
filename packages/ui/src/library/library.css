@@ -84,6 +84,11 @@
   min-width: 0;
   background: transparent;
 }
+.nav-library-chevron {
+  flex: none;
+  margin-left: var(--nl-s-1);
+  margin-right: -2px;
+}
 .nav-library-more {
   flex: none;
   opacity: 0;

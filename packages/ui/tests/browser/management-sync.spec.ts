@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { servePreviewImages } from './fixtures';
+import { selectChoice, servePreviewImages } from './fixtures';
 import type { Asset, AssetListOptions, CaptureIndexStatus } from '../../src/model';
 import { browserAssetFacets, browserAssetList } from '../../src/workspace';
 
@@ -214,6 +214,21 @@ async function fixture(
       case '$native/plugin:dialog|open':
         result = '/Exports';
         break;
+      case 'asset.export_original': {
+        const destination = String(call.params.destination);
+        if (destination === '/Exports/Photo-002.jpg') {
+          await route.fulfill({
+            json: { error: { message: 'E_EXISTS: Export destination already exists' } },
+          });
+          return;
+        }
+        if (destination.startsWith('/Exports/Photo-003')) {
+          await route.fulfill({ json: { error: { message: 'E_IO: Synthetic unreadable file' } } });
+          return;
+        }
+        result = { path: destination, bytes: 100 };
+        break;
+      }
       case 'asset.export': {
         const destination = String(call.params.destination);
         // Photo-002 already has an export on disk; Photo-003 cannot be rendered.
@@ -492,7 +507,7 @@ test('rating sort reconciles the loaded window in the background without remount
   page,
 }) => {
   const { calls, assets } = await fixture(page);
-  await page.getByLabel('排序字段').selectOption('rating');
+  await selectChoice(page.getByLabel('排序字段'), 'rating');
   await expect
     .poll(() => calls.filter((c) => c.command === 'asset.list').at(-1)?.params.sort_by)
     .toBe('rating');
@@ -525,7 +540,7 @@ test('legacy id event precisely reads one asset and a rating filter can change a
   page,
 }) => {
   const { calls, assets } = await fixture(page, 4, 0, true);
-  await page.getByLabel('最低评级筛选').selectOption('3');
+  await selectChoice(page.getByLabel('最低评级筛选'), '3');
   await expect(page.locator('.photo-grid .thumbnail')).toHaveCount(1);
   await expect(page.locator('.photo-grid .thumbnail')).toHaveAttribute(
     'aria-label',
@@ -553,7 +568,7 @@ test('a creation time refresh reconciles the whole loaded catalog in the selecte
   assets.forEach((asset, index) => {
     asset.created_at = `2026-10-${String(index + 1).padStart(2, '0')}T00:00:00Z`;
   });
-  await page.getByLabel('排序字段').selectOption('created_at');
+  await selectChoice(page.getByLabel('排序字段'), 'created_at');
   await expect(page.locator('.photo-grid .thumbnail').first()).toHaveAttribute(
     'aria-label',
     'Photo-003.jpg，0 星',
@@ -584,7 +599,7 @@ test('capture metadata updates reorder the authoritative catalog without decodin
   page,
 }) => {
   const { calls, assets } = await fixture(page, 8);
-  await expect(page.getByLabel('排序字段')).toHaveValue('captured_at');
+  await expect(page.getByLabel('排序字段')).toHaveAttribute('data-value', 'captured_at');
   await page.getByRole('button', { name: '影像详情（I）' }).click();
   await expect(page.getByRole('complementary', { name: '影像详情' })).toBeVisible();
   await settle(page, calls);
@@ -733,13 +748,13 @@ test('capture indexing completes with known and missing counts, reconciles once 
     /已知 1 · 未获得 3 · 待索引 0/,
   );
   await page.screenshot({ path: testInfo.outputPath('capture-index-completed.png') });
-  await page.getByLabel('排序字段').selectOption('filename');
+  await selectChoice(page.getByLabel('排序字段'), 'filename');
   await expect
     .poll(() => calls.filter((call) => call.command === 'asset.list').at(-1)?.params.sort_by)
     .toBe('filename');
   await settle(page, calls);
   const reenter = calls.length;
-  await page.getByLabel('排序字段').selectOption('captured_at');
+  await selectChoice(page.getByLabel('排序字段'), 'captured_at');
   await expect
     .poll(() => calls.slice(reenter).filter((call) => call.command === 'asset.list').length)
     .toBe(1);
@@ -968,7 +983,7 @@ test('arrow keys move by photo and row, Home and End jump, and only one thumbnai
   await expect(page.getByRole('toolbar', { name: '批量操作' })).toContainText('已选 3 张');
 });
 
-test('right-click opens a menu for the photo, or the whole selection, and marks it', async ({
+test('right-click opens a concise action menu for the photo or selection without flat star clutter', async ({
   page,
 }) => {
   const { calls, assets } = await fixture(page, 8);
@@ -979,23 +994,28 @@ test('right-click opens a menu for the photo, or the whole selection, and marks 
   await expect(menu).toBeVisible();
   await expect(menu.getByRole('menuitem').first()).toBeFocused();
   await expect(cells.nth(2)).toHaveClass(/focused/);
-  await menu.getByRole('menuitem', { name: `将${assets[2].filename}评为 4 星` }).click();
+  // Flat star/flag/color options are removed from the right-click menu; primary actions remain.
+  await expect(menu.getByRole('menuitem', { name: /评为/ })).toHaveCount(0);
+  await expect(menu.getByRole('menuitem', { name: '留用' })).toHaveCount(0);
+  for (const label of ['在查看器中打开', '在新窗口中打开', '从此照片开始选图', '加入精选集…', '导出原片…', '导出 JPEG…', '移到废纸篓']) {
+    await expect(menu.getByRole('menuitem', { name: label })).toBeVisible();
+  }
+  await menu.getByRole('menuitem', { name: '在新窗口中打开' }).click();
   await expect(menu).toHaveCount(0);
   await expect
-    .poll(() => calls.find((call) => call.command === 'asset.rate')?.params)
-    .toMatchObject({ id: assets[2].id, rating: 4 });
+    .poll(() => calls.find((call) => call.command === '$native/open_viewer')?.params)
+    .toMatchObject({ assetId: assets[2].id });
   await cells.nth(0).click();
   await cells.nth(3).click({ modifiers: ['Shift'] });
   await cells.nth(1).click({ button: 'right' });
   const batchMenu = page.getByRole('menu', { name: '所选 4 张照片 操作' });
   await expect(batchMenu).toBeVisible();
-  await batchMenu.getByRole('menuitem', { name: '淘汰' }).click();
+  await expect(batchMenu.getByRole('menuitem', { name: '导出所选 4 张原片…' })).toBeVisible();
+  await expect(batchMenu.getByRole('menuitem', { name: '导出所选 4 张为 JPEG…' })).toBeVisible();
+  await batchMenu.getByRole('menuitem', { name: '将所选 4 张移到废纸篓' }).click();
   await expect
-    .poll(() => calls.find((call) => call.command === 'asset.mark_batch')?.params.flag)
-    .toBe('reject');
-  expect(
-    (calls.find((call) => call.command === 'asset.mark_batch')!.params.ids as string[]).length,
-  ).toBe(4);
+    .poll(() => calls.find((call) => call.command === 'asset.trash')?.params)
+    .toEqual({ ids: ['photo-0', 'photo-1', 'photo-2', 'photo-3'] });
 });
 
 test('the context menu opens from the keyboard, closes on Escape and returns focus', async ({
@@ -1138,10 +1158,16 @@ test('camera, lens and date filters are sent with every page and clear with the 
   expect(assets).toHaveLength(6);
   const lastList = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
   const camera = page.getByLabel('机身筛选');
-  await expect(camera.locator('option')).toHaveText(['所有机身', 'NIKON Z 6（4）', 'X-T5（2）']);
-  await camera.selectOption('NIKON Z 6');
+  await camera.click();
+  const cameraPopover = page.locator('.nl-select-popover[role="listbox"]');
+  await expect(cameraPopover.locator('[role="option"] .nl-select-option-label')).toHaveText([
+    '所有机身',
+    'NIKON Z 6（4）',
+    'X-T5（2）',
+  ]);
+  await cameraPopover.locator('[role="option"][data-value="NIKON Z 6"]').click();
   await expect.poll(lastList).toMatchObject({ camera: 'NIKON Z 6' });
-  await page.getByLabel('镜头筛选').selectOption('NIKKOR Z 50mm');
+  await selectChoice(page.getByLabel('镜头筛选'), 'NIKKOR Z 50mm');
   await page.getByLabel('拍摄日期起').fill('2026-10-11');
   await page.getByLabel('拍摄日期止').fill('2026-10-13');
   await expect.poll(lastList).toMatchObject({
@@ -1155,7 +1181,7 @@ test('camera, lens and date filters are sent with every page and clear with the 
   await expect(page.getByRole('heading', { name: '没有匹配的照片' })).toBeVisible();
   await page.getByRole('button', { name: '清除筛选' }).click();
   await expect.poll(lastList).toEqual(expect.not.objectContaining({ camera: expect.anything() }));
-  await expect(camera).toHaveValue('');
+  await expect(camera).toHaveAttribute('data-value', '');
   await expect(page.getByLabel('拍摄日期起')).toHaveValue('');
   await expect(page.locator('.collection-status')).toContainText('6 张');
 });
@@ -1167,8 +1193,8 @@ test('active filters show as removable chips and the panel remembers whether it 
   const panel = page.getByRole('group', { name: '筛选条件' });
   const toggle = page.getByRole('button', { name: /^筛选/ });
   await expect(panel).toBeVisible();
-  await page.getByLabel('文件格式筛选').selectOption('jpeg');
-  await page.getByLabel('旗标筛选').selectOption('pick');
+  await selectChoice(page.getByLabel('文件格式筛选'), 'jpeg');
+  await selectChoice(page.getByLabel('旗标筛选'), 'pick');
   await expect(toggle).toContainText('2');
   await toggle.click();
   await expect(panel).toHaveCount(0);
@@ -1207,7 +1233,7 @@ test('the inspector shows the selected photo at once and keeps its layout while 
   await expect(inspector).not.toHaveAttribute('aria-busy');
 });
 
-test('batch export renders each selected photo to the chosen folder without overwriting', async ({
+test('batch export copies originals directly and renders JPEG deliveries without overwriting', async ({
   page,
 }) => {
   const { calls } = await fixture(page, 12);
@@ -1216,9 +1242,33 @@ test('batch export renders each selected photo to the chosen folder without over
   await cells.nth(3).click({ modifiers: ['Shift'] });
   const bar = page.getByRole('toolbar', { name: '批量操作' });
   await expect(bar).toContainText('已选 3 张');
-  await bar.getByRole('button', { name: '导出 JPEG…' }).click();
-  await expect(page.getByRole('alert')).toContainText('已导出 2 张，1 张失败');
+
+  // 1. Single-format selection exports originals directly with collision numbering.
+  await bar.getByRole('button', { name: '导出原片…' }).click();
+  await expect(page.getByRole('alert')).toContainText('已导出 2 个原片，1 个失败');
   await expect(page.getByRole('alert')).toContainText('Photo-003.jpg');
+  const originals = calls
+    .filter((call) => call.command === 'asset.export_original')
+    .map((call) => call.params.destination);
+  expect(originals).toEqual([
+    '/Exports/Photo-001.jpg',
+    '/Exports/Photo-002.jpg',
+    '/Exports/Photo-002-2.jpg',
+    '/Exports/Photo-003.jpg',
+  ]);
+
+  // 2. Preset JPEG delivery export opens ExportDialog, preserves Escape inside Select, and renders JPEGs.
+  await bar.getByRole('button', { name: '导出 JPEG…' }).click();
+  const dialog = page.getByRole('dialog', { name: '导出 3 张照片' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('导出预设').click();
+  await expect(page.locator('.nl-select-popover[role="listbox"]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.nl-select-popover[role="listbox"]')).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: '浏览…', exact: true }).click();
+  await dialog.getByRole('button', { name: '导出 3 张', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('已导出 2 张，1 张失败');
   const exports = calls
     .filter((call) => call.command === 'asset.export')
     .map((call) => call.params.destination);
@@ -1228,6 +1278,50 @@ test('batch export renders each selected photo to the chosen folder without over
     '/Exports/Photo-002-edited-2.jpg',
     '/Exports/Photo-003-edited.jpg',
   ]);
+});
+
+test('sticky day header stays pinned cleanly at the scroll viewport top across multi-screen sections', async ({
+  page,
+}) => {
+  await fixture(page, 200);
+  const scroller = page.locator('.collection-scroll');
+  for (const offset of [80, 220, 480, 760, 1100]) {
+    await scroller.evaluate((el, top) => {
+      el.scrollTop = top;
+    }, offset);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const scrollEl = document.querySelector('.collection-scroll')!;
+          const scrollRect = scrollEl.getBoundingClientRect();
+          const heads = [...document.querySelectorAll<HTMLElement>('.day-head')];
+          // Find the header whose section currently spans the top edge of the scroll viewport.
+          const active = heads.find((head) => {
+            const section = head.closest('.day-section') as HTMLElement | null;
+            if (!section) return false;
+            const sRect = section.getBoundingClientRect();
+            return sRect.top <= scrollRect.top + 1 && sRect.bottom >= scrollRect.top + head.offsetHeight;
+          });
+          if (!active) return null;
+          const hRect = active.getBoundingClientRect();
+          return {
+            position: getComputedStyle(active).position,
+            drift: Math.abs(hRect.top - scrollRect.top),
+          };
+        }),
+      )
+      .toEqual({ position: 'sticky', drift: expect.any(Number) });
+    const drift = await page.evaluate(() => {
+      const scrollRect = document.querySelector('.collection-scroll')!.getBoundingClientRect();
+      const heads = [...document.querySelectorAll<HTMLElement>('.day-head')];
+      const active = heads.find((head) => {
+        const sRect = head.closest('.day-section')!.getBoundingClientRect();
+        return sRect.top <= scrollRect.top + 1 && sRect.bottom >= scrollRect.top + head.offsetHeight;
+      })!;
+      return Math.abs(active.getBoundingClientRect().top - scrollRect.top);
+    });
+    expect(drift).toBeLessThanOrEqual(1.5);
+  }
 });
 
 test('a change in a watched library folder refreshes the open grid in place', async ({ page }) => {

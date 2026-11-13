@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { selectChoice } from './fixtures';
 
 for (const size of [
   { width: 960, height: 600 },
@@ -80,7 +81,7 @@ test('the motion preference applies at once, persists and syncs to other windows
     .click();
   const second = await context.newPage();
   await second.goto('/');
-  await page.getByLabel('界面动效').selectOption('full');
+  await selectChoice(page.getByLabel('界面动效'), 'full');
   // An explicit choice wins over the OS setting.
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'full');
   await expect(second.locator('html')).toHaveAttribute('data-motion', 'full');
@@ -88,7 +89,7 @@ test('the motion preference applies at once, persists and syncs to other windows
     getComputedStyle(document.documentElement).getPropertyValue('--nl-d-base').trim(),
   );
   expect(duration).toBe('180ms');
-  await page.getByLabel('界面动效').selectOption('standard');
+  await selectChoice(page.getByLabel('界面动效'), 'standard');
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'standard');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'standard');

@@ -5,7 +5,6 @@ import {
   For,
   onCleanup,
   onMount,
-  Show,
   type JSX,
 } from 'solid-js';
 
@@ -28,7 +27,14 @@ export interface JustifiedGridApi {
 
 type Tile = { index: number; left: number; width: number };
 type Row = { top: number; height: number; tiles: Tile[] };
-type Section = { key: string; label: string; detail: string; top: number; rows: Row[] };
+type Section = {
+  key: string;
+  label: string;
+  detail: string;
+  top: number;
+  bottom: number;
+  rows: Row[];
+};
 type CachedSection = {
   rawKey: string;
   start: number;
@@ -80,10 +86,12 @@ export default function JustifiedGrid<T>(props: {
     const canReuse = available === prevWidth && target === prevTarget;
     const nextCache: CachedSection[] = [];
     const rowOf: { row: Row; tile: Tile }[] = [];
-    let top = 0;
+    const items = props.items;
+    const firstKey = items.length ? (props.measure(items[0]).group ?? '') : '';
+    const firstHasHeader = Boolean(firstKey && props.section?.(firstKey, items.slice(0, 1)));
+    let top = firstHasHeader ? 0 : 16;
     let start = 0;
     let sectionIndex = 0;
-    const items = props.items;
     while (start < items.length) {
       const key = props.measure(items[start]).group ?? '';
       let end = start;
@@ -124,6 +132,7 @@ export default function JustifiedGrid<T>(props: {
         label,
         detail,
         top,
+        bottom: top,
         rows: [],
       };
       let y = top + (header ? HEADER : 0);
@@ -159,7 +168,8 @@ export default function JustifiedGrid<T>(props: {
       }
       // A short last row keeps the target height instead of stretching.
       if (row.length) close(target);
-      const nextTop = y - GAP + SECTION_GAP;
+      section.bottom = Math.max(top, y - GAP);
+      const nextTop = section.bottom + SECTION_GAP;
       sections.push(section);
       nextCache.push({
         rawKey: key,
@@ -212,18 +222,21 @@ export default function JustifiedGrid<T>(props: {
   const visibleItems = createMemo(() =>
     visibleRows().flatMap((row) => row.tiles.map((tile) => props.items[tile.index])),
   );
-  const visibleHeaders = createMemo(() => {
+  const visibleSections = createMemo(() => {
     const { top, height } = viewport();
+    const margin = Math.max(600, height);
+    const from = top - margin;
+    const to = top + height + margin;
     return layout().sections.filter(
-      (section) => section.label && section.top <= top + height + 600 && section.top >= top - 1200,
+      (section) => section.label && section.bottom >= from && section.top <= to,
     );
   });
-  // The section whose rows are under the top edge keeps its header pinned.
+  // The section whose rows are under the top edge keeps its header clearance for keyboard jumps.
   const pinned = createMemo(() => {
     const { top } = viewport();
     let current: Section | undefined;
     for (const section of layout().sections)
-      if (section.label && section.top <= top) current = section;
+      if (section.label && section.top <= top && section.bottom > top) current = section;
     return current;
   });
 
@@ -325,22 +338,29 @@ export default function JustifiedGrid<T>(props: {
 
   return (
     <div ref={root} class="justified-grid photo-grid" style={{ height: `${layout().height}px` }}>
-      <For each={visibleHeaders()}>
-        {(section) => (
-          <div class="day-head" style={{ top: `${section.top}px` }}>
-            <h2>{section.label}</h2>
-            <span>{section.detail}</span>
-          </div>
-        )}
+      <For each={visibleSections()}>
+        {(section, index) => {
+          const marginTop = () => {
+            const idx = index();
+            const prev = idx > 0 ? visibleSections()[idx - 1] : undefined;
+            return prev ? section.top - prev.bottom : section.top;
+          };
+          return (
+            <div
+              class="day-section"
+              style={{
+                'margin-top': `${marginTop()}px`,
+                height: `${section.bottom - section.top}px`,
+              }}
+            >
+              <div class="day-head">
+                <h2>{section.label}</h2>
+                <span>{section.detail}</span>
+              </div>
+            </div>
+          );
+        }}
       </For>
-      <Show when={pinned()}>
-        {(section) => (
-          <div class="day-head pinned" aria-hidden="true" style={{ top: `${viewport().top}px` }}>
-            <h2>{section().label}</h2>
-            <span>{section().detail}</span>
-          </div>
-        )}
-      </Show>
       <For each={visibleItems()}>
         {(item) => {
           const place = () => placements().get(item);

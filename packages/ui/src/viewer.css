@@ -213,7 +213,7 @@
   color: var(--nl-text);
   box-shadow: inset 0 0 0 2px var(--nl-ring);
 }
-.immersive-viewer :is(button, input, summary, select):focus-visible {
+.immersive-viewer :is(button, input, summary, select):not(.nl-input > input):not(.nl-select):focus-visible {
   outline: 2px solid var(--nl-v-ring);
   outline-offset: 2px;
 }

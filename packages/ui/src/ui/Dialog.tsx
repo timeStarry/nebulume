@@ -24,7 +24,7 @@ export function Dialog(props: {
     const body = dialog.querySelector<HTMLElement>('.nl-dialog-body');
     (
       body?.querySelector<HTMLElement>(
-        'input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
+        'input:not(:disabled), [role="combobox"]:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
       ) ?? dialog.querySelector<HTMLElement>(FOCUSABLE)
     )?.focus();
   });

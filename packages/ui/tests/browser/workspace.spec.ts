@@ -56,9 +56,26 @@ test('real browser files support review, crop invalidation, reset and JPEG expor
   await expect(page.getByLabel('左侧')).toHaveValue('25');
   await page.getByRole('button', { name: '退出裁剪' }).click();
   await expect(page.locator('.main-photo')).toHaveJSProperty('naturalWidth', 400);
+  const originalDownloadEvent = page.waitForEvent('download');
+  await viewer.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: '导出原片…' }).click();
+  const originalDownload = await originalDownloadEvent;
+  expect(originalDownload.suggestedFilename()).toBe('review-fixture.png');
+  const originalData = await fs.readFile((await originalDownload.path())!);
+  expect(originalData[0]).toBe(0x89);
+  expect(originalData[1]).toBe(0x50);
+
   const downloadEvent = page.waitForEvent('download');
   await viewer.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
-  await page.getByRole('menuitem', { name: '导出为 JPEG…' }).click();
+  await page.getByRole('menuitem', { name: '导出 JPEG…' }).click();
+  const exportDialog = page.getByRole('dialog', { name: '导出 JPEG 交付件' });
+  await expect(exportDialog).toBeVisible();
+  // Verify the ExportDialog <Select> inside Viewer does not render a nested double focus ring.
+  const presetCombo = exportDialog.getByLabel('导出预设');
+  await presetCombo.focus();
+  const focusOutline = await presetCombo.evaluate((el) => getComputedStyle(el).outlineStyle);
+  expect(focusOutline).toBe('none');
+  await exportDialog.getByRole('button', { name: '导出 JPEG', exact: true }).click();
   const download = await downloadEvent;
   expect(download.suggestedFilename()).toBe('review-fixture-edited.jpg');
   const data = await fs.readFile((await download.path())!);

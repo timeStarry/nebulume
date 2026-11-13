@@ -599,7 +599,14 @@ impl Core {
                     self.open_file(Path::new(&args.path))?,
                 )?)
             }
-            "asset.get" => Ok(serde_json::to_value(self.asset(&id(&params)?)?)?),
+            "asset.get" => {
+                let asset = self.asset(&id(&params)?)?;
+                let mut value = serde_json::to_value(&asset)?;
+                if let Some(variants) = self.asset_variants(&asset)? {
+                    value["variants"] = variants;
+                }
+                Ok(value)
+            }
             "asset.rate" => {
                 #[derive(Deserialize)]
                 struct Rate {
@@ -763,6 +770,17 @@ impl Core {
                         color_space: args.color_space,
                     },
                 )
+            }
+            "asset.export_original" => {
+                #[derive(Deserialize)]
+                struct ExportOriginal {
+                    id: String,
+                    destination: String,
+                }
+                let args: ExportOriginal = parse(params)?;
+                let asset = self.asset(&args.id)?;
+                let path = self.checked_asset_path(&asset)?;
+                imaging::export_original_file(&path, Path::new(&args.destination))
             }
             "xmp.policy.get" => Ok(json!({"auto_write": self.xmp_auto_write()?})),
             "xmp.policy.set" => {
@@ -1984,15 +2002,53 @@ impl Core {
         Ok(members)
     }
 
-    /// The other half of a RAW + JPEG pair: same folder, same name, one RAW and one JPEG.
+    /// Both halves of a RAW + JPEG pair (`[raw, raster]`) when `pair_raw_jpeg` is active
+    /// on the asset's library and an unambiguous sibling exists.
+    pub fn asset_variants(&self, asset: &Asset) -> Result<Option<Value>> {
+        if asset.library_id.is_empty() || !self.library(&asset.library_id)?.pair_raw_jpeg {
+            return Ok(None);
+        }
+        let Some(partner) = self.pair_partner_entry(asset)? else {
+            return Ok(None);
+        };
+        let self_entry = query::PairVariant {
+            id: asset.id.clone(),
+            filename: asset.filename.clone(),
+            extension: asset.extension.clone(),
+            kind: asset.kind.clone(),
+        };
+        let pair = if self_entry.kind == "raw" {
+            [self_entry, partner]
+        } else {
+            [partner, self_entry]
+        };
+        Ok(Some(serde_json::to_value(pair)?))
+    }
+
+    /// The other half of a local RAW + JPEG pair: same folder, same name, one RAW and one JPEG.
     fn pair_partner(&self, asset: &Asset) -> Result<Option<String>> {
-        let path = Path::new(&asset.path);
+        if asset.source_key.is_some() {
+            return Ok(None);
+        }
+        Ok(self.pair_partner_entry(asset)?.map(|entry| entry.id))
+    }
+
+    fn pair_partner_entry(&self, asset: &Asset) -> Result<Option<query::PairVariant>> {
+        let loc = asset.source_key.as_deref().unwrap_or(&asset.path);
+        let path = Path::new(loc);
         let (Some(folder), Some(stem)) = (path.parent(), path.file_stem()) else {
             return Ok(None);
         };
+        let is_jpeg =
+            |extension: &str| matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg");
+        if asset.kind != "raw" && !is_jpeg(&asset.extension) {
+            return Ok(None);
+        }
         let db = self.db()?;
         let mut statement = db.prepare(
-     "SELECT id,path,kind,extension FROM assets WHERE library_id=?1 AND id<>?2 AND source_key IS NULL AND trashed_at IS NULL AND filename LIKE ?3 ESCAPE '\\'",
+            "SELECT id,COALESCE(source_key,path),filename,extension,kind \
+             FROM assets WHERE library_id=?1 AND id<>?2 AND trashed_at IS NULL \
+             AND availability<>'missing' AND filename LIKE ?3 ESCAPE '\\'",
         )?;
         let pattern = format!(
             "{}.%",
@@ -2004,29 +2060,38 @@ impl Core {
         let candidates = statement
             .query_map(params![asset.library_id, asset.id, pattern], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
+                    query::PairVariant {
+                        id: row.get(0)?,
+                        filename: row.get(2)?,
+                        extension: row.get(3)?,
+                        kind: row.get(4)?,
+                    },
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let is_jpeg =
-            |extension: &str| matches!(extension.to_ascii_lowercase().as_str(), "jpg" | "jpeg");
-        let matches: Vec<_> = candidates
+        let same_stem: Vec<_> = candidates
             .into_iter()
-            .filter(|(_, other, kind, extension)| {
-                let other = Path::new(other);
-                other.parent() == Some(folder)
-                    && other.file_stem() == Some(stem)
-                    && ((asset.kind == "raw" && is_jpeg(extension))
-                        || (is_jpeg(&asset.extension) && kind == "raw"))
+            .filter(|(other_loc, other)| {
+                let other_path = Path::new(other_loc);
+                other_path.parent() == Some(folder)
+                    && other_path.file_stem() == Some(stem)
+                    && (other.kind == "raw" || is_jpeg(&other.extension))
             })
             .collect();
-        Ok(match matches.as_slice() {
-            [(id, ..)] => Some(id.clone()),
-            _ => None,
-        })
+        // Match `list_snapshot`: only pair when there is a single unambiguous counterpart
+        // of the opposite format (`1 RAW + 1 JPEG`).
+        if same_stem.len() != 1 {
+            return Ok(None);
+        }
+        let (_, partner) = same_stem.into_iter().next().unwrap();
+        if (asset.kind == "raw" && is_jpeg(&partner.extension))
+            || (is_jpeg(&asset.extension) && partner.kind == "raw")
+        {
+            Ok(Some(partner))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn mark_batch_library(&self, ids: &[String]) -> Result<String> {
