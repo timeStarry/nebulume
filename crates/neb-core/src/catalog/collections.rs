@@ -84,9 +84,10 @@ pub(super) fn load_keywords_for_assets(
          WHERE ak.asset_id IN ({placeholders})
          ORDER BY k.path ASC"
     ))?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(asset_ids.iter().copied()), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(asset_ids.iter().copied()),
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
     for row in rows {
         let (asset_id, path) = row?;
         map.entry(asset_id).or_default().push(path);
@@ -153,8 +154,8 @@ fn validate_smart_rules(rules: &Value) -> Result<String> {
         obj.remove("limit");
         obj.remove("offset");
     }
-    let _: AssetQuery =
-        serde_json::from_value(cleaned.clone()).context("E_INVALID: Invalid smart collection rules")?;
+    let _: AssetQuery = serde_json::from_value(cleaned.clone())
+        .context("E_INVALID: Invalid smart collection rules")?;
     Ok(serde_json::to_string(&cleaned)?)
 }
 
@@ -383,7 +384,10 @@ impl Core {
         }))
     }
 
-    pub(super) fn remove_assets_from_collection(&self, args: CollectionAssetsArgs) -> Result<Value> {
+    pub(super) fn remove_assets_from_collection(
+        &self,
+        args: CollectionAssetsArgs,
+    ) -> Result<Value> {
         ensure!(
             (1..=2000).contains(&args.asset_ids.len()),
             "E_INVALID: Collection batch must contain 1 to 2000 photos"

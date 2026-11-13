@@ -545,9 +545,10 @@ impl Core {
                     root: String,
                 }
                 let args: Relocate = parse(params)?;
-                Ok(serde_json::to_value(
-                    self.relocate_local_library(&args.id, Path::new(&args.root))?,
-                )?)
+                Ok(serde_json::to_value(self.relocate_local_library(
+                    &args.id,
+                    Path::new(&args.root),
+                )?)?)
             }
             "library.remove" => {
                 let id = id(&params)?;
@@ -988,9 +989,12 @@ impl Core {
     /// Relocates a local folder library (e.g. an external SSD mounted at a new path)
     /// while preserving 100% of asset IDs, stars, flags, color labels, crops, collections, and keywords.
     pub fn relocate_local_library(&self, id: &str, new_root: &Path) -> Result<Library> {
-        let canonical =
-            dunce::canonicalize(new_root).context("E_NOT_FOUND: Relocated directory is unavailable")?;
-        ensure!(canonical.is_dir(), "E_INVALID: Relocated path must be a directory");
+        let canonical = dunce::canonicalize(new_root)
+            .context("E_NOT_FOUND: Relocated directory is unavailable")?;
+        ensure!(
+            canonical.is_dir(),
+            "E_INVALID: Relocated path must be a directory"
+        );
         let new_root_str = canonical
             .to_str()
             .context("E_INVALID: Relocated path must be valid Unicode")?
@@ -1050,10 +1054,11 @@ impl Core {
                     continue;
                 };
                 let candidate = canonical.join(&rel);
-                let resolved = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+                let resolved =
+                    dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
                 let next_path_str = resolved.to_string_lossy().into_owned();
-                let next_key = location_key(&library.source_prefix, &canonical, &resolved)
-                    .or(old_key);
+                let next_key =
+                    location_key(&library.source_prefix, &canonical, &resolved).or(old_key);
                 let availability = if !trashed && resolved.is_file() {
                     "available"
                 } else {
@@ -2120,7 +2125,9 @@ impl Core {
             return Ok(image);
         }
         let crop = if uncropped { None } else { asset.crop };
-        let image = Arc::new(imaging::preview_with_options(&path, crop, tier, prefer_raw)?);
+        let image = Arc::new(imaging::preview_with_options(
+            &path, crop, tier, prefer_raw,
+        )?);
         self.previews.put(key, Arc::clone(&image));
         Ok(image)
     }

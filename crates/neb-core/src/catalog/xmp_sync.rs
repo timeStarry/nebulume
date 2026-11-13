@@ -168,20 +168,22 @@ impl Core {
     }
 
     pub(super) fn read_xmp_sidecars(&self, args: XmpTargetArgs) -> Result<Value> {
+        struct PendingXmpUpdate {
+            id: String,
+            library_id: String,
+            rating: u8,
+            flag: String,
+            color_label: String,
+            crop: Option<Crop>,
+            keywords: Option<Vec<String>>,
+            crop_changed: bool,
+        }
+
         let assets = self.resolve_xmp_targets(args)?;
         let mut updated = 0usize;
         let mut skipped = 0usize;
         let mut failed = Vec::new();
-        let mut pending_updates: Vec<(
-            String,
-            String,
-            u8,
-            String,
-            String,
-            Option<Crop>,
-            Option<Vec<String>>,
-            bool,
-        )> = Vec::new();
+        let mut pending_updates: Vec<PendingXmpUpdate> = Vec::new();
 
         for asset in assets {
             if asset.source_key.is_some() {
@@ -222,16 +224,16 @@ impl Core {
                         || crop_changed
                         || kw_changed
                     {
-                        pending_updates.push((
-                            asset.id,
-                            asset.library_id,
-                            next_rating,
-                            next_flag,
-                            next_label,
-                            next_crop,
-                            kw_changed.then_some(next_keywords),
+                        pending_updates.push(PendingXmpUpdate {
+                            id: asset.id,
+                            library_id: asset.library_id,
+                            rating: next_rating,
+                            flag: next_flag,
+                            color_label: next_label,
+                            crop: next_crop,
+                            keywords: kw_changed.then_some(next_keywords),
                             crop_changed,
-                        ));
+                        });
                     } else {
                         skipped += 1;
                     }
@@ -252,14 +254,22 @@ impl Core {
                 let mut stmt = tx.prepare_cached(
                     "UPDATE assets SET rating=?1,flag=?2,color_label=?3,crop_json=?4 WHERE id=?5",
                 )?;
-                for (id, library_id, rating, flag, color_label, crop, kw_opt, _) in &pending_updates
-                {
-                    let crop_json = crop
-                        .map(|c| serde_json::to_string(&c))
-                        .transpose()?;
-                    stmt.execute(params![rating, flag, color_label, crop_json, id])?;
-                    if let Some(kws) = kw_opt {
-                        collections::replace_asset_keywords_tx(&tx, library_id, id, kws)?;
+                for item in &pending_updates {
+                    let crop_json = item.crop.map(|c| serde_json::to_string(&c)).transpose()?;
+                    stmt.execute(params![
+                        item.rating,
+                        item.flag,
+                        item.color_label,
+                        crop_json,
+                        item.id
+                    ])?;
+                    if let Some(kws) = &item.keywords {
+                        collections::replace_asset_keywords_tx(
+                            &tx,
+                            &item.library_id,
+                            &item.id,
+                            kws,
+                        )?;
                     }
                     updated += 1;
                 }
@@ -267,16 +277,16 @@ impl Core {
             tx.commit()?;
             drop(db);
 
-            for (id, _, _, _, _, _, _, crop_changed) in &pending_updates {
-                if *crop_changed {
-                    self.previews.remove_prefix(&format!("{id}:"));
+            for item in &pending_updates {
+                if item.crop_changed {
+                    self.previews.remove_prefix(&format!("{}:", item.id));
                 }
             }
         }
 
         let crop_changed_ids: Vec<String> = pending_updates
             .into_iter()
-            .filter_map(|(id, _, _, _, _, _, _, changed)| changed.then_some(id))
+            .filter_map(|item| item.crop_changed.then_some(item.id))
             .collect();
 
         Ok(json!({

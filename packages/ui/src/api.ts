@@ -101,6 +101,13 @@ export function openDataDirectory(): Promise<void> {
   if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
   return invoke('open_data_dir');
 }
+export function openProjectUrl(url: string): Promise<void> {
+  if (!desktop) {
+    if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer');
+    return Promise.resolve();
+  }
+  return invoke('open_url', { url });
+}
 export function openExternal(options: {
   id?: string;
   path: string;

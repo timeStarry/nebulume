@@ -1,10 +1,12 @@
 import { createSignal, Match, onCleanup, Show, Switch as SolidSwitch } from 'solid-js';
-import { desktop, openDataDirectory } from './api';
+import { desktop, openDataDirectory, openProjectUrl } from './api';
 import BrandMark from './BrandMark';
 import { Button, Group, ListRow, Switch } from './ui';
 import type { UnsupportedReason, UpdateState } from './update-controller';
 import { updates } from './updates';
 import './update.css';
+
+const GITHUB_URL = 'https://github.com/timeStarry/lumen';
 
 const UNSUPPORTED_COPY: Record<UnsupportedReason, string> = {
   portable: '独立程序不支持自动更新，请从 Release 页面下载新版本。',
@@ -86,6 +88,15 @@ export function AboutPanel(props: { system?: Record<string, unknown> }) {
             <span class="about-version">v{__APP_VERSION__}</span>
           </div>
           <p class="about-tagline">安静、顺手的照片库与选片工具</p>
+        </div>
+        <div class="about-hero-actions">
+          <Button
+            size="sm"
+            icon="external-link"
+            onClick={() => void openProjectUrl(GITHUB_URL).catch(() => {})}
+          >
+            GitHub
+          </Button>
         </div>
       </div>
 

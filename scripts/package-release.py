@@ -256,7 +256,7 @@ def package(args: argparse.Namespace) -> dict:
     ).hexdigest()
     target = resolve_path(args.target_dir) / "release"
     exe_source = target / "nebulume.exe"
-    installer_name = f"Nebulume_{args.version}_x64-setup.exe"
+    installer_name = f"Lumen_{args.version}_x64-setup.exe"
     installer_source = target / "bundle/nsis" / installer_name
     exe_record = check_executable(exe_source, newest_input)
     installer_record = check_executable(installer_source, newest_input)
@@ -277,7 +277,7 @@ def package(args: argparse.Namespace) -> dict:
         and not notes_path.is_relative_to(output),
         "Output must not contain source artifacts or the validation input",
     )
-    archive_name = f"Nebulume_{args.version}_windows_x64.zip"
+    archive_name = f"Lumen_{args.version}_windows_x64.zip"
     names = {
         installer_name, signature_name, archive_name,
         "latest.json", "manifest.json", "SHA256SUMS.txt",
@@ -290,30 +290,30 @@ def package(args: argparse.Namespace) -> dict:
     latest_record = {"bytes": len(latest), "sha256": hashlib.sha256(latest).hexdigest()}
     runtime = {
         "schema_version": 1,
-        "product": "Nebulume",
+        "product": "Lumen",
         "version": args.version,
         "platform": "windows-x86_64",
         "source": identity,
         "unsigned": verification["unsigned"],
-        "application": {"filename": "nebulume.exe", **exe_record},
+        "application": {"filename": "Lumen.exe", **exe_record},
         "data_storage": "system_application_data_directory",
         "requirements": ["Microsoft Edge WebView2 Runtime"],
     }
     readme = (
-        f"Nebulume {args.version} · Windows x64\n\n"
-        "解压后运行 nebulume.exe；需要 Microsoft Edge WebView2 Runtime。\n"
+        f"Lumen {args.version} · Windows x64\n\n"
+        "解压后运行 Lumen.exe；需要 Microsoft Edge WebView2 Runtime。\n"
         "独立程序仍使用系统应用数据目录保存图库索引、设置和缓存，"
         "不会将用户数据保存在本 ZIP 内，也不是随程序目录携带数据的便携数据模式。\n"
         "原片默认只读；导入保留来源，裁剪保存配方，导出生成新文件。\n"
         "本包不含用户数据库、照片、连接配置、凭据或测试日志。\n"
         f"源码标签：{identity['tag']}\n提交：{identity['commit']}\n"
         f"Windows 代码签名：{'未签名' if verification['unsigned'] else '已签名（见发布验证）'}\n"
-        "下载与更新：https://github.com/timeStarry/nebulume/releases\n"
+        "下载与更新：https://github.com/timeStarry/lumen/releases\n"
         "SHA256SUMS.txt 用于核对本包成员；完整发布说明与已知限制见 Release。\n"
     ).encode("utf-8")
     contents = {"README.txt": readme, "manifest.json": json_bytes(runtime)}
     member_records = {
-        "nebulume.exe": exe_record,
+        "Lumen.exe": exe_record,
         **{
             name: {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
             for name, content in contents.items()
@@ -346,7 +346,7 @@ def package(args: argparse.Namespace) -> dict:
     require(info(output / "latest.json") == latest_record, "latest.json changed after writing")
     archive = output / archive_name
     with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-        bundle.write(exe_source, "nebulume.exe")
+        bundle.write(exe_source, "Lumen.exe")
         for name, content in sorted(contents.items()):
             bundle.writestr(name, content)
     with zipfile.ZipFile(archive) as bundle:
@@ -364,7 +364,7 @@ def package(args: argparse.Namespace) -> dict:
     archive_record = info(archive)
     manifest = {
         "schema_version": 1,
-        "product": "Nebulume",
+        "product": "Lumen",
         "version": args.version,
         "platform": "windows-x86_64",
         "created_utc": created,
@@ -374,7 +374,7 @@ def package(args: argparse.Namespace) -> dict:
         "checks": verification["checks"],
         "unsigned": verification["unsigned"],
         "artifacts": {
-            "application": {"archive_member": "nebulume.exe", **exe_record},
+            "application": {"archive_member": "Lumen.exe", **exe_record},
             "installer": {"filename": installer_name, **installer_record},
             "updater_signature": {"filename": signature_name, **signature_record},
             "portable_archive": {"filename": archive_name, **archive_record},

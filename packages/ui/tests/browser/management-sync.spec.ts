@@ -33,7 +33,7 @@ async function fixture(
       export const openViewerWindow = async()=>'', viewerContext = async()=>({asset_ids:[]}), listVolumes=async()=>[];
       export const readPregenerate = ()=>false, writePregenerate = ()=>{}, pregeneratePreviews = async()=>{};
       export const readWatchLibraries = ()=>false, writeWatchLibraries = ()=>{}, watchLibraries = async()=>[];
-      export const revealInFolder = async()=>{}, openDataDirectory = async()=>{}, openExternal = async()=>{}, chooseExternalApp = async()=>null, ejectVolume = async()=>{};
+      export const revealInFolder = async()=>{}, openDataDirectory = async()=>{}, openProjectUrl = async()=>{}, openExternal = async()=>{}, chooseExternalApp = async()=>null, ejectVolume = async()=>{};
     `,
       }),
     );

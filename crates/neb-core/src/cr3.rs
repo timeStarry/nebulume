@@ -83,10 +83,7 @@ impl<R: Read + Seek> BoundedBmff<'_, R> {
         if cursor >= end {
             return Ok(None);
         }
-        ensure!(
-            end - cursor >= 8,
-            "E_DECODE: Truncated ISO-BMFF box header"
-        );
+        ensure!(end - cursor >= 8, "E_DECODE: Truncated ISO-BMFF box header");
         self.boxes_seen += 1;
         ensure!(
             self.boxes_seen <= MAX_BOXES,
@@ -128,7 +125,10 @@ impl<R: Read + Seek> BoundedBmff<'_, R> {
 
 /// Inspects the first `ftyp` box and returns the 4-byte major brand if this stream
 /// begins with a valid ISO-BMFF header (`ftyp`). Never fails on non-BMFF files.
-pub(crate) fn probe_ftyp_brand<R: Read + Seek>(input: &mut R, length: u64) -> Result<Option<[u8; 4]>> {
+pub(crate) fn probe_ftyp_brand<R: Read + Seek>(
+    input: &mut R,
+    length: u64,
+) -> Result<Option<[u8; 4]>> {
     if length < 16 {
         return Ok(None);
     }
@@ -296,7 +296,7 @@ fn parse_prvw_box<R: Read + Seek>(
     } else {
         avail
     };
-    if jpeg_len < 4 || jpeg_len > MAX_JPEG_BYTES {
+    if !(4..=MAX_JPEG_BYTES).contains(&jpeg_len) {
         return Ok(None);
     }
     let sig = bmff.read_bytes(payload_offset + 16, 2)?;
@@ -401,10 +401,13 @@ fn parse_trak_jpeg_sample<R: Read + Seek>(
     let (Some(offset), Some(length)) = (chunk_offset, sample_size) else {
         return Ok(None);
     };
-    if length < 4 || length > MAX_JPEG_BYTES {
+    if !(4..=MAX_JPEG_BYTES).contains(&length) {
         return Ok(None);
     }
-    if offset.checked_add(length).is_none_or(|end| end > bmff.file_len) {
+    if offset
+        .checked_add(length)
+        .is_none_or(|end| end > bmff.file_len)
+    {
         return Ok(None);
     }
     let sig = bmff.read_bytes(offset, 2)?;
@@ -487,7 +490,7 @@ fn parse_cmt_fields(bytes: &[u8]) -> Option<Vec<TiffField>> {
         return None;
     }
     let mut fields = Vec::with_capacity(count);
-    for entry in bytes[dir_offset + 2..entries_end].chunks_exact(12) {
+    for entry in bytes[dir_offset + 2..entries_end].as_chunks::<12>().0 {
         let tag = u16_at(&entry[0..2]);
         // Skip private MakerNotes/UserComment and old sub-IFD pointers.
         if matches!(tag, 0x8769 | 0x8825 | 0x927c | 0x9286 | 0xa005) {
@@ -675,8 +678,13 @@ pub(crate) fn find_heif_exif_tiff_span<R: Read + Seek>(
     let (Some(target_id), Some(iloc)) = (exif_item_id, iloc_box) else {
         return Ok(None);
     };
-    let Some(item_span) =
-        parse_iloc_single_extent(&mut bmff, iloc.payload_offset, iloc.payload_len, target_id, idat_offset)?
+    let Some(item_span) = parse_iloc_single_extent(
+        &mut bmff,
+        iloc.payload_offset,
+        iloc.payload_len,
+        target_id,
+        idat_offset,
+    )?
     else {
         return Ok(None);
     };
@@ -685,7 +693,10 @@ pub(crate) fn find_heif_exif_tiff_span<R: Read + Seek>(
         return Ok(None);
     }
     let prefix = bmff.read_bytes(item_span.offset, 4)?;
-    let tiff_rel = 4_u64 + u64::from(u32::from_be_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]));
+    let tiff_rel = 4_u64
+        + u64::from(u32::from_be_bytes([
+            prefix[0], prefix[1], prefix[2], prefix[3],
+        ]));
     if tiff_rel + 8 > item_span.length {
         return Ok(None);
     }
@@ -718,7 +729,9 @@ fn parse_iinf_for_exif<R: Read + Seek>(
             if infe_ver == 2 && data.len() >= 12 && &data[8..12] == b"Exif" {
                 return Ok(Some(u32::from(u16::from_be_bytes([data[4], data[5]]))));
             } else if infe_ver == 3 && data.len() >= 14 && &data[10..14] == b"Exif" {
-                return Ok(Some(u32::from_be_bytes([data[4], data[5], data[6], data[7]])));
+                return Ok(Some(u32::from_be_bytes([
+                    data[4], data[5], data[6], data[7],
+                ])));
             }
         }
         cursor = infe.next_offset;
@@ -729,7 +742,9 @@ fn parse_iinf_for_exif<R: Read + Seek>(
 fn read_be_uint(bytes: &[u8], size: usize) -> Option<u64> {
     match size {
         0 => Some(0),
-        4 => Some(u64::from(u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?))),
+        4 => Some(u64::from(u32::from_be_bytes(
+            bytes.get(..4)?.try_into().ok()?,
+        ))),
         8 => Some(u64::from_be_bytes(bytes.get(..8)?.try_into().ok()?)),
         _ => None,
     }

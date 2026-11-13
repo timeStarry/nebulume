@@ -294,8 +294,7 @@ impl Service {
             matches!(
                 command,
                 "library.add" | "library.update" | "library.relocate" | "library.remove"
-            )
-                || matches!(command, "storage.add" | "storage.remove" | "file.open")
+            ) || matches!(command, "storage.add" | "storage.remove" | "file.open")
                 || matches!(
                     command,
                     "card.register"
@@ -398,8 +397,7 @@ impl Service {
                     | "collection.add_assets"
                     | "collection.remove_assets"
                     | "library.keywords"
-            )
-        {
+            ) {
             Some(
                 process_catalog_lock(&self.data_dir, structural_write)
                     .map_err(CommandError::from)?,

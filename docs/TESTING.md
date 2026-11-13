@@ -4,9 +4,11 @@
 
 ## 本版本验证
 
+0.2.2（2026-11-13）完成 **Lumen** 品牌升级、查看器零跳变预解码管线、Schema v14 虚拟组织层、`.xmp` 伴随互通、预设化导出、双盘导入与 CGNAT/证书更新修复。本机 macOS 全量验证覆盖 Rust workspace（含 `neb-app` 壳层 URL 白名单校验）、`rustfmt`、Clippy（`-D warnings`）、设计系统门禁（`check:design` 0 例外）、UI 单元测试、Playwright 浏览器全流程（含关于页 GitHub 外链交互）、`make-icon.py` 全平台图标结构校验、发布脚本单测及真实 Rust/UI bridge（`smoke.mjs --ui`）；Windows x64 安装包与签名回读由 GitHub Actions `Release` 工作流执行。
+
 0.2.1（2026-11-11）修复升级兼容与发布验收。本机 Windows 修复验证：Rust workspace 311 项通过、3 项默认显式忽略；fmt、workspace/all-targets Clippy（`-D warnings`）、129 项 UI 单元、设计规则、TypeScript、生产构建与 15 项发布脚本测试通过。8 项新增迁移回归覆盖预览 schema9/10、受影响 schema11、原有记录及导入选项保留、已有修订计数器、未知/未来结构拒绝和 DDL 失败回滚重试；4 项更新签名回归覆盖有效签名、文件/注释篡改、错误公钥与坏编码。
 
-本机 Edge 全量 141 项通过。[Release 工作流](https://github.com/timeStarry/nebulume/actions/runs/42942977169)成功，[Validate 工作流](https://github.com/timeStarry/nebulume/actions/runs/42942953197)的 Windows、macOS、Linux 作业全部通过；[0.2.1 正式包](https://github.com/timeStarry/nebulume/releases/tag/v0.2.1)已发布。
+本机 Edge 全量 141 项通过。[Release 工作流](https://github.com/timeStarry/lumen/actions/runs/42942977169)成功，[Validate 工作流](https://github.com/timeStarry/lumen/actions/runs/42942953197)的 Windows、macOS、Linux 作业全部通过；[0.2.1 正式包](https://github.com/timeStarry/lumen/releases/tag/v0.2.1)已发布。
 
 本机物理用户数据原为 preview.9/schema10，含 11 个图库、23,015 条资产、400 条留用、352 条淘汰及 2 条非零评级。正式 NSIS 安装器退出码为 0，正常用户安装目录的程序及再次启动验证通过。数据库为 schema12，完整性及外键检查通过；首次启动后所有原有资产、图库列及 storage 配置保持不变。浏览后部分派生元数据刷新及旧搜索缓存失效已单列记录，资产身份和用户编辑保持不变。完整物理备份含 35,582 个文件、10,929,939,654 字节；数据库、WAL 和数据文件摘要一致，唯 SQLite 共享内存文件在副本检查时发生易变内容差异；另存的一致性 SQLite 快照完整性检查通过。隔离迁移副本保留全部用户记录；路径、断开的合成连接及不透明的绑定 epoch 为隔离测试有意重映射，不属于用户记录丢失。详见[本机升级记录](WINDOWS-UPGRADE-0.2.1.md)。
 

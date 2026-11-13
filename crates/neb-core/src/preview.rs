@@ -24,13 +24,7 @@ pub enum PreviewTier {
 }
 
 impl PreviewTier {
-    pub const ALL: [Self; 5] = [
-        Self::T256,
-        Self::T512,
-        Self::T1024,
-        Self::P2560,
-        Self::Full,
-    ];
+    pub const ALL: [Self; 5] = [Self::T256, Self::T512, Self::T1024, Self::P2560, Self::Full];
 
     pub fn pixels(self) -> u32 {
         match self {

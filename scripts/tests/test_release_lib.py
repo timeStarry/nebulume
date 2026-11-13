@@ -52,16 +52,17 @@ class ChangelogNotesTest(unittest.TestCase):
 
     def test_changelog_notes_on_repository_changelog(self) -> None:
         text = (Path(__file__).resolve().parents[2] / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("Lumen", changelog_notes(text, "0.2.2"))
         self.assertIn("RAW", changelog_notes(text, "0.1.1"))
 
 
 class UpdaterManifestTest(unittest.TestCase):
     ARGS = {
-        "version": "0.2.0",
-        "installer_name": "Nebulume_0.2.0_x64-setup.exe",
+        "version": "0.2.2",
+        "installer_name": "Lumen_0.2.2_x64-setup.exe",
         "signature": "dW50cnVzdGVk",
         "notes": "- 新功能。",
-        "pub_date": "2026-11-07T00:00:00Z",
+        "pub_date": "2026-11-13T00:00:00Z",
     }
 
     def test_updater_manifest_shape(self) -> None:
@@ -69,13 +70,13 @@ class UpdaterManifestTest(unittest.TestCase):
         self.assertEqual(
             manifest,
             {
-                "version": "0.2.0",
+                "version": "0.2.2",
                 "notes": "- 新功能。",
-                "pub_date": "2026-11-07T00:00:00Z",
+                "pub_date": "2026-11-13T00:00:00Z",
                 "platforms": {
                     "windows-x86_64": {
                         "signature": "dW50cnVzdGVk",
-                        "url": "https://github.com/timeStarry/nebulume/releases/download/v0.2.0/Nebulume_0.2.0_x64-setup.exe",
+                        "url": "https://github.com/timeStarry/lumen/releases/download/v0.2.2/Lumen_0.2.2_x64-setup.exe",
                     }
                 },
             },
@@ -194,21 +195,22 @@ class PackageReleaseTest(unittest.TestCase):
         import json
 
         content = self.package.latest_json(
-            "0.2.0", "Nebulume_0.2.0_x64-setup.exe", "dW50cnVzdGVk", "- x", "2026-11-07T00:00:00Z"
+            "0.2.2", "Lumen_0.2.2_x64-setup.exe", "dW50cnVzdGVk", "- x", "2026-11-13T00:00:00Z"
         )
         path = self.dir / "latest.json"
         self.package.exclusive_write(path, content)
         data = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(data["platforms"]["windows-x86_64"]["signature"], "dW50cnVzdGVk")
+        self.assertIn("timeStarry/lumen/releases/download/v0.2.2/Lumen_0.2.2_x64-setup.exe", data["platforms"]["windows-x86_64"]["url"])
         with self.assertRaises(FileExistsError):
             self.package.exclusive_write(path, content)
         with self.assertRaises(ReleaseError):
-            self.package.latest_json("0.2.0", "Nebulume_0.2.0_x64-setup.exe", "", "- x", "2026-11-07T00:00:00Z")
+            self.package.latest_json("0.2.2", "Lumen_0.2.2_x64-setup.exe", "", "- x", "2026-11-13T00:00:00Z")
 
     def test_read_signature_requirements(self) -> None:
         import os
 
-        sig = self.dir / "Nebulume_0.2.0_x64-setup.exe.sig"
+        sig = self.dir / "Lumen_0.2.2_x64-setup.exe.sig"
         sig.write_bytes(b"dW50cnVzdGVk\n")
         mtime = sig.stat().st_mtime_ns
         text, record = self.package.read_signature(sig, mtime)

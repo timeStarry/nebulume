@@ -16,6 +16,10 @@
   display: grid;
   gap: var(--nl-s-1);
   min-width: 0;
+  flex: 1;
+}
+.about-hero-actions {
+  flex-shrink: 0;
 }
 .about-title-row {
   display: flex;

@@ -156,8 +156,8 @@ pub fn read_sidecar_for_image(image_path: &Path) -> Result<Option<SidecarData>> 
     let Some(sidecar_path) = find_sidecar_for_read(image_path) else {
         return Ok(None);
     };
-    let meta = fs::symlink_metadata(&sidecar_path)
-        .context("E_IO: Cannot inspect XMP sidecar metadata")?;
+    let meta =
+        fs::symlink_metadata(&sidecar_path).context("E_IO: Cannot inspect XMP sidecar metadata")?;
     ensure!(
         meta.file_type().is_file(),
         "E_INVALID: XMP sidecar must be a regular file"
@@ -258,10 +258,9 @@ pub fn parse_xmp_str(xml: &str) -> Result<SidecarData> {
                 if let Some(tag) = tag_stack.last().map(String::as_str) {
                     if let Ok(text) = e.unescape() {
                         if local_prop_name(tag).1 == "li" {
-                            if tag_stack
-                                .iter()
-                                .any(|ancestor| local_prop_name(ancestor) == ("lr", "hierarchicalSubject"))
-                            {
+                            if tag_stack.iter().any(|ancestor| {
+                                local_prop_name(ancestor) == ("lr", "hierarchicalSubject")
+                            }) {
                                 if let Some(norm) = normalize_keyword_path(&text) {
                                     lr_subjects.push(norm);
                                 }
@@ -557,7 +556,12 @@ pub fn merge_xmp_str_with_tags(
             Event::Empty(_) | Event::Text(_) | Event::CData(_) if skip_depth > 0 => {}
             Event::Start(ref e) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
-                if is_managed_child_element(&name, preserve_existing_crop, manage_label, manage_keywords) {
+                if is_managed_child_element(
+                    &name,
+                    preserve_existing_crop,
+                    manage_label,
+                    manage_keywords,
+                ) {
                     skip_depth = 1;
                     continue;
                 }
@@ -589,7 +593,12 @@ pub fn merge_xmp_str_with_tags(
             }
             Event::Empty(ref e) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
-                if is_managed_child_element(&name, preserve_existing_crop, manage_label, manage_keywords) {
+                if is_managed_child_element(
+                    &name,
+                    preserve_existing_crop,
+                    manage_label,
+                    manage_keywords,
+                ) {
                     continue;
                 }
                 if !patched_description && is_rdf_description(&name) {
@@ -677,7 +686,11 @@ fn write_keyword_elements(writer: &mut Writer<Vec<u8>>, keywords: &[String]) -> 
     let mut flat_subjects: Vec<String> = Vec::new();
     let mut hier_subjects: Vec<String> = Vec::new();
     for kw in keywords {
-        let parts: Vec<&str> = kw.split(" > ").map(str::trim).filter(|s| !s.is_empty()).collect();
+        let parts: Vec<&str> = kw
+            .split(" > ")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
         if parts.is_empty() {
             continue;
         }
@@ -861,17 +874,15 @@ fn fresh_xmp_packet_with_tags(
     keywords: Option<&[String]>,
     metadata_date: &str,
 ) -> String {
-    let base = format!(
-        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
+    let base = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n\
 <x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"Lumen\">\n\
  <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n\
   <rdf:Description rdf:about=\"\"/>\n\
  </rdf:RDF>\n\
 </x:xmpmeta>\n\
-<?xpacket end=\"w\"?>\n"
-    );
+<?xpacket end=\"w\"?>\n";
     merge_xmp_str_with_tags(
-        &base,
+        base,
         rating,
         flag,
         color_label,
@@ -881,7 +892,7 @@ fn fresh_xmp_packet_with_tags(
     )
     .ok()
     .and_then(|bytes| String::from_utf8(bytes).ok())
-    .unwrap_or(base)
+    .unwrap_or_else(|| base.to_owned())
 }
 
 fn has_non_zero_crop_angle(xml: &str) -> bool {

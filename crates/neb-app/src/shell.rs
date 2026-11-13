@@ -3,12 +3,7 @@
 use crate::{viewer, volumes};
 use neb_service::{CommandError, Service};
 use serde::Serialize;
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::Arc,
-};
+use std::{fs, path::PathBuf, process::Command, sync::Arc};
 use tauri::State;
 
 #[derive(Debug, Serialize)]
@@ -28,7 +23,10 @@ fn validate_local_media_path(raw: &str) -> Result<PathBuf, CommandError> {
     let meta = fs::metadata(&canonical)
         .map_err(|err| viewer::error("E_IO", format!("Cannot inspect file: {err}")))?;
     if !meta.is_file() && !meta.is_dir() {
-        return Err(viewer::error("E_INVALID", "Target is not a regular file or folder"));
+        return Err(viewer::error(
+            "E_INVALID",
+            "Target is not a regular file or folder",
+        ));
     }
     Ok(canonical)
 }
@@ -39,7 +37,10 @@ fn validate_external_app(raw: &str) -> Result<PathBuf, CommandError> {
         return Err(viewer::error("E_INVALID", "Application path is empty"));
     }
     let canonical = fs::canonicalize(trimmed).map_err(|err| {
-        viewer::error("E_NOT_FOUND", format!("External application not found: {err}"))
+        viewer::error(
+            "E_NOT_FOUND",
+            format!("External application not found: {err}"),
+        )
     })?;
     #[cfg(target_os = "macos")]
     {
@@ -67,14 +68,71 @@ fn validate_external_app(raw: &str) -> Result<PathBuf, CommandError> {
     Ok(canonical)
 }
 
+fn validate_project_url(raw: &str) -> Result<String, CommandError> {
+    let trimmed = raw.trim();
+    let allowed = trimmed == "https://github.com/timeStarry/lumen"
+        || trimmed.starts_with("https://github.com/timeStarry/lumen/");
+    if !allowed
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '"' | '\'' | '`'))
+    {
+        return Err(viewer::error(
+            "E_INVALID",
+            "Only official project HTTPS links can be opened",
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<(), CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = validate_project_url(&url)?;
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("open")
+                .arg(&target)
+                .status()
+                .map_err(|err| viewer::error("E_IO", format!("Failed to open browser: {err}")))?;
+            if !status.success() {
+                return Err(viewer::error(
+                    "E_OPERATION",
+                    "Could not open URL in browser",
+                ));
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("rundll32.exe")
+                .arg("url.dll,FileProtocolHandler")
+                .arg(&target)
+                .spawn()
+                .map_err(|err| viewer::error("E_IO", format!("Failed to open browser: {err}")))?;
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Command::new("xdg-open")
+                .arg(&target)
+                .spawn()
+                .map_err(|err| viewer::error("E_IO", format!("Failed to open browser: {err}")))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| viewer::error("E_WORKER", "Shell worker stopped unexpectedly"))?
+}
+
 #[tauri::command]
 pub async fn open_data_dir(service: State<'_, Arc<Service>>) -> Result<(), CommandError> {
     let data_dir = service.inner().data_dir().to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
-        fs::create_dir_all(&data_dir)
-            .map_err(|err| viewer::error("E_IO", format!("Cannot prepare data directory: {err}")))?;
-        let canonical = fs::canonicalize(&data_dir)
-            .map_err(|err| viewer::error("E_IO", format!("Cannot resolve data directory: {err}")))?;
+        fs::create_dir_all(&data_dir).map_err(|err| {
+            viewer::error("E_IO", format!("Cannot prepare data directory: {err}"))
+        })?;
+        let canonical = fs::canonicalize(&data_dir).map_err(|err| {
+            viewer::error("E_IO", format!("Cannot resolve data directory: {err}"))
+        })?;
         #[cfg(target_os = "macos")]
         {
             let status = Command::new("open")
@@ -82,7 +140,10 @@ pub async fn open_data_dir(service: State<'_, Arc<Service>>) -> Result<(), Comma
                 .status()
                 .map_err(|err| viewer::error("E_IO", format!("Failed to open Finder: {err}")))?;
             if !status.success() {
-                return Err(viewer::error("E_OPERATION", "Finder could not open data directory"));
+                return Err(viewer::error(
+                    "E_OPERATION",
+                    "Finder could not open data directory",
+                ));
             }
         }
         #[cfg(target_os = "windows")]
@@ -94,9 +155,12 @@ pub async fn open_data_dir(service: State<'_, Arc<Service>>) -> Result<(), Comma
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            Command::new("xdg-open").arg(&canonical).spawn().map_err(|err| {
-                viewer::error("E_IO", format!("Failed to open file manager: {err}"))
-            })?;
+            Command::new("xdg-open")
+                .arg(&canonical)
+                .spawn()
+                .map_err(|err| {
+                    viewer::error("E_IO", format!("Failed to open file manager: {err}"))
+                })?;
         }
         Ok(())
     })
@@ -144,9 +208,12 @@ pub async fn reveal_in_folder(path: String) -> Result<(), CommandError> {
             } else {
                 canonical
             };
-            Command::new("xdg-open").arg(&target).spawn().map_err(|err| {
-                viewer::error("E_IO", format!("Failed to open file manager: {err}"))
-            })?;
+            Command::new("xdg-open")
+                .arg(&target)
+                .spawn()
+                .map_err(|err| {
+                    viewer::error("E_IO", format!("Failed to open file manager: {err}"))
+                })?;
         }
         Ok(())
     })
@@ -232,9 +299,12 @@ pub async fn open_external(
                 .as_deref()
                 .and_then(|p| p.to_str())
                 .unwrap_or("xdg-open");
-            Command::new(program).arg(&canonical).spawn().map_err(|err| {
-                viewer::error("E_IO", format!("Failed to launch external editor: {err}"))
-            })?;
+            Command::new(program)
+                .arg(&canonical)
+                .spawn()
+                .map_err(|err| {
+                    viewer::error("E_IO", format!("Failed to launch external editor: {err}"))
+                })?;
         }
         Ok(())
     })
@@ -258,13 +328,14 @@ pub async fn eject_volume(path: String) -> Result<EjectReport, CommandError> {
                 "Refusing to eject the system root volume",
             ));
         }
-        let candidates = volumes::enumerate()
-            .map_err(|msg| viewer::error("E_VOLUMES", msg))?;
+        let candidates = volumes::enumerate().map_err(|msg| viewer::error("E_VOLUMES", msg))?;
         let matched = candidates
             .into_iter()
             .filter_map(|vol| {
                 let vol_canon = fs::canonicalize(&vol.path).ok()?;
-                canonical.starts_with(&vol_canon).then_some((vol, vol_canon))
+                canonical
+                    .starts_with(&vol_canon)
+                    .then_some((vol, vol_canon))
             })
             .max_by_key(|(_, vol_canon)| vol_canon.as_os_str().len())
             .ok_or_else(|| {
@@ -319,18 +390,49 @@ pub async fn eject_volume(path: String) -> Result<EjectReport, CommandError> {
         }
         #[cfg(target_os = "windows")]
         {
-            return Err(viewer::error(
+            let _ = (&vol, &mount_root);
+            Err(viewer::error(
                 "E_UNSUPPORTED",
                 "Please use Windows Safely Remove Hardware to eject this card",
-            ));
+            ))
         }
-
-        Ok(EjectReport {
-            path: mount_root.to_string_lossy().into_owned(),
-            name: vol.name,
-            ejected: true,
-        })
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(EjectReport {
+                path: mount_root.to_string_lossy().into_owned(),
+                name: vol.name,
+                ejected: true,
+            })
+        }
     })
     .await
     .map_err(|_| viewer::error("E_WORKER", "Volume eject worker stopped unexpectedly"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_project_url;
+
+    #[test]
+    fn allows_official_repository_url_and_rejects_untrusted_targets() {
+        assert_eq!(
+            validate_project_url(" https://github.com/timeStarry/lumen ").unwrap(),
+            "https://github.com/timeStarry/lumen"
+        );
+        assert_eq!(
+            validate_project_url("https://github.com/timeStarry/lumen/releases").unwrap(),
+            "https://github.com/timeStarry/lumen/releases"
+        );
+        for invalid in [
+            "",
+            "http://github.com/timeStarry/lumen",
+            "https://github.com/timeStarry/lumen-phish",
+            "https://evil.example/https://github.com/timeStarry/lumen",
+            "https://github.com/timeStarry/lumen/releases\"--evil",
+            "https://github.com/timeStarry/lumen/releases\nnext",
+            "file:///etc/passwd",
+        ] {
+            assert!(validate_project_url(invalid).is_err(), "accepted {invalid}");
+        }
+    }
 }

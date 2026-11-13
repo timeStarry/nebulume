@@ -85,9 +85,18 @@ fn xmp_merge_preserves_foreign_lightroom_crs_settings_and_roundtrips_marks() {
 
     // Verify foreign Adobe CRS attributes and Dublin Core subject tags survived untouched!
     let merged = fs::read_to_string(&sidecar_path).unwrap();
-    assert!(merged.contains("5450"), "crs:Temperature must survive: {merged}");
-    assert!(merged.contains("+0.65"), "crs:Exposure2012 must survive: {merged}");
-    assert!(merged.contains("Portrait"), "dc:subject bag must survive: {merged}");
+    assert!(
+        merged.contains("5450"),
+        "crs:Temperature must survive: {merged}"
+    );
+    assert!(
+        merged.contains("+0.65"),
+        "crs:Exposure2012 must survive: {merged}"
+    );
+    assert!(
+        merged.contains("Portrait"),
+        "dc:subject bag must survive: {merged}"
+    );
     let parsed = xmp::parse_xmp_str(&merged).unwrap();
     assert_eq!(parsed.rating, Some(5));
     assert_eq!(parsed.flag.as_deref(), Some("pick"));
@@ -174,9 +183,15 @@ fn export_with_options_resizes_embeds_target_icc_and_preserves_original() {
     let exported_bytes = fs::read(&p3_out).unwrap();
     let mut decoder = JpegDecoder::new(Cursor::new(&exported_bytes)).unwrap();
     assert_eq!(decoder.dimensions(), (1200, 800));
-    let icc = decoder.icc_profile().unwrap().expect("embedded Display P3 ICC");
+    let icc = decoder
+        .icc_profile()
+        .unwrap()
+        .expect("embedded Display P3 ICC");
     let ascii: String = icc.iter().map(|&b| b as char).collect();
-    assert!(ascii.contains("Display P3"), "expected Display P3 ICC description");
+    assert!(
+        ascii.contains("Display P3"),
+        "expected Display P3 ICC description"
+    );
 
     let adobe_out = out_dir.path().join("print_adobe.jpg");
     core.dispatch(

@@ -65,8 +65,8 @@ pnpm exec tauri build --bundles nsis -- --locked
 默认产物为：
 
 - `target/release/nebulume.exe`
-- `target/release/bundle/nsis/Nebulume_<版本>_x64-setup.exe`
-- `target/release/bundle/nsis/Nebulume_<版本>_x64-setup.exe.sig`
+- `target/release/bundle/nsis/Lumen_<版本>_x64-setup.exe`
+- `target/release/bundle/nsis/Lumen_<版本>_x64-setup.exe.sig`
 
 设置 `CARGO_TARGET_DIR` 时输出随之改变。Tauri 的 `beforeBuildCommand` 会构建前端，需确认打包使用当前提交的前端资源。
 
@@ -114,9 +114,9 @@ python scripts/package-release.py --version 0.2.1 --target-dir target --output-d
 
 上传目录仅包含以下六份文件：
 
-- `Nebulume_<版本>_x64-setup.exe`
-- `Nebulume_<版本>_x64-setup.exe.sig`
-- `Nebulume_<版本>_windows_x64.zip`
+- `Lumen_<版本>_x64-setup.exe`
+- `Lumen_<版本>_x64-setup.exe.sig`
+- `Lumen_<版本>_windows_x64.zip`
 - `latest.json`
 - `manifest.json`
 - `SHA256SUMS.txt`
@@ -131,7 +131,7 @@ ZIP 内仅有独立程序、使用说明、运行清单和校验表。独立程�
 
 核实 Git 远端、GitHub 身份、版本及标签指向，创建标签后只上传已核对的明确文件列表，不使用目录通配符。
 
-Release 标题为 `Nebulume <版本>`。说明应概括实际功能及关键限制，附平台、签名状态和校验文件用途。
+Release 标题为 `Lumen <版本>`。说明应概括实际功能及关键限制，附平台、签名状态和校验文件用途。
 
 上传后通过 `python scripts/verify-release.py --tag v<版本> --output-dir <上传目录>` 或 GitHub CLI 回读并核对：
 

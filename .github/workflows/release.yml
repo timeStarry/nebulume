@@ -107,7 +107,7 @@ jobs:
         env:
           VERSION: ${{ steps.guard.outputs.version }}
         run: |
-          $installer = "target/release/bundle/nsis/Nebulume_${env:VERSION}_x64-setup.exe"
+          $installer = "target/release/bundle/nsis/Lumen_${env:VERSION}_x64-setup.exe"
           $status = (Get-AuthenticodeSignature -FilePath $installer).Status
           Write-Output "Authenticode status: $status"
           $unsigned = if ($status -eq 'Valid') { 'false' } else { 'true' }
@@ -117,7 +117,7 @@ jobs:
         env:
           VERSION: ${{ steps.guard.outputs.version }}
         run: |
-          $installer = "target/release/bundle/nsis/Nebulume_${env:VERSION}_x64-setup.exe"
+          $installer = "target/release/bundle/nsis/Lumen_${env:VERSION}_x64-setup.exe"
           cargo run --locked -p neb-app --example verify_update -- $installer "$installer.sig" crates/neb-app/tauri.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -163,10 +163,10 @@ jobs:
           VERSION: ${{ steps.guard.outputs.version }}
         run: |
           $dir = "artifacts/releases/$env:TAG"
-          gh release create $env:TAG --draft --verify-tag --title "Nebulume $env:VERSION" --notes-file artifacts/release-notes.md `
-            "$dir/Nebulume_${env:VERSION}_x64-setup.exe" `
-            "$dir/Nebulume_${env:VERSION}_x64-setup.exe.sig" `
-            "$dir/Nebulume_${env:VERSION}_windows_x64.zip" `
+          gh release create $env:TAG --draft --verify-tag --title "Lumen $env:VERSION" --notes-file artifacts/release-notes.md `
+            "$dir/Lumen_${env:VERSION}_x64-setup.exe" `
+            "$dir/Lumen_${env:VERSION}_x64-setup.exe.sig" `
+            "$dir/Lumen_${env:VERSION}_windows_x64.zip" `
             "$dir/latest.json" `
             "$dir/manifest.json" `
             "$dir/SHA256SUMS.txt"

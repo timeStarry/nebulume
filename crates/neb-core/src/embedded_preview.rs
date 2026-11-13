@@ -340,14 +340,13 @@ fn decode_cr3_embedded<R: Read + Seek>(input: &mut R, length: u64) -> Result<Emb
         !container.jpeg_candidates.is_empty(),
         "E_UNSUPPORTED_CODEC: Canon CR3 container has no embedded JPEG preview"
     );
-    let container_exif = crate::cr3::merged_exif_tiff(input, length)?
-        .and_then(|tiff| {
-            exif::Reader::new()
-                .continue_on_error(true)
-                .read_raw(tiff)
-                .or_else(|e| e.distill_partial_result(|_| {}))
-                .ok()
-        });
+    let container_exif = crate::cr3::merged_exif_tiff(input, length)?.and_then(|tiff| {
+        exif::Reader::new()
+            .continue_on_error(true)
+            .read_raw(tiff)
+            .or_else(|e| e.distill_partial_result(|_| {}))
+            .ok()
+    });
     let fallback_orientation = container_exif
         .as_ref()
         .and_then(|ex| {
@@ -443,16 +442,14 @@ fn select_largest_jpeg(
         let mut decoder = jpeg_reader(&bytes).into_decoder()?;
         let icc = decoder.icc_profile().ok().flatten();
         let raw_exif = decoder.exif_metadata().ok().flatten();
-        let parsed_exif = raw_exif
-            .as_deref()
-            .and_then(|data| {
-                let tiff = data.strip_prefix(b"Exif\0\0").unwrap_or(data);
-                exif::Reader::new()
-                    .continue_on_error(true)
-                    .read_raw(tiff.to_vec())
-                    .or_else(|e| e.distill_partial_result(|_| {}))
-                    .ok()
-            });
+        let parsed_exif = raw_exif.as_deref().and_then(|data| {
+            let tiff = data.strip_prefix(b"Exif\0\0").unwrap_or(data);
+            exif::Reader::new()
+                .continue_on_error(true)
+                .read_raw(tiff.to_vec())
+                .or_else(|e| e.distill_partial_result(|_| {}))
+                .ok()
+        });
         let jpeg_orientation = parsed_exif
             .as_ref()
             .and_then(|exif| {

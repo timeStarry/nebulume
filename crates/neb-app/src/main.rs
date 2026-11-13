@@ -69,6 +69,7 @@ fn main() {
             viewer::viewer_context,
             viewer::show_manager,
             list_volumes,
+            shell::open_url,
             shell::open_data_dir,
             shell::reveal_in_folder,
             shell::open_external,

@@ -1,7 +1,7 @@
 # Dependency notices
 
-Nebulume is currently a private development project without an open-source license grant.
+Third-party libraries used by Lumen retain their respective upstream licenses. Consult `Cargo.lock`, `pnpm-lock.yaml`, and each upstream package before redistributing compiled binaries.
 
-Dependencies retain their own licenses. Consult Cargo.lock, pnpm-lock.yaml and each upstream package before distribution. In particular, rawloader is licensed under LGPL-2.1 and redistribution must satisfy the applicable source, modification and relinking requirements. A private development binary is not a completed public-distribution compliance package.
+In particular, `rawloader` is licensed under LGPL-2.1, so binary redistribution must satisfy the applicable LGPL-2.1 notice, source availability, and relinking requirements.
 
-The architecture references Aster and photo-import-assistant. Their source is inspected for design understanding, not copied wholesale into this repository.
+Architectural references inspected during early design include Aster and photo-import-assistant; implementation code in this repository is authored independently.

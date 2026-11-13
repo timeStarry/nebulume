@@ -3,12 +3,7 @@
 //! not decode. Preserves wide-gamut ICC profiles (e.g. Display P3 / Rec.2020 /
 //! Adobe RGB) and enforces Nebulume's dimension limits before allocating pixels.
 
-use std::{
-    ffi::c_void,
-    os::unix::ffi::OsStrExt,
-    path::Path,
-    ptr,
-};
+use std::{ffi::c_void, os::unix::ffi::OsStrExt, path::Path, ptr};
 
 use anyhow::{bail, ensure, Context, Result};
 use image::{metadata::Orientation, DynamicImage, RgbImage};
@@ -306,58 +301,59 @@ pub(crate) fn decode(
     let (raw_w, raw_h, orientation, _) = inspect_source(&source)?;
     let long_side = raw_w.max(raw_h);
 
-    let (cg_image, already_oriented) = match max_side.filter(|limit| *limit > 0 && *limit < long_side) {
-        Some(limit) => {
-            let max_num_val = i64::from(limit);
-            let max_num = CfGuard::new(unsafe {
-                CFNumberCreate(
-                    ptr::null(),
-                    K_CF_NUMBER_SINT64_TYPE,
-                    (&max_num_val as *const i64).cast::<c_void>(),
-                )
-            })
-            .context("E_OPERATION: Failed to allocate CFNumber")?;
-            let keys: [*const c_void; 4] = unsafe {
-                [
-                    kCGImageSourceCreateThumbnailFromImageAlways,
-                    kCGImageSourceCreateThumbnailWithTransform,
-                    kCGImageSourceShouldCacheImmediately,
-                    kCGImageSourceThumbnailMaxPixelSize,
-                ]
-            };
-            let values: [*const c_void; 4] = unsafe {
-                [
-                    kCFBooleanTrue,
-                    kCFBooleanTrue,
-                    kCFBooleanTrue,
-                    max_num.as_ptr(),
-                ]
-            };
-            let opts = CfGuard::new(unsafe {
-                CFDictionaryCreate(
-                    ptr::null(),
-                    keys.as_ptr(),
-                    values.as_ptr(),
-                    4,
-                    &kCFTypeDictionaryKeyCallBacks,
-                    &kCFTypeDictionaryValueCallBacks,
-                )
-            })
-            .context("E_OPERATION: Failed to allocate thumbnail options")?;
-            let thumb = CfGuard::new(unsafe {
-                CGImageSourceCreateThumbnailAtIndex(source.as_ptr(), 0, opts.as_ptr())
-            })
-            .context("E_UNSUPPORTED_CODEC: ImageIO could not decode image thumbnail")?;
-            (thumb, true)
-        }
-        None => {
-            let full = CfGuard::new(unsafe {
-                CGImageSourceCreateImageAtIndex(source.as_ptr(), 0, ptr::null())
-            })
-            .context("E_UNSUPPORTED_CODEC: ImageIO could not decode image")?;
-            (full, false)
-        }
-    };
+    let (cg_image, already_oriented) =
+        match max_side.filter(|limit| *limit > 0 && *limit < long_side) {
+            Some(limit) => {
+                let max_num_val = i64::from(limit);
+                let max_num = CfGuard::new(unsafe {
+                    CFNumberCreate(
+                        ptr::null(),
+                        K_CF_NUMBER_SINT64_TYPE,
+                        (&max_num_val as *const i64).cast::<c_void>(),
+                    )
+                })
+                .context("E_OPERATION: Failed to allocate CFNumber")?;
+                let keys: [*const c_void; 4] = unsafe {
+                    [
+                        kCGImageSourceCreateThumbnailFromImageAlways,
+                        kCGImageSourceCreateThumbnailWithTransform,
+                        kCGImageSourceShouldCacheImmediately,
+                        kCGImageSourceThumbnailMaxPixelSize,
+                    ]
+                };
+                let values: [*const c_void; 4] = unsafe {
+                    [
+                        kCFBooleanTrue,
+                        kCFBooleanTrue,
+                        kCFBooleanTrue,
+                        max_num.as_ptr(),
+                    ]
+                };
+                let opts = CfGuard::new(unsafe {
+                    CFDictionaryCreate(
+                        ptr::null(),
+                        keys.as_ptr(),
+                        values.as_ptr(),
+                        4,
+                        &kCFTypeDictionaryKeyCallBacks,
+                        &kCFTypeDictionaryValueCallBacks,
+                    )
+                })
+                .context("E_OPERATION: Failed to allocate thumbnail options")?;
+                let thumb = CfGuard::new(unsafe {
+                    CGImageSourceCreateThumbnailAtIndex(source.as_ptr(), 0, opts.as_ptr())
+                })
+                .context("E_UNSUPPORTED_CODEC: ImageIO could not decode image thumbnail")?;
+                (thumb, true)
+            }
+            None => {
+                let full = CfGuard::new(unsafe {
+                    CGImageSourceCreateImageAtIndex(source.as_ptr(), 0, ptr::null())
+                })
+                .context("E_UNSUPPORTED_CODEC: ImageIO could not decode image")?;
+                (full, false)
+            }
+        };
 
     let width = unsafe { CGImageGetWidth(cg_image.as_ptr()) };
     let height = unsafe { CGImageGetHeight(cg_image.as_ptr()) };
@@ -376,9 +372,7 @@ pub(crate) fn decode(
                 .context("E_OPERATION: Failed to create RGB color space")?,
         )
     };
-    let target_space = fallback_space
-        .as_ref()
-        .map_or(img_space, CfGuard::as_ptr);
+    let target_space = fallback_space.as_ref().map_or(img_space, CfGuard::as_ptr);
 
     let icc = if is_rgb {
         CfGuard::new(unsafe { CGColorSpaceCopyICCData(img_space) }).and_then(|data| {
@@ -432,7 +426,7 @@ pub(crate) fn decode(
     }
 
     let mut rgb = Vec::with_capacity(width * height * 3);
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         rgb.push(px[0]);
         rgb.push(px[1]);
         rgb.push(px[2]);
@@ -455,10 +449,9 @@ mod tests {
     #[test]
     fn colorsync_accepts_synthesized_adobe_rgb_1998_icc_profile() {
         let icc = crate::icc::adobe_rgb_1998_icc();
-        let data = CfGuard::new(unsafe {
-            CFDataCreate(ptr::null(), icc.as_ptr(), icc.len() as isize)
-        })
-        .expect("CFData");
+        let data =
+            CfGuard::new(unsafe { CFDataCreate(ptr::null(), icc.as_ptr(), icc.len() as isize) })
+                .expect("CFData");
         let space = CfGuard::new(unsafe { CGColorSpaceCreateWithICCData(data.as_ptr()) })
             .expect("ColorSync must validate synthesized Adobe RGB (1998) ICC profile");
         assert_eq!(

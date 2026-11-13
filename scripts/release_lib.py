@@ -72,7 +72,7 @@ def updater_manifest(
     signature: str,
     notes: str,
     pub_date: str,
-    repository: str = "timeStarry/nebulume",
+    repository: str = "timeStarry/lumen",
 ) -> dict:
     """Build the Tauri updater `latest.json`, refusing anything malformed."""
     if not is_stable_semver(version):

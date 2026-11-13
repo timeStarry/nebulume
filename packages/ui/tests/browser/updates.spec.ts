@@ -32,6 +32,10 @@ async function mockDesktop(page: Page, fixture: Fixture) {
           calls.push(command);
           if (command === 'update_support') return fixture.support;
           if (command === 'open_data_dir') return null;
+          if (command === 'open_url') {
+            calls.push(`open_url:${String(params.url ?? '')}`);
+            return null;
+          }
           if (command === 'prepare_for_update')
             return { cancelled_jobs: 0, pending_writes: 0, timed_out: false };
           if (command === 'plugin:updater|check') {
@@ -98,6 +102,8 @@ test('about panel shows the build version and a manual up-to-date check', async 
   await expect(about).not.toContainText('originals_read_only');
   await expect(about.getByRole('button', { name: '打开数据目录' })).toBeVisible();
   await expect(about.getByRole('button', { name: '复制诊断摘要' })).toBeVisible();
+  await about.getByRole('button', { name: 'GitHub', exact: true }).click();
+  await expect.poll(() => calls(page)).toContain('open_url:https://github.com/timeStarry/lumen');
   await about.getByRole('button', { name: '检查更新' }).click();
   await expect(about.getByRole('status')).toContainText('已是最新版本');
   await expect(about.getByRole('switch', { name: '自动检查更新' })).toBeChecked();

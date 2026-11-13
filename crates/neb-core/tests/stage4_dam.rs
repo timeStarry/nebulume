@@ -29,7 +29,10 @@ fn package_bundles_are_skipped_as_subfolders_and_cleaned_up_on_rescan() {
     let core = Core::open(temp.path().join("catalog")).unwrap();
     let lib = core.add_library("Pictures", &pictures).unwrap();
     let report = core.scan(&lib.id).unwrap();
-    assert_eq!(report.indexed, 1, "sub-bundle .photoslibrary must not be walked");
+    assert_eq!(
+        report.indexed, 1,
+        "sub-bundle .photoslibrary must not be walked"
+    );
 
     let folders = core
         .dispatch("library.folders", json!({ "library_id": lib.id }))
@@ -67,7 +70,10 @@ fn color_labels_collections_keywords_xmp_and_relocation_roundtrip_losslessly() {
     core.scan(&lib.id).unwrap();
 
     let listed = core
-        .dispatch("asset.list", json!({ "library_id": lib.id, "sort_by": "filename", "sort_direction": "asc" }))
+        .dispatch(
+            "asset.list",
+            json!({ "library_id": lib.id, "sort_by": "filename", "sort_direction": "asc" }),
+        )
         .unwrap();
     let id_a = listed["items"][0]["id"].as_str().unwrap().to_owned();
     let id_b = listed["items"][1]["id"].as_str().unwrap().to_owned();
@@ -110,8 +116,14 @@ fn color_labels_collections_keywords_xmp_and_relocation_roundtrip_losslessly() {
             json!({ "library_id": lib.id, "keyword": "人像" }),
         )
         .unwrap();
-    assert_eq!(parent_kw["total"], 1, "parent keyword matches hierarchical child");
-    assert_eq!(parent_kw["items"][0]["keywords"], json!(["京都", "人像 > 客片"]));
+    assert_eq!(
+        parent_kw["total"], 1,
+        "parent keyword matches hierarchical child"
+    );
+    assert_eq!(
+        parent_kw["items"][0]["keywords"],
+        json!(["京都", "人像 > 客片"])
+    );
 
     // 3. Manual Collection & Smart Collection
     let manual = core
@@ -136,7 +148,10 @@ fn color_labels_collections_keywords_xmp_and_relocation_roundtrip_losslessly() {
         )
         .unwrap();
     assert_eq!(removed["collection"]["item_count"], 1);
-    assert!(img_b.is_file(), "removing from collection never touches originals");
+    assert!(
+        img_b.is_file(),
+        "removing from collection never touches originals"
+    );
 
     let smart = core
         .dispatch(
@@ -170,7 +185,10 @@ fn color_labels_collections_keywords_xmp_and_relocation_roundtrip_losslessly() {
             json!({ "id": lib.id, "root": drive_new }),
         )
         .unwrap();
-    assert!(relocated["root"].as_str().unwrap().contains("SSD_Mounted_Renamed"));
+    assert!(relocated["root"]
+        .as_str()
+        .unwrap()
+        .contains("SSD_Mounted_Renamed"));
 
     let after = core.asset(&id_a).unwrap();
     assert_eq!(after.availability, "available");

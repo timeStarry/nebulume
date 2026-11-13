@@ -220,12 +220,7 @@ pub fn target_path_with_seq(
     Ok(parts.join("/"))
 }
 
-fn format_filename(
-    rules: &OrganizeRules,
-    filename: &str,
-    day: Option<&str>,
-    seq: usize,
-) -> String {
+fn format_filename(rules: &OrganizeRules, filename: &str, day: Option<&str>, seq: usize) -> String {
     let seq = seq.max(1);
     match rules.rename_mode {
         RenameMode::Keep => filename.to_owned(),

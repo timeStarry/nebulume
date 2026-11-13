@@ -156,6 +156,7 @@ fn linear_to_srgb(l: f32) -> f32 {
     }
 }
 
+#[allow(clippy::excessive_precision)]
 fn rgb_to_xyz_d65(gamut: KnownGamut) -> [[f32; 3]; 3] {
     match gamut {
         KnownGamut::Srgb => [
@@ -176,6 +177,7 @@ fn rgb_to_xyz_d65(gamut: KnownGamut) -> [[f32; 3]; 3] {
     }
 }
 
+#[allow(clippy::excessive_precision)]
 fn xyz_d65_to_rgb(gamut: KnownGamut) -> [[f32; 3]; 3] {
     match gamut {
         KnownGamut::Srgb => [

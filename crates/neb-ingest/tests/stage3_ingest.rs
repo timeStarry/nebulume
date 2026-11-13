@@ -75,7 +75,10 @@ fn rename_mode_keeps_raw_jpeg_and_xmp_companions_aligned_and_dual_backs_up() {
     assert_eq!(result.status, "completed");
     assert_eq!(result.copied, 3, "RAW + JPG + companion XMP copied");
     assert_eq!(result.skipped_unselected, 1, "_DSC0011.NEF skipped");
-    assert_eq!(result.backup_copied, 3, "all 3 verified on secondary backup disk");
+    assert_eq!(
+        result.backup_copied, 3,
+        "all 3 verified on secondary backup disk"
+    );
     assert_eq!(result.backup_failed, 0);
 
     // Check companion stems match identically (`YYYYMMDD_Editorial_0001.{NEF,JPG,XMP}`).
@@ -90,7 +93,11 @@ fn rename_mode_keeps_raw_jpeg_and_xmp_companions_aligned_and_dual_backs_up() {
         .iter()
         .map(|rel| rel.rsplit_once('.').unwrap().0.to_string())
         .collect();
-    assert_eq!(stems.len(), 1, "RAW, JPEG, and XMP share the exact renamed stem");
+    assert_eq!(
+        stems.len(),
+        1,
+        "RAW, JPEG, and XMP share the exact renamed stem"
+    );
     let stem = stems.into_iter().next().unwrap();
     assert!(stem.ends_with("_Editorial_0001"), "unexpected stem: {stem}");
 

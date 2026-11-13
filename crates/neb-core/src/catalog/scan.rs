@@ -6,8 +6,8 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::{Context, Result};
 use anyhow::ensure;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -271,7 +271,14 @@ impl Core {
                 }
             }
 
-            match prepare_local_upsert(&library, &canonical_root, path, kind, &extension, &known_local) {
+            match prepare_local_upsert(
+                &library,
+                &canonical_root,
+                path,
+                kind,
+                &extension,
+                &known_local,
+            ) {
                 Ok(upsert) => {
                     seen_keys.insert(upsert.path_key.clone());
                     pending_upserts.push(upsert);
@@ -340,8 +347,8 @@ impl Core {
             let mut db = self.db()?;
             let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             {
-                let mut mark_missing =
-                    transaction.prepare_cached("UPDATE assets SET availability='missing' WHERE id=?1")?;
+                let mut mark_missing = transaction
+                    .prepare_cached("UPDATE assets SET availability='missing' WHERE id=?1")?;
                 for (old_id, _, _) in &missing {
                     mark_missing.execute([old_id])?;
                 }
@@ -543,8 +550,15 @@ impl Core {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
             ).optional()?
         };
-        if let Some((old_id, size, old_stamp, availability, capture_checked, hash_missing, trashed)) =
-            &old
+        if let Some((
+            old_id,
+            size,
+            old_stamp,
+            availability,
+            capture_checked,
+            hash_missing,
+            trashed,
+        )) = &old
         {
             if !trashed
                 && *size == info.len()

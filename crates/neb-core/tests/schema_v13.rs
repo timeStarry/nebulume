@@ -91,7 +91,11 @@ fn marks_skip_fts_rebuilds_and_keep_structural_revision_stable() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(rev_after, rev_before + 3, "full revision increments per mark");
+    assert_eq!(
+        rev_after,
+        rev_before + 3,
+        "full revision increments per mark"
+    );
     assert_eq!(
         struct_after, struct_before,
         "structural revision stays unchanged during pure culling marks"

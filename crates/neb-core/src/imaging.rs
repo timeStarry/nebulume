@@ -155,11 +155,10 @@ fn format_exif_field(field: &exif::Field, exif: &exif::Exif, limit: usize) -> Op
 pub fn inspect(path: &Path) -> Result<Inspection> {
     check_file(path)?;
     let parsed_exif = read_parsed_exif(path);
-    let adobe_rgb = parsed_exif.as_ref().is_some_and(crate::icc::is_adobe_rgb_exif);
-    let mut metadata = parsed_exif
+    let adobe_rgb = parsed_exif
         .as_ref()
-        .map(exif_metadata)
-        .unwrap_or_default();
+        .is_some_and(crate::icc::is_adobe_rgb_exif);
+    let mut metadata = parsed_exif.as_ref().map(exif_metadata).unwrap_or_default();
     let extension = extension(path);
     metadata.insert("Format".into(), extension.to_ascii_uppercase());
     if adobe_rgb {
@@ -226,8 +225,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             if let Some(profile) = profile {
                 metadata.insert("Color Profile".into(), profile);
             }
-            let orientation =
-                Orientation::from_exif(orient).unwrap_or(Orientation::NoTransforms);
+            let orientation = Orientation::from_exif(orient).unwrap_or(Orientation::NoTransforms);
             let (mut width, mut height) = (w, h);
             check_dimensions(width, height)?;
             if matches!(
@@ -373,9 +371,8 @@ fn render_frame(
         // the requested preview. Exports pass None and render all sensor pixels.
         let raw_limit = scaled_decode_limit(max_side, crop);
         if force_raw_sensor {
-            let (image, orientation) = render_sensor(path, raw_limit).context(
-                "此 RAW 格式暂不支持传感器原始显影，请使用相机内嵌预览模式查看。",
-            )?;
+            let (image, orientation) = render_sensor(path, raw_limit)
+                .context("此 RAW 格式暂不支持传感器原始显影，请使用相机内嵌预览模式查看。")?;
             return finish_frame(image, "raw_demosaic", orientation, crop, None);
         }
         let mut embedded = if prefers_embedded && max_side.is_some() {
@@ -430,8 +427,7 @@ fn render_frame(
         if matches!(ext.as_str(), "heic" | "heif" | "avif") {
             let decode_limit = scaled_decode_limit(max_side, crop);
             let (image, orientation, icc) = crate::macos_imageio::decode(path, decode_limit)?;
-            let icc =
-                icc.or_else(|| is_file_adobe_rgb(path).then(crate::icc::adobe_rgb_1998_icc));
+            let icc = icc.or_else(|| is_file_adobe_rgb(path).then(crate::icc::adobe_rgb_1998_icc));
             return finish_frame(image, "raster", orientation, crop, icc);
         }
         let mut decoder = image_reader(path)?
@@ -743,10 +739,7 @@ pub fn remote_preview<R: Read + Seek>(
             .is_some_and(crate::icc::is_adobe_rgb_exif)
             .then(crate::icc::adobe_rgb_1998_icc)
     });
-    let mut metadata = parsed_exif
-        .as_ref()
-        .map(exif_metadata)
-        .unwrap_or_default();
+    let mut metadata = parsed_exif.as_ref().map(exif_metadata).unwrap_or_default();
     if icc.is_some() {
         metadata
             .entry("Color Profile".into())

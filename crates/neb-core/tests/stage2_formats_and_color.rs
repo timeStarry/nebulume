@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    io::Cursor,
-};
+use std::{fs, io::Cursor};
 
 use image::{
     codecs::jpeg::{JpegDecoder, JpegEncoder},
@@ -301,7 +298,9 @@ fn adobe_rgb_exif_jpeg_synthesizes_icc_profile_in_preview_and_export() {
     fs::write(&jpg_path, tagged_jpeg).unwrap();
 
     let core = Core::open(temp.path().join("catalog.sqlite")).unwrap();
-    let opened = core.dispatch("file.open", json!({"path": jpg_path})).unwrap();
+    let opened = core
+        .dispatch("file.open", json!({"path": jpg_path}))
+        .unwrap();
     let id = opened["id"].as_str().unwrap();
     assert_eq!(opened["metadata"]["Color Profile"], "Adobe RGB (1998)");
 
@@ -317,7 +316,7 @@ fn adobe_rgb_exif_jpeg_synthesizes_icc_profile_in_preview_and_export() {
 }
 
 #[cfg(target_os = "macos")]
-fn write_display_p3_heic(path: & std::path::Path, width: usize, height: usize, rgba_pixel: [u8; 4]) {
+fn write_display_p3_heic(path: &std::path::Path, width: usize, height: usize, rgba_pixel: [u8; 4]) {
     use std::{ffi::c_void, os::unix::ffi::OsStrExt, ptr};
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -371,7 +370,7 @@ fn write_display_p3_heic(path: & std::path::Path, width: usize, height: usize, r
     }
 
     let mut rgba = vec![0_u8; width * height * 4];
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&rgba_pixel);
     }
     unsafe {
@@ -396,13 +395,7 @@ fn write_display_p3_heic(path: & std::path::Path, width: usize, height: usize, r
             raw_path.len() as isize,
             0,
         );
-        let uti = CFStringCreateWithBytes(
-            ptr::null(),
-            b"public.heic".as_ptr(),
-            11,
-            0x0800_0100,
-            0,
-        );
+        let uti = CFStringCreateWithBytes(ptr::null(), b"public.heic".as_ptr(), 11, 0x0800_0100, 0);
         let dest = CGImageDestinationCreateWithURL(url, uti, 1, ptr::null());
         assert!(!dest.is_null());
         CGImageDestinationAddImage(dest, cg_img, ptr::null());
@@ -443,17 +436,29 @@ fn macos_imageio_decodes_heic_for_indexing_previews_and_export() {
 
     let thumb = core.preview_image(id, PreviewTier::T256, false).unwrap();
     assert_eq!((thumb.width, thumb.height), (256, 160));
-    assert!(decoded_icc(&thumb.jpeg).is_some(), "Display P3 ICC preserved on HEIC thumbnail");
+    assert!(
+        decoded_icc(&thumb.jpeg).is_some(),
+        "Display P3 ICC preserved on HEIC thumbnail"
+    );
 
     let full = core.preview_image(id, PreviewTier::Full, false).unwrap();
     assert_eq!((full.width, full.height), (320, 200));
-    assert!(decoded_icc(&full.jpeg).is_some(), "Display P3 ICC preserved on HEIC full preview");
+    assert!(
+        decoded_icc(&full.jpeg).is_some(),
+        "Display P3 ICC preserved on HEIC full preview"
+    );
 
     let export_jpg = temp.path().join("heic-export.jpg");
-    core.dispatch("asset.export", json!({"id": id, "destination": &export_jpg}))
-        .unwrap();
+    core.dispatch(
+        "asset.export",
+        json!({"id": id, "destination": &export_jpg}),
+    )
+    .unwrap();
     let exp_bytes = fs::read(&export_jpg).unwrap();
-    assert!(decoded_icc(&exp_bytes).is_some(), "Display P3 ICC preserved on HEIC export");
+    assert!(
+        decoded_icc(&exp_bytes).is_some(),
+        "Display P3 ICC preserved on HEIC export"
+    );
     let decoded = image::open(&export_jpg).unwrap();
     assert_eq!((decoded.width(), decoded.height()), (320, 200));
 }

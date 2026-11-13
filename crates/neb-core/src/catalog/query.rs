@@ -186,7 +186,10 @@ impl Core {
             .join(" AND ");
 
         let (scope_sql, scope_params) = match &args.library_id {
-            Some(id) => ("trashed_at IS NULL AND library_id=?", vec![V::Text(id.clone())]),
+            Some(id) => (
+                "trashed_at IS NULL AND library_id=?",
+                vec![V::Text(id.clone())],
+            ),
             None => (
                 "trashed_at IS NULL AND library_id IN (SELECT id FROM libraries WHERE hidden=0)",
                 Vec::new(),
@@ -309,12 +312,16 @@ impl Core {
             where_params.push(V::Text(lens.clone()));
         }
         if let Some(from) = &args.captured_from {
-            clauses.push("(captured_at<>'' AND captured_at>=? AND substr(captured_at,1,10)>=?)".to_owned());
+            clauses.push(
+                "(captured_at<>'' AND captured_at>=? AND substr(captured_at,1,10)>=?)".to_owned(),
+            );
             where_params.push(V::Text(from.clone()));
             where_params.push(V::Text(from.clone()));
         }
         if let Some(to) = &args.captured_to {
-            clauses.push("(captured_at<>'' AND captured_at<=? AND substr(captured_at,1,10)<=?)".to_owned());
+            clauses.push(
+                "(captured_at<>'' AND captured_at<=? AND substr(captured_at,1,10)<=?)".to_owned(),
+            );
             where_params.push(V::Text(format!("{to}\u{10ffff}")));
             where_params.push(V::Text(to.clone()));
         }
@@ -366,7 +373,10 @@ impl Core {
             || args.rating_max.is_some()
             || flag != "any"
             || color_label != "any"
-            || args.keyword.as_deref().is_some_and(|k| !k.trim().is_empty())
+            || args
+                .keyword
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty())
             || !search.is_empty()
             || smart_uses_full_rev
             || args.import_batch_id.is_some()
@@ -665,7 +675,8 @@ impl Core {
             let Some(relative_key) = strip_library_prefix(&key, prefix) else {
                 continue;
             };
-            let mut segments: Vec<&str> = relative_key.split('/').filter(|s| !s.is_empty()).collect();
+            let mut segments: Vec<&str> =
+                relative_key.split('/').filter(|s| !s.is_empty()).collect();
             if let Some(ref base) = root_basename {
                 if segments.len() > 1 && segments[0] == base {
                     segments.remove(0);

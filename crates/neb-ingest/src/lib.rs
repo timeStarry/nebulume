@@ -16,8 +16,8 @@ use std::{
 use uuid::Uuid;
 
 pub mod organize;
-pub use organize::{OrganizeRules, RenameMode};
 use organize::{DateBasis, ItemDate, TypeSplit, UnknownDate};
+pub use organize::{OrganizeRules, RenameMode};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -491,22 +491,26 @@ impl IngestService {
         let mut done_items = 0usize;
         let mut copied_bytes = 0u64;
         let mut was_cancelled = false;
-        let emit_progress =
-            |status: &str, current: Option<String>, done: usize, bytes: u64, backup: usize, cancelling: bool| {
-                if let Some(cb) = options.progress {
-                    cb(ImportProgress {
-                        plan_id: plan.id.clone(),
-                        status: status.to_string(),
-                        total_items,
-                        done_items: done,
-                        total_bytes,
-                        copied_bytes: bytes,
-                        current_file: current,
-                        backup_copied: backup,
-                        cancelling,
-                    });
-                }
-            };
+        let emit_progress = |status: &str,
+                             current: Option<String>,
+                             done: usize,
+                             bytes: u64,
+                             backup: usize,
+                             cancelling: bool| {
+            if let Some(cb) = options.progress {
+                cb(ImportProgress {
+                    plan_id: plan.id.clone(),
+                    status: status.to_string(),
+                    total_items,
+                    done_items: done,
+                    total_bytes,
+                    copied_bytes: bytes,
+                    current_file: current,
+                    backup_copied: backup,
+                    cancelling,
+                });
+            }
+        };
         emit_progress("running", None, 0, 0, 0, false);
         for item in active_items {
             let preserve_name = reviewed.preserve_names.contains(&item.source_relative_path);
@@ -905,22 +909,26 @@ impl IngestService {
         let mut done_items = 0usize;
         let mut copied_bytes = 0u64;
         let mut was_cancelled = false;
-        let emit_progress =
-            |status: &str, current: Option<String>, done: usize, bytes: u64, backup: usize, cancelling: bool| {
-                if let Some(cb) = options.progress {
-                    cb(ImportProgress {
-                        plan_id: plan.id.clone(),
-                        status: status.to_string(),
-                        total_items,
-                        done_items: done,
-                        total_bytes,
-                        copied_bytes: bytes,
-                        current_file: current,
-                        backup_copied: backup,
-                        cancelling,
-                    });
-                }
-            };
+        let emit_progress = |status: &str,
+                             current: Option<String>,
+                             done: usize,
+                             bytes: u64,
+                             backup: usize,
+                             cancelling: bool| {
+            if let Some(cb) = options.progress {
+                cb(ImportProgress {
+                    plan_id: plan.id.clone(),
+                    status: status.to_string(),
+                    total_items,
+                    done_items: done,
+                    total_bytes,
+                    copied_bytes: bytes,
+                    current_file: current,
+                    backup_copied: backup,
+                    cancelling,
+                });
+            }
+        };
         emit_progress("running", None, 0, 0, 0, false);
         for item in active_items {
             let preserve_name = reviewed.preserve_names.contains(&item.source_relative_path);
