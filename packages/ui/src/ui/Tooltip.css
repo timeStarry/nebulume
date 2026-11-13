@@ -17,7 +17,7 @@
 }
 [data-tooltip]::after {
   position: absolute;
-  z-index: 50;
+  z-index: 220;
   left: 50%;
   top: calc(100% + 6px);
   padding: 5px var(--nl-s-2);
@@ -33,6 +33,16 @@
   transition:
     opacity var(--nl-d-fast) var(--nl-ease),
     visibility 0s linear var(--nl-d-fast);
+}
+[data-tip-align='start']::after {
+  left: 0;
+  right: auto;
+  transform: none;
+}
+[data-tip-align='end']::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 [data-tip-side='top']::after {
   top: auto;

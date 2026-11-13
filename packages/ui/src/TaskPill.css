@@ -63,17 +63,16 @@
 .task-pill-scrim {
   position: fixed;
   inset: 0;
-  z-index: 38;
+  z-index: 199;
   border: 0;
   background: transparent;
 }
 .task-pill-popover {
-  position: absolute;
-  top: calc(100% + var(--nl-s-2));
-  right: 0;
-  z-index: 39;
+  position: fixed;
+  z-index: 200;
   width: 300px;
-  max-height: 360px;
+  max-width: calc(100vw - 16px);
+  max-height: min(360px, calc(100vh - 16px));
   padding: var(--nl-s-3);
   overflow-y: auto;
   border: 1px solid var(--nl-line-strong);

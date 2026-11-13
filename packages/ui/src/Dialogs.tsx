@@ -164,6 +164,7 @@ export function LibraryDialog(props: {
       if (!path) return;
       setLocalRoot(path);
       setConfirmBinding(false);
+      setError('');
       if (!name()) setName(path.split(/[\\/]/).filter(Boolean).pop() || '本地图片库');
     } catch (e) {
       setError(errorMessage(e));
@@ -234,6 +235,7 @@ export function LibraryDialog(props: {
               onChange={(event) => {
                 setSourceType(event.currentTarget.value as 'local' | 'remote');
                 setConfirmBinding(false);
+                setError('');
               }}
             >
               <option value="local">本地目录</option>
@@ -253,6 +255,7 @@ export function LibraryDialog(props: {
                       setSourceId(e.currentTarget.value);
                       setPrefix('');
                       setConfirmBinding(false);
+                      setError('');
                     }}
                     required
                     disabled={busy()}
@@ -284,6 +287,7 @@ export function LibraryDialog(props: {
                     onInput={(e) => {
                       setPrefix(e.currentTarget.value);
                       setConfirmBinding(false);
+                      setError('');
                     }}
                     placeholder="留空使用此存储源的根目录"
                     disabled={busy()}

@@ -76,6 +76,7 @@ export function Dialog(props: {
           <IconButton
             icon="x"
             size="sm"
+            tipAlign="end"
             label={props.closeLabel ?? '关闭对话框'}
             disabled={props.busy}
             onClick={() => props.onClose()}

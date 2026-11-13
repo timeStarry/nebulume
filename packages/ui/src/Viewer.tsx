@@ -1507,7 +1507,13 @@ export default function Viewer(props: {
     >
       <div class="viewer-image-area">
         <header class="nl-viewer-bar immersive-toolbar viewer-chrome">
-          <IconButton icon="arrow-left" size="sm" label="返回图片库" onClick={manager} />
+          <IconButton
+            icon="arrow-left"
+            size="sm"
+            tipAlign="start"
+            label="返回图片库"
+            onClick={manager}
+          />
           <div class="viewer-filename">
             <Show when={!info() || !asset()}>
               <strong title={asset()?.path || asset()?.filename}>
@@ -1600,6 +1606,7 @@ export default function Viewer(props: {
             <IconButton
               size="sm"
               icon="layout-sidebar-right"
+              tipAlign="end"
               label="影像信息（I）"
               shortcut="I"
               pressed={info()}
@@ -1609,6 +1616,7 @@ export default function Viewer(props: {
               <IconButton
                 size="sm"
                 icon="close"
+                tipAlign="end"
                 label="关闭查看器（Esc）"
                 shortcut="Esc"
                 onClick={close}

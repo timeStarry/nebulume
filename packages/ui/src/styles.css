@@ -1992,14 +1992,15 @@ kbd {
 .menu-scrim {
   position: fixed;
   inset: 0;
-  z-index: 59;
+  z-index: 199;
   background: transparent;
 }
 .folder-menu {
   position: fixed;
-  z-index: 60;
+  z-index: 200;
   min-width: 200px;
   padding: var(--nl-s-1);
+  border: 1px solid var(--nl-line);
   border-radius: 10px;
   background: var(--nl-raised);
 }

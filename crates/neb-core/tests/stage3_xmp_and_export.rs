@@ -63,11 +63,7 @@ fn xmp_merge_preserves_foreign_lightroom_crs_settings_and_roundtrips_marks() {
     let asset_id = listed["items"][0]["id"].as_str().unwrap().to_string();
     assert_eq!(listed["items"][0]["rating"].as_u64(), Some(3));
 
-    // Enable auto-write policy and update rating, pick flag, and crop in Nebulume.
-    let policy = core
-        .dispatch("xmp.policy.set", json!({ "auto_write": true }))
-        .unwrap();
-    assert_eq!(policy["auto_write"].as_bool(), Some(true));
+    // Auto-write policy is enabled by default out of the box, and updates rating, pick flag, and crop in Nebulume.
     assert_eq!(
         core.dispatch("xmp.policy.get", json!({})).unwrap()["auto_write"].as_bool(),
         Some(true)

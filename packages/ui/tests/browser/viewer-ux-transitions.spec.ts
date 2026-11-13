@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { fixture } from './viewer-fixture';
 
-test('slim 40px top bar never occludes the photo stage and aligns pixel-for-pixel with the [›] filename inspector header', async ({
+test('slim 40px translucent top bar floats over the photo stage and aligns pixel-for-pixel with the [›] filename inspector header', async ({
   page,
 }) => {
   await fixture(page);
@@ -10,16 +10,19 @@ test('slim 40px top bar never occludes the photo stage and aligns pixel-for-pixe
 
   const bar = page.locator('.nl-viewer-bar');
   const stage = page.locator('.photo-stage');
-  const wrap = page.locator('.photo-wrap');
 
   const barBox = (await bar.boundingBox())!;
   const stageBox = (await stage.boundingBox())!;
-  const wrapBox = (await wrap.boundingBox())!;
 
   expect(barBox.height).toBe(40);
-  // Dedicated non-overlapping bar: stage starts at or below the bottom of the 40px bar.
-  expect(stageBox.y).toBeGreaterThanOrEqual(barBox.y + barBox.height - 0.5);
-  expect(wrapBox.y).toBeGreaterThan(barBox.y + barBox.height);
+  // Translucent frosted bar floats over the full-bleed stage (stage starts at y = 0).
+  expect(stageBox.y).toBeLessThanOrEqual(1);
+  const barStyle = await bar.evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { bg: s.backgroundColor, blur: s.backdropFilter || s.getPropertyValue('-webkit-backdrop-filter') };
+  });
+  expect(barStyle.bg).toContain('rgba');
+  expect(barStyle.blur).toContain('blur');
 
   // Open info sidebar and verify [›] FileName.PNG header, zero redundant "影像信息" filler,
   // zero top-right window-close `×`, and exact 40px bottom-border alignment.

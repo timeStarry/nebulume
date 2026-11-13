@@ -10,7 +10,6 @@
 }
 .library-toolbar {
   flex-wrap: nowrap;
-  overflow: hidden;
 }
 .library-search {
   flex: 0 1 240px;

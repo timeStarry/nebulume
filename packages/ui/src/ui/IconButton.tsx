@@ -18,6 +18,7 @@ export default function IconButton(
     shortcut?: string;
     pressed?: boolean;
     tipSide?: 'top' | 'bottom' | 'left' | 'right';
+    tipAlign?: 'center' | 'start' | 'end';
   },
 ) {
   const [own, rest] = splitProps(props, [
@@ -30,6 +31,7 @@ export default function IconButton(
     'title',
     'type',
     'tipSide',
+    'tipAlign',
   ]);
   const size = () => own.size ?? 'md';
   return (
@@ -44,6 +46,7 @@ export default function IconButton(
       data-tooltip={own.title ? undefined : own.label}
       data-kbd={own.title ? undefined : own.shortcut}
       data-tip-side={own.tipSide ?? 'bottom'}
+      data-tip-align={own.tipAlign && own.tipAlign !== 'center' ? own.tipAlign : undefined}
     >
       <Icon name={own.icon} size={ICON_SIZE[size()]} />
     </button>

@@ -1743,17 +1743,22 @@ test('startup auto-probes remote connections, empty library scan shows loading s
     '打开图片库 NAS 旅行，在线',
   );
 
-  // 2. Scanning an empty library shows the indexing loading state in the center empty view + indeterminate TaskPill progress.
+  // 2. Scanning an empty library shows the indexing loading state in both header + center empty view + portaled TaskPill progress.
   await expect(page.getByRole('heading', { name: '图片库尚无照片' })).toBeVisible();
   await page.getByRole('button', { name: '扫描图片库' }).click();
   await expect(page.getByRole('heading', { name: '正在扫描图片库…' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '正在扫描…' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '正在扫描…' })).toHaveCount(2);
+  await expect(page.getByRole('button', { name: '正在扫描…' }).first()).toBeDisabled();
 
-  // Open TaskPill popover while scan is running -> indeterminate progressbar is shown.
+  // Open TaskPill popover while scan is running -> rendered in Portal (position: fixed) with indeterminate progressbar.
   await page.getByRole('button', { name: /后台任务：扫描 新图库/ }).click();
-  await expect(
-    page.getByRole('dialog', { name: '后台任务列表' }).getByRole('progressbar'),
-  ).toBeVisible();
+  const taskDialog = page.getByRole('dialog', { name: '后台任务列表' });
+  await expect(taskDialog.getByRole('progressbar')).toBeVisible();
+  const taskPopoverLayout = await taskDialog.evaluate((el) => ({
+    inHeader: !!el.closest('.nl-page-header'),
+    position: getComputedStyle(el).position,
+  }));
+  expect(taskPopoverLayout).toEqual({ inHeader: false, position: 'fixed' });
   await page.keyboard.press('Escape');
 
   indexedItems = [{ ...photo, library_id: emptyLocal.id }];

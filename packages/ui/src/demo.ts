@@ -728,7 +728,7 @@ function browserStats(items: Asset[]) {
 }
 
 const browserTrash = new Map<string, Asset>();
-let demoXmpAutoWrite = false;
+let demoXmpAutoWrite = true;
 const demoSidecars = new Map<
   string,
   { rating: number; flag: Flag; color_label: ColorLabel; keywords: string[]; crop: Asset['crop'] }

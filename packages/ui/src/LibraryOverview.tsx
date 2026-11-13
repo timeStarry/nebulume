@@ -1,6 +1,6 @@
 import { createResource, For, Show } from 'solid-js';
 import { execute } from './api';
-import { Badge, Button } from './ui';
+import { Badge, Button, EmptyState } from './ui';
 import './library/overview.css';
 import type { AssetListOptions, LibraryStats } from './model';
 import {
@@ -23,12 +23,17 @@ export type { OverviewPick };
  */
 export default function LibraryOverview(props: {
   options: AssetListOptions;
+  refreshToken?: number;
+  scanning?: boolean;
   onPick: (pick: OverviewPick) => void;
   onCull: () => void;
 }) {
   const [stats] = createResource(
-    () => JSON.stringify({ ...props.options, limit: undefined, offset: undefined }),
-    (key) => execute<LibraryStats>('asset.stats', JSON.parse(key)),
+    () => ({
+      query: JSON.stringify({ ...props.options, limit: undefined, offset: undefined }),
+      rev: props.refreshToken ?? 0,
+    }),
+    ({ query }) => execute<LibraryStats>('asset.stats', JSON.parse(query)),
   );
 
   const Bars = (barProps: {
@@ -114,8 +119,20 @@ export default function LibraryOverview(props: {
           const timeline = buildTimelineBuckets(s.days);
           const spanText = formatCaptureSpan(s.days);
           return (
-            <>
-              <div class="ov-kpi-grid">
+            <Show
+              when={!props.scanning || s.photos > 0}
+              fallback={
+                <EmptyState
+                  icon="chart-bar"
+                  loading
+                  role="status"
+                  title="正在扫描图片库…"
+                  description="正在扫描目录并建立照片索引，完成后将自动生成统计概览。"
+                />
+              }
+            >
+              <>
+                <div class="ov-kpi-grid">
                 <div class="ov-kpi-card">
                   <div class="ov-kpi-main">
                     <b>{s.photos}</b>
@@ -281,7 +298,8 @@ export default function LibraryOverview(props: {
                   </Show>
                 </section>
               </div>
-            </>
+              </>
+            </Show>
           );
         }}
       </Show>

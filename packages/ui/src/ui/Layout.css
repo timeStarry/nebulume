@@ -103,6 +103,11 @@
 [data-motion='reduced'] .nl-floating-dock {
   animation: none;
 }
+.nl-viewer-bar {
+  background: var(--nl-v-bar);
+  -webkit-backdrop-filter: var(--nl-glass-blur);
+  backdrop-filter: var(--nl-glass-blur);
+}
 .nl-page {
   min-height: 0;
   overflow: auto;

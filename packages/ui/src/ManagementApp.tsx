@@ -102,6 +102,7 @@ import {
   type AssetListOptions,
   type AssetListResult,
   type Availability,
+  type CaptureIndexStatus,
   type Collection,
   type ColorLabel,
   type ColorLabelFilter,
@@ -1006,6 +1007,94 @@ export default function ManagementApp() {
     string,
     { taskId: string; libraryName: string; timer?: ReturnType<typeof setTimeout> }
   >();
+  const captureIndexTrackers = new Map<
+    string,
+    { taskId: string; libraryName: string; timer?: ReturnType<typeof setTimeout> }
+  >();
+
+  function syncCaptureIndexTask(library: Library, status: CaptureIndexStatus) {
+    const job = status.job;
+    const running = !!job && ['running', 'stopping'].includes(job.status);
+    let tracker = captureIndexTrackers.get(library.id);
+    if (running && job) {
+      const detail = `${job.processed} / ${job.total}`;
+      if (!tracker) {
+        const taskId = tasks.start({
+          kind: 'capture_index',
+          libraryId: library.id,
+          title: `拍摄时间索引 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+        tracker = { taskId, libraryName: library.name };
+        captureIndexTrackers.set(library.id, tracker);
+      } else {
+        tasks.progress(tracker.taskId, {
+          title: `拍摄时间索引 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+      }
+      if (!tracker.timer && !disposed) {
+        const currentTracker = tracker;
+        currentTracker.timer = setTimeout(async () => {
+          currentTracker.timer = undefined;
+          if (disposed) return;
+          try {
+            const next = await execute<CaptureIndexStatus>('library.capture_index.status', {
+              library_id: library.id,
+            });
+            if (!disposed) syncCaptureIndexTask(library, next);
+          } catch {
+            /* Next poll or control mount reconciles. */
+          }
+        }, 1000);
+      }
+      return;
+    }
+    if (tracker) {
+      if (tracker.timer) clearTimeout(tracker.timer);
+      captureIndexTrackers.delete(library.id);
+      if (job?.status === 'failed') {
+        tasks.fail(tracker.taskId, job.error || '拍摄时间索引未完成');
+      } else if (job?.status === 'cancelled') {
+        tasks.complete(tracker.taskId, `已停止（${job.processed} / ${job.total}）`);
+      } else {
+        tasks.complete(
+          tracker.taskId,
+          job
+            ? `已完成 ${job.processed} / ${job.total}${job.failed ? `，${job.failed} 项待重试` : ''}`
+            : '拍摄时间索引已就绪',
+        );
+      }
+      if (job && !completedCaptureJobs.has(job.id)) {
+        completedCaptureJobs.add(job.id);
+        if (libraryId() === library.id) {
+          void loadAssets(false, true);
+          if (info()) void refetchDetail();
+        } else {
+          dirtyLibraries.add(library.id);
+        }
+      }
+    }
+  }
+
+  async function retryLibraryConnection(library: Library) {
+    if (library.storage_id && library.source_kind && library.source_kind !== 'local') {
+      const target =
+        sources().find((item) => item.id === library.storage_id) ??
+        ({
+          id: library.storage_id,
+          name: library.source_name || library.name,
+          kind: library.source_kind,
+          endpoint: library.source_endpoint || '',
+        } as StorageConfig);
+      await checkRemoteSources([target], true);
+    }
+    await refreshLibraries();
+  }
 
   function syncFingerprintTask(library: Library, status: FingerprintStatus) {
     const job = status.job;
@@ -2225,6 +2314,10 @@ export default function ManagementApp() {
         if (tracker.timer) clearTimeout(tracker.timer);
       }
       fingerprintTrackers.clear();
+      for (const tracker of captureIndexTrackers.values()) {
+        if (tracker.timer) clearTimeout(tracker.timer);
+      }
+      captureIndexTrackers.clear();
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', focusRefresh);
       navigationMedia.removeEventListener('change', updateNavigationMode);
@@ -2329,11 +2422,15 @@ export default function ManagementApp() {
           <LibrariesOverview
             libraries={visibleLibraries()}
             desktop={desktop}
+            checking={(library) =>
+              !!library.storage_id && checkingSourceIds().has(library.storage_id)
+            }
             leading={
               sidebarCollapsed() ? (
                 <IconButton
                   size="sm"
                   icon="layout-sidebar-right"
+                  tipAlign="start"
                   label="展开图片库侧栏（⌘B）"
                   shortcut="Meta+B Control+B"
                   onClick={toggleSidebar}
@@ -2402,6 +2499,7 @@ export default function ManagementApp() {
                       <IconButton
                         size="sm"
                         icon="layout-sidebar-right"
+                        tipAlign="start"
                         label="展开图片库侧栏（⌘B）"
                         shortcut="Meta+B Control+B"
                         onClick={toggleSidebar}
@@ -2442,12 +2540,24 @@ export default function ManagementApp() {
                     <>
                       <TaskPill tasks={tasks} />
                       <Button
-                        icon={desktop ? 'refresh' : 'plus'}
+                        icon={
+                          tasks.isRunning('scan', library().id)
+                            ? undefined
+                            : desktop
+                              ? 'refresh'
+                              : 'plus'
+                        }
                         disabled={tasks.isRunning('scan', library().id) || scanBlocked(library())}
                         title={scanBlocked(library()) ? scanReason(library()) : undefined}
                         onClick={() => (desktop ? scan(library()) : fileInput.click())}
                       >
-                        {desktop ? '扫描更新' : '载入图片'}
+                        <Show
+                          when={tasks.isRunning('scan', library().id)}
+                          fallback={desktop ? '扫描更新' : '载入图片'}
+                        >
+                          <Spinner size="sm" />
+                          正在扫描…
+                        </Show>
                       </Button>
                       <OverflowMenu label="更多" items={libraryMenu(library())} />
                     </>
@@ -2483,9 +2593,16 @@ export default function ManagementApp() {
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={() => void refreshLibraries()}
+                              disabled={
+                                !!library().storage_id &&
+                                checkingSourceIds().has(library().storage_id!)
+                              }
+                              onClick={() => void retryLibraryConnection(library())}
                             >
-                              重试
+                              {library().storage_id &&
+                              checkingSourceIds().has(library().storage_id!)
+                                ? '正在重试…'
+                                : '重试'}
                             </Button>
                           </Show>
                         </>
@@ -2603,8 +2720,7 @@ export default function ManagementApp() {
                   <Show when={desktop && sort() === 'captured_at'}>
                     <CaptureIndexControl
                       libraryId={library().id}
-                      libraryName={library().name}
-                      tasks={tasks}
+                      onStatus={(status) => syncCaptureIndexTask(library(), status)}
                       onSettled={async (status) => {
                         const job = status.job;
                         if (!job || completedCaptureJobs.has(job.id)) return;
@@ -2630,6 +2746,7 @@ export default function ManagementApp() {
                   <IconButton
                     size="sm"
                     icon="info"
+                    tipAlign="end"
                     label="影像详情（I）"
                     shortcut="I"
                     pressed={info()}
@@ -2671,6 +2788,8 @@ export default function ManagementApp() {
                     <div class="overview-layer">
                       <LibraryOverview
                         options={{ ...listOptions(), limit: undefined, offset: undefined }}
+                        refreshToken={total()}
+                        scanning={tasks.isRunning('scan', library().id)}
                         onPick={(pick) => {
                           setExtra(pick);
                           setView('photos');

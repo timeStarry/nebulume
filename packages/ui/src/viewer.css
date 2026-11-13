@@ -1,6 +1,6 @@
 /* Photo rendering stays neutral in both themes; color is reserved for controls. */
 .immersive-viewer {
-  --viewer-bar-offset: var(--nl-h-lg);
+  --viewer-bar-offset: 0px;
   position: relative;
   display: flex;
   width: 100%;

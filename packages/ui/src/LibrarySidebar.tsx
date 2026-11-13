@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import Icon from './Icon';
 import OverflowMenu from './OverflowMenu';
@@ -74,6 +74,18 @@ export default function LibrarySidebar(props: {
   const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set());
   const [foldersCollapsed, setFoldersCollapsed] = createSignal(readFoldersCollapsed());
   const [menu, setMenu] = createSignal<{ path: string; x: number; y: number }>();
+  createEffect(() => {
+    if (!menu()) return;
+    const dismiss = () => setMenu(undefined);
+    window.addEventListener('resize', dismiss);
+    window.addEventListener('blur', dismiss);
+    window.addEventListener('scroll', dismiss, true);
+    onCleanup(() => {
+      window.removeEventListener('resize', dismiss);
+      window.removeEventListener('blur', dismiss);
+      window.removeEventListener('scroll', dismiss, true);
+    });
+  });
   const toggleFolders = () => {
     const next = !foldersCollapsed();
     setFoldersCollapsed(next);
@@ -166,6 +178,7 @@ export default function LibrarySidebar(props: {
             <IconButton
               size="xs"
               icon="search"
+              tipAlign="end"
               label="打开命令面板（⌘K）"
               shortcut="Meta+K Control+K"
               onClick={() => props.onCommandPalette?.()}
@@ -174,6 +187,7 @@ export default function LibrarySidebar(props: {
           <IconButton
             size="xs"
             icon="plus"
+            tipAlign="end"
             label="添加图片库"
             onClick={() => props.onAddLibrary()}
           />
@@ -181,6 +195,7 @@ export default function LibrarySidebar(props: {
             <IconButton
               size="xs"
               icon="chevron-left"
+              tipAlign="end"
               label="收起图片库侧栏（⌘B）"
               shortcut="Meta+B Control+B"
               onClick={() => props.onCollapse?.()}

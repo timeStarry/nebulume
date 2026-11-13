@@ -1,4 +1,4 @@
-/* Viewer top bar: slim 40px dedicated bar by default; optional auto-hide floats over stage. */
+/* Viewer top bar: slim 40px translucent frosted bar floating over stage; optional auto-hide. */
 .nl-viewer-bar {
   position: absolute;
   z-index: 6;
@@ -12,7 +12,6 @@
   min-height: var(--nl-h-lg);
   padding: 0 var(--nl-s-3);
   border-bottom: 1px solid var(--nl-v-line);
-  background: var(--nl-v-overlay);
   color: var(--nl-v-text);
   transition: opacity var(--nl-d-base) var(--nl-ease);
 }

@@ -14,12 +14,6 @@
   max-height: calc(100vh - 16px);
   overflow-y: auto;
 }
-.nl-menu--anchored {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 4px);
-  right: 0;
-}
 .nl-menu-item {
   display: flex;
   align-items: center;
