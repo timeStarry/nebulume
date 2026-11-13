@@ -1,7 +1,10 @@
 import { For, Show } from 'solid-js';
-import type { Flag } from './model';
+import type { ColorLabel, Flag } from './model';
+import { COLOR_LABEL_NAMES } from './undo';
 import { Button, FloatingDock, IconButton } from './ui';
 import './BatchDock.css';
+
+const BATCH_COLORS: Array<Exclude<ColorLabel, 'none'>> = ['red', 'yellow', 'green', 'blue'];
 
 /**
  * Floating glass batch-action dock shown when 2+ photos are selected.
@@ -12,7 +15,9 @@ export default function BatchDock(props: {
   canTrash: boolean;
   exportBusy?: boolean;
   trashBusy?: boolean;
-  onMark: (mark: { rating?: number; flag?: Flag }) => void;
+  onMark: (mark: { rating?: number; flag?: Flag; color_label?: ColorLabel }) => void;
+  onCollect?: () => void;
+  onRemoveFromCollection?: () => void;
   onExport: () => void;
   onExportPreset?: () => void;
   onTrash: () => void;
@@ -57,6 +62,47 @@ export default function BatchDock(props: {
             清除旗标
           </Button>
         </span>
+        <span class="batch-dock-sep" aria-hidden="true" />
+        <span class="library-batch-group" role="group" aria-label="批量色标">
+          <For each={BATCH_COLORS}>
+            {(color) => (
+              <button
+                type="button"
+                class="batch-color-btn"
+                aria-label={`将所选照片设为${COLOR_LABEL_NAMES[color]}`}
+                title={COLOR_LABEL_NAMES[color]}
+                onClick={() => props.onMark({ color_label: color })}
+              >
+                <span class="batch-color-swatch" data-color={color} />
+              </button>
+            )}
+          </For>
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label="清除所选照片色标"
+            onClick={() => props.onMark({ color_label: 'none' })}
+          >
+            无色
+          </Button>
+        </span>
+        <Show when={props.onCollect || props.onRemoveFromCollection}>
+          <span class="batch-dock-sep" aria-hidden="true" />
+          <Show when={props.onCollect}>
+            <Button size="sm" variant="ghost" icon="folder-plus" onClick={() => props.onCollect!()}>
+              加入精选集…
+            </Button>
+          </Show>
+          <Show when={props.onRemoveFromCollection}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => props.onRemoveFromCollection!()}
+            >
+              移出精选集
+            </Button>
+          </Show>
+        </Show>
         <span class="batch-dock-sep" aria-hidden="true" />
         <Button
           size="sm"

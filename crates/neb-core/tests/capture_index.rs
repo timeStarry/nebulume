@@ -67,7 +67,7 @@ fn version_four_migration_indexes_existing_exif_without_touching_originals_or_ed
         database
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        13
+        14
     );
     let migrated = core.asset(&known.id).unwrap();
     assert_eq!(migrated.captured_at, "2026-10-02T01:02:03.125000000");

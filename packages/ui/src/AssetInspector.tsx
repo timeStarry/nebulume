@@ -17,6 +17,7 @@ import {
   renderSourceLabel,
   validCrop,
   type Asset,
+  type ColorLabel,
   type Crop,
   type Histogram,
 } from './model';
@@ -29,6 +30,7 @@ import {
   inspectorMetadataGroups,
 } from './inspector-metadata';
 import './inspector.css';
+import KeywordSection, { ColorLabelDots } from './inspector/KeywordSection';
 import PinnedFields from './PinnedFields';
 
 export default function AssetInspector(props: {
@@ -45,6 +47,8 @@ export default function AssetInspector(props: {
   onSaveCrop?: () => void;
   onResetCrop: () => void;
   onRate: (rating: number) => void;
+  onColorLabel?: (color: ColorLabel) => void;
+  onKeywordsUpdated?: (keywords: string[]) => void;
   onCrop: () => void;
   onExport: () => void;
   onRefresh?: () => void;
@@ -224,6 +228,13 @@ export default function AssetInspector(props: {
             清除
           </button>
         </div>
+        <Show when={props.onColorLabel}>
+          <ColorLabelDots
+            value={props.asset.color_label}
+            disabled={props.busy}
+            onChange={(color) => props.onColorLabel!(color)}
+          />
+        </Show>
       </div>
       <Show when={props.cropMode && props.crop}>
         <section class="inspector-section crop-panel">
@@ -375,6 +386,11 @@ export default function AssetInspector(props: {
           </p>
         </Show>
       </section>
+      <KeywordSection
+        asset={inspectedAsset()}
+        disabled={props.busy}
+        onUpdated={props.onKeywordsUpdated}
+      />
       <PinnedFields asset={inspectedAsset()} />
       <section class="inspector-section inspector-raw">
         <Show when={!hasExif()}>

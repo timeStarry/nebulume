@@ -35,6 +35,9 @@ fn preview_fixture(version: i64) -> (tempfile::TempDir, String, String) {
         "DROP TRIGGER assets_revision_insert; DROP TRIGGER assets_revision_update;
          DROP TRIGGER assets_revision_delete; DROP TRIGGER libraries_revision_insert;
          DROP TRIGGER libraries_revision_update; DROP TRIGGER libraries_revision_delete;
+         DROP TRIGGER IF EXISTS collections_revision_update; DROP TRIGGER IF EXISTS collections_revision_delete;
+         DROP TRIGGER IF EXISTS collection_items_revision_insert; DROP TRIGGER IF EXISTS collection_items_revision_delete;
+         DROP TRIGGER IF EXISTS asset_keywords_revision_insert; DROP TRIGGER IF EXISTS asset_keywords_revision_delete;
          DROP TABLE catalog_revision; DROP INDEX assets_quick_hash;
          ALTER TABLE assets DROP COLUMN quick_hash;
          ALTER TABLE assets DROP COLUMN trashed_at;
@@ -113,7 +116,7 @@ fn check_migration(version: i64) {
         assert_eq!(
             db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            13
+            14
         );
         assert_eq!(
             db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
@@ -219,7 +222,7 @@ fn failed_preview_repair_rolls_back_schema_and_records() {
 
 #[test]
 fn unknown_or_newer_catalogs_are_rejected_without_relabeling() {
-    for version in [10, 12, 13, 14] {
+    for version in [10, 12, 13, 14, 15] {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().join("catalog");
         fs::create_dir(&data).unwrap();
@@ -255,7 +258,7 @@ fn formal_schema11_upgrades_without_rewriting_user_data() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        13
+        14
     );
 }
 
@@ -277,6 +280,6 @@ fn current_schema_with_missing_trash_columns_is_rejected_before_commit() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        13
+        14
     );
 }

@@ -88,6 +88,9 @@ async function nativeCache(
         case 'system.info':
           result = {};
           break;
+        case 'xmp.policy.get':
+          result = { auto_write: false };
+          break;
         case 'asset.list':
           result = { items: options.remote ? [asset] : [], total: options.remote ? 1 : 0 };
           break;
@@ -336,6 +339,11 @@ test('cache errors retry, invalid capacity is blocked, and service rejection pre
   await settings(page);
   await expect(page.getByRole('alert')).toContainText('cache volume unavailable');
   await page.locator('.cache-settings').getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.getByRole('tab', { name: '其他配置' })).toHaveCount(0);
+  await expect(page.locator('.cache-settings-grid')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '存储占用与缓存目录' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '容量上限与回收策略' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '离线固定照片' })).toBeVisible();
   const limit = page.getByLabel('缓存总上限，GiB');
   await expect(limit).toHaveValue('10');
   await limit.fill('1');

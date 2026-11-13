@@ -1,9 +1,10 @@
-import type { Asset, AssetListOptions, AssetListResult, Flag } from './model';
+import type { Asset, AssetListOptions, AssetListResult, ColorLabel, Flag } from './model';
 
 /** Actions available while the viewer is in culling mode. */
 export type CullAction =
   | { kind: 'rate'; value: number }
   | { kind: 'flag'; value: Flag }
+  | { kind: 'color_label'; value: Exclude<ColorLabel, 'none'> }
   | { kind: 'move'; delta: 1 | -1 }
   | { kind: 'view'; value: 'single' | 'compare' }
   | { kind: 'zoom' }
@@ -39,6 +40,10 @@ export function cullKeyAction(event: KeyLike): CullAction | null {
     return null;
   }
   if (/^[0-5]$/.test(key)) return { kind: 'rate', value: Number(key) };
+  if (key === '6') return { kind: 'color_label', value: 'red' };
+  if (key === '7') return { kind: 'color_label', value: 'yellow' };
+  if (key === '8') return { kind: 'color_label', value: 'green' };
+  if (key === '9') return { kind: 'color_label', value: 'blue' };
   switch (key) {
     case 'p':
       return { kind: 'flag', value: 'pick' };
@@ -88,10 +93,16 @@ export interface Mark {
   id: string;
   rating: number;
   flag: Flag;
+  color_label: ColorLabel;
 }
 
-export function markOf(asset: Pick<Asset, 'id' | 'rating' | 'flag'>): Mark {
-  return { id: asset.id, rating: asset.rating, flag: asset.flag || 'none' };
+export function markOf(asset: Pick<Asset, 'id' | 'rating' | 'flag' | 'color_label'>): Mark {
+  return {
+    id: asset.id,
+    rating: asset.rating,
+    flag: asset.flag || 'none',
+    color_label: asset.color_label || 'none',
+  };
 }
 
 /** Ids shown together in compare view: the focused image and the ones after it. */

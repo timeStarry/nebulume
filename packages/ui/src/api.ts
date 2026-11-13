@@ -97,6 +97,10 @@ export function revealInFolder(path: string): Promise<void> {
   if (!desktop) return Promise.reject(new Error('此功能需要 Nebulume 桌面版。'));
   return invoke('reveal_in_folder', { path });
 }
+export function openDataDirectory(): Promise<void> {
+  if (!desktop) return Promise.reject(new Error('此功能需要 Nebulume 桌面版。'));
+  return invoke('open_data_dir');
+}
 export function openExternal(options: {
   id?: string;
   path: string;

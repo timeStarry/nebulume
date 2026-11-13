@@ -70,6 +70,16 @@ function observeVisibility(element: Element, onChange: (visible: boolean) => voi
 function flagLabel(flag?: Asset['flag']) {
   return flag === 'pick' ? '，留用' : flag === 'reject' ? '，淘汰' : '';
 }
+function colorLabelText(color?: Asset['color_label']) {
+  if (!color || color === 'none') return '';
+  const map: Record<string, string> = {
+    red: '，红色标',
+    yellow: '，黄色标',
+    green: '，绿色标',
+    blue: '，蓝色标',
+  };
+  return map[color] || '';
+}
 
 export function Thumbnail(props: {
   asset: Asset;
@@ -236,7 +246,7 @@ export function Thumbnail(props: {
           props.onOpen();
         }
       }}
-      aria-label={`${props.asset.filename}，${props.asset.rating} 星${flagLabel(props.asset.flag)}`}
+      aria-label={`${props.asset.filename}，${props.asset.rating} 星${flagLabel(props.asset.flag)}${colorLabelText(props.asset.color_label)}`}
       aria-pressed={!!props.selected}
       title={props.asset.filename}
     >
@@ -252,6 +262,9 @@ export function Thumbnail(props: {
         <For each={layers()}>{(layer) => layer.image}</For>
         <Show when={!props.tile}>
           <span class="filetype">{props.asset.extension.toUpperCase()}</span>
+        </Show>
+        <Show when={props.asset.color_label && props.asset.color_label !== 'none'}>
+          <span class="tile-color-dot" data-color={props.asset.color_label} aria-hidden="true" />
         </Show>
         <Show when={props.tile}>
           <Show when={props.asset.flag === 'pick' || props.asset.flag === 'reject'}>

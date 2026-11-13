@@ -1929,7 +1929,7 @@ kbd {
   display: flex;
   align-items: center;
   min-height: 28px;
-  padding-left: calc(var(--depth, 1) * 14px - 6px);
+  padding-left: calc(var(--depth, 0) * 14px + 4px);
   border-radius: 6px;
   color: var(--nl-text-2);
 }

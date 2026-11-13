@@ -99,6 +99,47 @@
   left: 0;
   right: auto;
 }
+.library-subnav {
+  display: grid;
+  gap: var(--nl-s-2);
+  margin: var(--nl-s-1) 0 var(--nl-s-2) var(--nl-s-4);
+  padding-left: var(--nl-s-2);
+  border-left: 1px solid var(--nl-line);
+}
+.library-subnav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+  padding: 0 var(--nl-s-1) 0 var(--nl-s-2);
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-11);
+  font-weight: 500;
+}
+.collection-nav-list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.collection-nav-row {
+  padding-left: var(--nl-s-2);
+}
+.collection-nav-more {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--nl-d-fast) var(--nl-ease);
+}
+.collection-nav-row:hover .collection-nav-more,
+.collection-nav-row:focus-within .collection-nav-more,
+.collection-nav-more:has([aria-expanded='true']) {
+  opacity: 1;
+}
+.collection-nav-row:hover .tree-count,
+.collection-nav-row:focus-within .tree-count {
+  display: none;
+}
 .settings-workspace {
   display: flex;
   flex-direction: column;

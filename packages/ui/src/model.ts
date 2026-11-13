@@ -18,6 +18,11 @@ export interface Library {
   latest_capture?: string | null;
   /** Up to four recent photos for the overview card. */
   cover_asset_ids?: string[];
+  /** True when backed by an external / removable volume. */
+  removable?: boolean;
+  volume_label?: string | null;
+  /** Suggested mounted path when a removable drive reconnected at a new mount point. */
+  relocatable_path?: string | null;
 }
 export interface Crop {
   x: number;
@@ -44,6 +49,10 @@ export interface Asset {
   rating: number;
   /** Culling mark stored in the catalog; never written to the original. */
   flag?: Flag;
+  /** Photographer color label (6=red, 7=yellow, 8=green, 9=blue); synced to xmp:Label. */
+  color_label?: ColorLabel;
+  /** Hierarchical keywords such as `人像 > 客片`, synced to dc:subject / lr:hierarchicalSubject. */
+  keywords?: string[];
   metadata: Record<string, string>;
   crop?: Crop | null;
   availability: string;
@@ -56,9 +65,27 @@ export interface Asset {
 }
 export type Flag = 'none' | 'pick' | 'reject';
 export type FlagFilter = 'any' | 'pick' | 'none' | 'reject' | 'not_reject';
+export type ColorLabel = 'none' | 'red' | 'yellow' | 'green' | 'blue';
+export type ColorLabelFilter = 'any' | ColorLabel;
+export type CollectionKind = 'manual' | 'smart';
+export interface Collection {
+  id: string;
+  library_id: string;
+  name: string;
+  kind: CollectionKind;
+  rules?: SmartCollectionRules | null;
+  item_count: number;
+  created_at: string;
+}
+export type SmartCollectionRules = Partial<
+  Omit<AssetListOptions, 'limit' | 'offset' | 'collection_id' | 'library_id'>
+>;
 export interface AssetListOptions {
   library_id?: string;
   flag?: FlagFilter;
+  color_label?: ColorLabelFilter;
+  collection_id?: string;
+  keyword?: string;
   import_batch_id?: string;
   camera?: string;
   lens?: string;

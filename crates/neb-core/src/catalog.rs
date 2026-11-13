@@ -18,6 +18,7 @@ use crate::{
     imaging, Asset, Crop, Library, Location, PreviewImage, PreviewMemory, PreviewTier,
 };
 
+mod collections;
 mod query;
 mod scan;
 mod xmp_sync;
@@ -33,7 +34,8 @@ pub struct Core {
     list_memo: Mutex<Vec<ListMemo>>,
 }
 
-pub(super) const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key";
+const LEGACY_V8_ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key";
+pub(super) const ASSET_COLUMNS: &str = "id,library_id,path,filename,extension,kind,size,modified_at,width,height,rating,metadata_json,crop_json,availability,source_key,created_at,captured_at,captured_at_checked,flag,key,color_label";
 const LIBRARY_COLUMNS: &str =
     "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg,location_id";
 // Bump when inspection semantics change. This lives only in the private cache
@@ -53,7 +55,7 @@ impl Core {
         let migration = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = migration.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         ensure!(
-            (0..=13).contains(&version),
+            (0..=14).contains(&version),
             "E_SCHEMA: Catalog was created by a newer version of Nebulume"
         );
         // The preview branch used 9/10 for import options and search indexes;
@@ -77,7 +79,7 @@ impl Core {
         );
         if version >= 8 {
             migration
-                .prepare(&format!("SELECT {ASSET_COLUMNS},path_key,modified_stamp,import_batch_id,sha256 FROM assets LIMIT 0"))
+                .prepare(&format!("SELECT {LEGACY_V8_ASSET_COLUMNS},path_key,modified_stamp,import_batch_id,sha256 FROM assets LIMIT 0"))
                 .context("E_SCHEMA: Unrecognized catalog asset schema; catalog unchanged")?;
             migration
                 .prepare(&format!(
@@ -108,6 +110,14 @@ impl Core {
                 has_any_column(&migration, "assets", "camera")?
                     && has_column(&migration, "catalog_revision", "structural_value")?,
                 "E_SCHEMA: Unrecognized catalog v13 schema; catalog unchanged"
+            );
+        }
+        if version >= 14 {
+            ensure!(
+                has_column(&migration, "assets", "color_label")?
+                    && has_column(&migration, "collections", "id")?
+                    && has_column(&migration, "keywords", "id")?,
+                "E_SCHEMA: Unrecognized catalog v14 schema; catalog unchanged"
             );
         }
         if version == 0 {
@@ -402,6 +412,71 @@ impl Core {
                  PRAGMA user_version=13;",
             )?;
         }
+        if version < 14 {
+            if !has_column(&migration, "assets", "color_label")? {
+                migration.execute_batch(
+                    "ALTER TABLE assets ADD COLUMN color_label TEXT NOT NULL DEFAULT 'none' CHECK(color_label IN ('none','red','yellow','green','blue'));",
+                )?;
+            }
+            migration.execute_batch(
+                "CREATE INDEX IF NOT EXISTS assets_library_color_label ON assets(library_id,color_label);
+                 CREATE TABLE IF NOT EXISTS collections(
+                     id TEXT PRIMARY KEY NOT NULL,
+                     library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+                     name TEXT NOT NULL,
+                     kind TEXT NOT NULL CHECK(kind IN ('manual','smart')),
+                     rules_json TEXT,
+                     created_at TEXT NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS collections_library ON collections(library_id,created_at);
+                 CREATE TABLE IF NOT EXISTS collection_items(
+                     collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                     asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                     added_at TEXT NOT NULL,
+                     PRIMARY KEY(collection_id,asset_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS collection_items_asset ON collection_items(asset_id);
+                 CREATE TABLE IF NOT EXISTS keywords(
+                     id TEXT PRIMARY KEY NOT NULL,
+                     library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+                     path TEXT NOT NULL,
+                     created_at TEXT NOT NULL,
+                     UNIQUE(library_id,path)
+                 );
+                 CREATE TABLE IF NOT EXISTS asset_keywords(
+                     asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                     keyword_id TEXT NOT NULL REFERENCES keywords(id) ON DELETE CASCADE,
+                     PRIMARY KEY(asset_id,keyword_id)
+                 );
+                 CREATE INDEX IF NOT EXISTS asset_keywords_keyword ON asset_keywords(keyword_id);
+                 CREATE TABLE IF NOT EXISTS library_volumes(
+                     library_id TEXT PRIMARY KEY NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+                     volume_label TEXT,
+                     mount_root TEXT,
+                     relative_root TEXT NOT NULL DEFAULT '',
+                     updated_at TEXT NOT NULL
+                 );
+                 CREATE TRIGGER IF NOT EXISTS collections_revision_update AFTER UPDATE ON collections BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS collections_revision_delete AFTER DELETE ON collections BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS collection_items_revision_insert AFTER INSERT ON collection_items BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS collection_items_revision_delete AFTER DELETE ON collection_items BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS asset_keywords_revision_insert AFTER INSERT ON asset_keywords BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS asset_keywords_revision_delete AFTER DELETE ON asset_keywords BEGIN
+                     UPDATE catalog_revision SET value=value+1 WHERE id=1;
+                 END;
+                 PRAGMA user_version=14;",
+            )?;
+        }
         migration.execute_batch(
             "CREATE TABLE IF NOT EXISTS app_settings(
                 key TEXT PRIMARY KEY NOT NULL,
@@ -462,6 +537,17 @@ impl Core {
                     args.pair_raw_jpeg,
                     None,
                 )?)?)
+            }
+            "library.relocate" => {
+                #[derive(Deserialize)]
+                struct Relocate {
+                    id: String,
+                    root: String,
+                }
+                let args: Relocate = parse(params)?;
+                Ok(serde_json::to_value(
+                    self.relocate_local_library(&args.id, Path::new(&args.root))?,
+                )?)
             }
             "library.remove" => {
                 let id = id(&params)?;
@@ -551,6 +637,29 @@ impl Core {
                     changed += self.db()?.execute(
                         "UPDATE assets SET flag=?1 WHERE id=?2",
                         params![args.flag, member],
+                    )?;
+                }
+                ensure!(changed >= 1, "E_NOT_FOUND: Asset does not exist");
+                self.sync_xmp_if_enabled(&members);
+                Ok(serde_json::to_value(self.asset(&args.id)?)?)
+            }
+            "asset.label" => {
+                #[derive(Deserialize)]
+                struct LabelArgs {
+                    id: String,
+                    color_label: String,
+                }
+                let args: LabelArgs = parse(params)?;
+                ensure!(
+                    valid_color_label(&args.color_label),
+                    "E_INVALID: Color label must be none, red, yellow, green or blue"
+                );
+                let members = self.with_pair_members(std::slice::from_ref(&args.id))?;
+                let mut changed = 0;
+                for member in &members {
+                    changed += self.db()?.execute(
+                        "UPDATE assets SET color_label=?1 WHERE id=?2",
+                        params![args.color_label, member],
                     )?;
                 }
                 ensure!(changed >= 1, "E_NOT_FOUND: Asset does not exist");
@@ -665,7 +774,10 @@ impl Core {
             }
             "asset.xmp.write" => self.write_xmp_sidecars(parse(params)?),
             "asset.xmp.read" => self.read_xmp_sidecars(parse(params)?),
-            _ => bail!("E_NOT_FOUND: Unknown core command {command}"),
+            other => match self.dispatch_collection_or_keyword(other, params)? {
+                Some(value) => Ok(value),
+                None => bail!("E_NOT_FOUND: Unknown core command {command}"),
+            },
         }
     }
 
@@ -871,6 +983,102 @@ impl Core {
         root: &Path,
     ) -> Result<Library> {
         self.update_library_binding(id, name, pair_raw_jpeg, Some((root, None, "")))
+    }
+
+    /// Relocates a local folder library (e.g. an external SSD mounted at a new path)
+    /// while preserving 100% of asset IDs, stars, flags, color labels, crops, collections, and keywords.
+    pub fn relocate_local_library(&self, id: &str, new_root: &Path) -> Result<Library> {
+        let canonical =
+            dunce::canonicalize(new_root).context("E_NOT_FOUND: Relocated directory is unavailable")?;
+        ensure!(canonical.is_dir(), "E_INVALID: Relocated path must be a directory");
+        let new_root_str = canonical
+            .to_str()
+            .context("E_INVALID: Relocated path must be valid Unicode")?
+            .to_owned();
+        let new_root_key = path_key(&new_root_str);
+
+        let mut db = self.db()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut library = tx
+            .query_row(
+                &format!("SELECT {LIBRARY_COLUMNS} FROM libraries WHERE id=?1"),
+                [id],
+                library_row,
+            )
+            .optional()?
+            .context("E_NOT_FOUND: Library does not exist")?;
+        ensure!(
+            library.storage_id.is_none(),
+            "E_INVALID: Only local or external folder libraries can be relocated"
+        );
+        let conflict: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM libraries WHERE root_key=?1 AND id<>?2)",
+            params![new_root_key, id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            !conflict,
+            "E_CONFLICT: Another library already uses this directory"
+        );
+
+        let old_root = Path::new(&library.root).to_path_buf();
+        let rows: Vec<(String, String, Option<String>, bool)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id,path,key,trashed_at IS NOT NULL FROM assets WHERE library_id=?1 AND source_key IS NULL",
+            )?;
+            let mapped = stmt.query_map([id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        {
+            let mut upd = tx.prepare_cached(
+                "UPDATE assets SET path=?1,path_key=?2,key=?3,availability=?4 WHERE id=?5",
+            )?;
+            for (asset_id, old_path, old_key, trashed) in rows {
+                let rel_opt = Path::new(&old_path)
+                    .strip_prefix(&old_root)
+                    .ok()
+                    .map(Path::to_path_buf)
+                    .or_else(|| {
+                        old_key
+                            .as_deref()
+                            .map(|k| PathBuf::from(k.trim_start_matches('/')))
+                    });
+                let Some(rel) = rel_opt else {
+                    continue;
+                };
+                let candidate = canonical.join(&rel);
+                let resolved = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+                let next_path_str = resolved.to_string_lossy().into_owned();
+                let next_key = location_key(&library.source_prefix, &canonical, &resolved)
+                    .or(old_key);
+                let availability = if !trashed && resolved.is_file() {
+                    "available"
+                } else {
+                    "missing"
+                };
+                upd.execute(params![
+                    next_path_str,
+                    path_key(&next_path_str),
+                    next_key,
+                    availability,
+                    asset_id,
+                ])?;
+            }
+        }
+
+        library.root = new_root_str;
+        library.location_id = Some(implicit_location(&tx, &library)?);
+        tx.execute(
+            "UPDATE libraries SET root=?1,root_key=?2,location_id=?3 WHERE id=?4",
+            params![library.root, new_root_key, library.location_id, id],
+        )?;
+        tx.commit()?;
+        drop(db);
+        self.previews.clear();
+        Ok(library)
     }
 
     fn update_library_binding(
@@ -1083,13 +1291,12 @@ impl Core {
         };
         self.index_file(&library, &path, kind, &extension, None)?;
         let key = path_key(&path.to_string_lossy());
-        self.db()?
-            .query_row(
-                &format!("SELECT {ASSET_COLUMNS} FROM assets WHERE library_id=?1 AND path_key=?2"),
-                params![library.id, key],
-                asset_row,
-            )
-            .map_err(Into::into)
+        let asset_id: String = self.db()?.query_row(
+            "SELECT id FROM assets WHERE library_id=?1 AND path_key=?2",
+            params![library.id, key],
+            |row| row.get(0),
+        )?;
+        self.asset(&asset_id)
     }
 
     pub fn refresh_asset(&self, id: &str) -> Result<Asset> {
@@ -1537,14 +1744,17 @@ impl Core {
     }
 
     pub fn asset(&self, id: &str) -> Result<Asset> {
-        self.db()?
+        let db = self.db()?;
+        let mut asset = db
             .query_row(
                 &format!("SELECT {ASSET_COLUMNS} FROM assets WHERE id=?1"),
                 [id],
                 asset_row,
             )
             .optional()?
-            .context("E_NOT_FOUND: Asset does not exist")
+            .context("E_NOT_FOUND: Asset does not exist")?;
+        asset.keywords = collections::load_keywords_for_asset(&db, id)?;
+        Ok(asset)
     }
 
     fn checked_asset_path(&self, asset: &Asset) -> Result<PathBuf> {
@@ -1642,8 +1852,8 @@ impl Core {
             "E_INVALID: A batch must contain 1 to 1000 assets"
         );
         ensure!(
-            args.rating.is_some() || args.flag.is_some(),
-            "E_INVALID: A batch must set a rating or a flag"
+            args.rating.is_some() || args.flag.is_some() || args.color_label.is_some(),
+            "E_INVALID: A batch must set a rating, flag or color label"
         );
         ensure!(
             args.rating.is_none_or(|rating| rating <= 5),
@@ -1653,14 +1863,18 @@ impl Core {
             args.flag.as_deref().is_none_or(valid_flag),
             "E_INVALID: Flag must be none, pick or reject"
         );
+        ensure!(
+            args.color_label.as_deref().is_none_or(valid_color_label),
+            "E_INVALID: Color label must be none, red, yellow, green or blue"
+        );
         let ids = self.with_pair_members(&args.ids)?;
         let mut db = self.db()?;
         let transaction = db.transaction()?;
         let mut updated = 0;
         for id in &ids {
             let changed = transaction.execute(
-                "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag) WHERE id=?3",
-                params![args.rating, args.flag, id],
+                "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),color_label=COALESCE(?3,color_label) WHERE id=?4",
+                params![args.rating, args.flag, args.color_label, id],
             )?;
             // Dropping the transaction rolls back every earlier mark in this batch.
             ensure!(changed == 1, "E_NOT_FOUND: Asset does not exist");
@@ -1950,10 +2164,16 @@ struct MarkBatch {
     ids: Vec<String>,
     rating: Option<u8>,
     flag: Option<String>,
+    #[serde(default)]
+    color_label: Option<String>,
 }
 
 fn valid_flag(flag: &str) -> bool {
     matches!(flag, "none" | "pick" | "reject")
+}
+
+fn valid_color_label(label: &str) -> bool {
+    matches!(label, "none" | "red" | "yellow" | "green" | "blue")
 }
 
 /// `tier` wins; legacy `max_size` maps to the smallest covering tier.
@@ -2187,6 +2407,8 @@ pub(super) fn asset_row(row: &Row<'_>) -> rusqlite::Result<Asset> {
         captured_at,
         capture_status,
         flag: row.get(18)?,
+        color_label: row.get(20)?,
+        keywords: Vec::new(),
         key: row.get(19)?,
     })
 }

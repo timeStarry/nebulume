@@ -33,7 +33,7 @@ async function fixture(
       export const openViewerWindow = async()=>'', viewerContext = async()=>({asset_ids:[]}), listVolumes=async()=>[];
       export const readPregenerate = ()=>false, writePregenerate = ()=>{}, pregeneratePreviews = async()=>{};
       export const readWatchLibraries = ()=>false, writeWatchLibraries = ()=>{}, watchLibraries = async()=>[];
-      export const revealInFolder = async()=>{}, openExternal = async()=>{}, chooseExternalApp = async()=>null, ejectVolume = async()=>{};
+      export const revealInFolder = async()=>{}, openDataDirectory = async()=>{}, openExternal = async()=>{}, chooseExternalApp = async()=>null, ejectVolume = async()=>{};
     `,
       }),
     );
@@ -1377,11 +1377,11 @@ test('a keyboard rating shows the HUD, applies at once and ⌘Z restores the pre
   const batches = () => calls.filter((call) => call.command === 'asset.mark_batch');
   await expect
     .poll(() => batches().at(-1)?.params)
-    .toEqual({ ids: ['photo-0'], rating: 3, flag: 'none' });
+    .toEqual({ ids: ['photo-0'], rating: 3, flag: 'none', color_label: 'none' });
   await page.keyboard.press('Meta+z');
   await expect
     .poll(() => batches().at(-1)?.params)
-    .toEqual({ ids: ['photo-0'], rating: 0, flag: 'none' });
+    .toEqual({ ids: ['photo-0'], rating: 0, flag: 'none', color_label: 'none' });
   await expect(first).toHaveAttribute('aria-label', /0 星/);
 });
 

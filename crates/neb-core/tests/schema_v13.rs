@@ -229,7 +229,7 @@ fn v12_upgrades_to_v13_and_exif_filters_use_composite_indexes() {
     let version: i64 = db
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
 
     // Verify EXPLAIN QUERY PLAN uses our composite EXIF indexes rather than full-table scans.
     for (sql, expected_index) in [

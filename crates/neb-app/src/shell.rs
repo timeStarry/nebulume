@@ -68,6 +68,43 @@ fn validate_external_app(raw: &str) -> Result<PathBuf, CommandError> {
 }
 
 #[tauri::command]
+pub async fn open_data_dir(service: State<'_, Arc<Service>>) -> Result<(), CommandError> {
+    let data_dir = service.inner().data_dir().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| viewer::error("E_IO", format!("Cannot prepare data directory: {err}")))?;
+        let canonical = fs::canonicalize(&data_dir)
+            .map_err(|err| viewer::error("E_IO", format!("Cannot resolve data directory: {err}")))?;
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("open")
+                .arg(&canonical)
+                .status()
+                .map_err(|err| viewer::error("E_IO", format!("Failed to open Finder: {err}")))?;
+            if !status.success() {
+                return Err(viewer::error("E_OPERATION", "Finder could not open data directory"));
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("explorer.exe")
+                .arg(&canonical)
+                .spawn()
+                .map_err(|err| viewer::error("E_IO", format!("Failed to open Explorer: {err}")))?;
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Command::new("xdg-open").arg(&canonical).spawn().map_err(|err| {
+                viewer::error("E_IO", format!("Failed to open file manager: {err}"))
+            })?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| viewer::error("E_WORKER", "Shell worker stopped unexpectedly"))?
+}
+
+#[tauri::command]
 pub async fn reveal_in_folder(path: String) -> Result<(), CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         let canonical = validate_local_media_path(&path)?;

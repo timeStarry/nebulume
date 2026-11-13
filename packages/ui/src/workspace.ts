@@ -112,10 +112,26 @@ export function browserAssetFacets(items: Asset[], libraryId: string): AssetFace
     captured: { first: days[0] ?? null, last: days.at(-1) ?? null },
   };
 }
+export function matchesColorLabel(
+  colorLabel: Asset['color_label'],
+  filter: AssetListOptions['color_label'] = 'any',
+): boolean {
+  const normalized = colorLabel || 'none';
+  return !filter || filter === 'any' || normalized === filter;
+}
+
+export function matchesKeyword(keywords: string[] | undefined, filter?: string): boolean {
+  const kw = filter?.trim();
+  if (!kw) return true;
+  if (!keywords?.length) return false;
+  return keywords.some((item) => item === kw || item.startsWith(`${kw} > `));
+}
+
 export function browserAssetList(
   items: Asset[],
   options: AssetListOptions,
   paired = false,
+  allowedIds?: ReadonlySet<string>,
 ): AssetListResult {
   const inLibrary = items.filter(
     (item) => !options.library_id || item.library_id === options.library_id,
@@ -123,11 +139,16 @@ export function browserAssetList(
   const jpeg = (item: Asset) => ['jpg', 'jpeg'].includes(item.extension.toLowerCase());
   const query = options.query?.trim().toLowerCase();
   const matches = (item: Asset) =>
+    (!allowedIds || allowedIds.has(item.id)) &&
     (!query ||
-      `${item.filename} ${Object.values(item.metadata).join(' ')}`.toLowerCase().includes(query)) &&
+      `${item.filename} ${Object.values(item.metadata).join(' ')} ${(item.keywords || []).join(' ')}`
+        .toLowerCase()
+        .includes(query)) &&
     item.rating >= (options.rating || 0) &&
     (options.rating_max === undefined || item.rating <= options.rating_max) &&
     matchesFlag(item.flag || 'none', options.flag) &&
+    matchesColorLabel(item.color_label, options.color_label) &&
+    matchesKeyword(item.keywords, options.keyword) &&
     (!options.camera || item.metadata.Camera === options.camera) &&
     (!options.lens || item.metadata.Lens === options.lens) &&
     (!options.captured_from ||

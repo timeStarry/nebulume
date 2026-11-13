@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::{xmp, Asset, Crop};
 
-use super::Core;
+use super::{collections, Core};
 
 const XMP_AUTO_WRITE_KEY: &str = "xmp.auto_write";
 
@@ -42,6 +42,14 @@ impl Core {
     /// Best-effort sidecar write when `xmp.auto_write` is enabled.
     /// Never fails the primary catalog mutation if a volume is read-only or offline.
     pub(super) fn sync_xmp_if_enabled(&self, ids: &[String]) {
+        self.sync_xmp_internal(ids, false);
+    }
+
+    pub(super) fn sync_xmp_with_keywords(&self, ids: &[String]) {
+        self.sync_xmp_internal(ids, true);
+    }
+
+    fn sync_xmp_internal(&self, ids: &[String], force_keywords: bool) {
         let Ok(true) = self.xmp_auto_write() else {
             return;
         };
@@ -61,19 +69,43 @@ impl Core {
                     continue;
                 }
             }
-            let _ = xmp::write_sidecar_for_image(&path, asset.rating, &asset.flag, asset.crop);
+            let kw_arg = if force_keywords || !asset.keywords.is_empty() {
+                Some(asset.keywords.as_slice())
+            } else {
+                None
+            };
+            let _ = xmp::write_sidecar_for_image_with_tags(
+                &path,
+                asset.rating,
+                &asset.flag,
+                Some(&asset.color_label),
+                asset.crop,
+                kw_arg,
+            );
         }
     }
 
     /// Flush `.xmp` right before handing a local original to an external editor (`Open With`),
-    /// so Lightroom / Capture One / Camera Raw immediately sees Nebulume's stars, flag, and crop.
+    /// so Lightroom / Capture One / Camera Raw immediately sees Nebulume's stars, flag, color label, keywords, and crop.
     pub fn flush_asset_xmp_for_handoff(&self, id: &str) -> Result<Option<PathBuf>> {
         let asset = self.asset(id)?;
         if asset.source_key.is_some() {
             return Ok(None);
         }
         let path = self.checked_asset_path(&asset)?;
-        xmp::write_sidecar_for_image(&path, asset.rating, &asset.flag, asset.crop)
+        let kw_arg = if asset.keywords.is_empty() {
+            None
+        } else {
+            Some(asset.keywords.as_slice())
+        };
+        xmp::write_sidecar_for_image_with_tags(
+            &path,
+            asset.rating,
+            &asset.flag,
+            Some(&asset.color_label),
+            asset.crop,
+            kw_arg,
+        )
     }
 
     pub(super) fn write_xmp_sidecars(&self, args: XmpTargetArgs) -> Result<Value> {
@@ -105,7 +137,19 @@ impl Core {
                     continue;
                 }
             }
-            match xmp::write_sidecar_for_image(&path, asset.rating, &asset.flag, asset.crop) {
+            let kw_arg = if asset.keywords.is_empty() {
+                None
+            } else {
+                Some(asset.keywords.as_slice())
+            };
+            match xmp::write_sidecar_for_image_with_tags(
+                &path,
+                asset.rating,
+                &asset.flag,
+                Some(&asset.color_label),
+                asset.crop,
+                kw_arg,
+            ) {
                 Ok(Some(_)) => written += 1,
                 Ok(None) => skipped += 1,
                 Err(error) => failed.push(json!({
@@ -128,7 +172,16 @@ impl Core {
         let mut updated = 0usize;
         let mut skipped = 0usize;
         let mut failed = Vec::new();
-        let mut pending_updates: Vec<(String, u8, String, Option<Crop>, bool)> = Vec::new();
+        let mut pending_updates: Vec<(
+            String,
+            String,
+            u8,
+            String,
+            String,
+            Option<Crop>,
+            Option<Vec<String>>,
+            bool,
+        )> = Vec::new();
 
         for asset in assets {
             if asset.source_key.is_some() {
@@ -150,17 +203,33 @@ impl Core {
                 Ok(Some(sidecar)) => {
                     let next_rating = sidecar.rating.unwrap_or(asset.rating);
                     let next_flag = sidecar.flag.unwrap_or_else(|| asset.flag.clone());
+                    let next_label = sidecar
+                        .color_label
+                        .unwrap_or_else(|| asset.color_label.clone());
                     let next_crop = match sidecar.crop {
                         Some(crop_opt) => crop_opt,
                         None => asset.crop,
                     };
+                    let mut next_keywords = sidecar.keywords;
+                    next_keywords.sort();
+                    let mut current_keywords = asset.keywords.clone();
+                    current_keywords.sort();
+                    let kw_changed = !next_keywords.is_empty() && next_keywords != current_keywords;
                     let crop_changed = next_crop != asset.crop;
-                    if next_rating != asset.rating || next_flag != asset.flag || crop_changed {
+                    if next_rating != asset.rating
+                        || next_flag != asset.flag
+                        || next_label != asset.color_label
+                        || crop_changed
+                        || kw_changed
+                    {
                         pending_updates.push((
                             asset.id,
+                            asset.library_id,
                             next_rating,
                             next_flag,
+                            next_label,
                             next_crop,
+                            kw_changed.then_some(next_keywords),
                             crop_changed,
                         ));
                     } else {
@@ -181,20 +250,24 @@ impl Core {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             {
                 let mut stmt = tx.prepare_cached(
-                    "UPDATE assets SET rating=?1,flag=?2,crop_json=?3 WHERE id=?4",
+                    "UPDATE assets SET rating=?1,flag=?2,color_label=?3,crop_json=?4 WHERE id=?5",
                 )?;
-                for (id, rating, flag, crop, _) in &pending_updates {
+                for (id, library_id, rating, flag, color_label, crop, kw_opt, _) in &pending_updates
+                {
                     let crop_json = crop
                         .map(|c| serde_json::to_string(&c))
                         .transpose()?;
-                    stmt.execute(params![rating, flag, crop_json, id])?;
+                    stmt.execute(params![rating, flag, color_label, crop_json, id])?;
+                    if let Some(kws) = kw_opt {
+                        collections::replace_asset_keywords_tx(&tx, library_id, id, kws)?;
+                    }
                     updated += 1;
                 }
             }
             tx.commit()?;
             drop(db);
 
-            for (id, _, _, _, crop_changed) in &pending_updates {
+            for (id, _, _, _, _, _, _, crop_changed) in &pending_updates {
                 if *crop_changed {
                     self.previews.remove_prefix(&format!("{id}:"));
                 }
@@ -203,7 +276,7 @@ impl Core {
 
         let crop_changed_ids: Vec<String> = pending_updates
             .into_iter()
-            .filter_map(|(id, _, _, _, changed)| changed.then_some(id))
+            .filter_map(|(id, _, _, _, _, _, _, changed)| changed.then_some(id))
             .collect();
 
         Ok(json!({

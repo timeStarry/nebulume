@@ -5,11 +5,11 @@ use std::{
 };
 
 use anyhow::{bail, ensure, Context, Result};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{asset_row, Core, ASSET_COLUMNS};
+use super::{asset_row, collections, scan, Core, ASSET_COLUMNS};
 
 const LIST_MEMO_ENTRIES: usize = 8;
 
@@ -24,6 +24,12 @@ pub(super) struct AssetQuery {
     pub sort_by: Option<String>,
     pub sort_direction: Option<String>,
     pub flag: Option<String>,
+    #[serde(default)]
+    pub color_label: Option<String>,
+    #[serde(default)]
+    pub collection_id: Option<String>,
+    #[serde(default)]
+    pub keyword: Option<String>,
     pub import_batch_id: Option<String>,
     /// Exact EXIF camera model, as listed by `asset.facets`.
     pub camera: Option<String>,
@@ -153,6 +159,11 @@ impl Core {
             ["any", "pick", "none", "reject", "not_reject"].contains(&flag),
             "E_INVALID: Unknown flag filter"
         );
+        let color_label = args.color_label.as_deref().unwrap_or("any");
+        ensure!(
+            ["any", "none", "red", "yellow", "green", "blue"].contains(&color_label),
+            "E_INVALID: Unknown color label filter"
+        );
         let direction = match args.sort_direction.as_deref().unwrap_or("desc") {
             "asc" => "ASC",
             "desc" => "DESC",
@@ -182,53 +193,128 @@ impl Core {
             ),
         };
 
-        let mut clauses: Vec<&'static str> = vec![scope_sql];
+        let mut clauses: Vec<String> = vec![scope_sql.to_owned()];
         let mut where_params = scope_params.clone();
+        let mut smart_uses_full_rev = false;
 
         if let Some(rating) = args.rating {
-            clauses.push("rating>=?");
+            clauses.push("rating>=?".to_owned());
             where_params.push(V::Integer(rating.into()));
         }
         if let Some(rating_max) = args.rating_max {
-            clauses.push("rating<=?");
+            clauses.push("rating<=?".to_owned());
             where_params.push(V::Integer(rating_max.into()));
         }
         if !search.is_empty() {
-            clauses.push("rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?)");
+            let like_pattern = format!(
+                "%{}%",
+                query
+                    .trim()
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            clauses.push(
+                "(rowid IN (SELECT rowid FROM assets_fts WHERE assets_fts MATCH ?) OR id IN (SELECT ak.asset_id FROM asset_keywords ak JOIN keywords k ON k.id=ak.keyword_id WHERE k.path LIKE ? ESCAPE '\\'))"
+                    .to_owned(),
+            );
             where_params.push(V::Text(search.clone()));
+            where_params.push(V::Text(like_pattern));
         }
         match format {
-            "raw" => clauses.push("kind='raw'"),
-            "jpeg" => clauses.push("lower(extension) IN ('jpg','jpeg')"),
+            "raw" => clauses.push("kind='raw'".to_owned()),
+            "jpeg" => clauses.push("lower(extension) IN ('jpg','jpeg')".to_owned()),
             _ => {}
         }
         match flag {
             "any" => {}
-            "not_reject" => clauses.push("flag<>'reject'"),
+            "not_reject" => clauses.push("flag<>'reject'".to_owned()),
             exact => {
-                clauses.push("flag=?");
+                clauses.push("flag=?".to_owned());
                 where_params.push(V::Text(exact.to_owned()));
             }
         }
+        if color_label != "any" {
+            clauses.push("color_label=?".to_owned());
+            where_params.push(V::Text(color_label.to_owned()));
+        }
+        if let Some(raw_kw) = args.keyword.as_deref().filter(|k| !k.trim().is_empty()) {
+            let norm_kw = crate::xmp::normalize_keyword_path(raw_kw)
+                .context("E_INVALID: Invalid keyword filter")?;
+            let child_like = format!(
+                "{} > %",
+                norm_kw
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            clauses.push(
+                "id IN (SELECT ak.asset_id FROM asset_keywords ak JOIN keywords k ON k.id=ak.keyword_id WHERE k.path=? OR k.path LIKE ? ESCAPE '\\')"
+                    .to_owned(),
+            );
+            where_params.push(V::Text(norm_kw));
+            where_params.push(V::Text(child_like));
+        }
+        if let Some(collection_id) = args
+            .collection_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+        {
+            let (coll_lib_id, coll_kind, rules_json): (String, String, Option<String>) = self
+                .db()?
+                .query_row(
+                    "SELECT library_id,kind,rules_json FROM collections WHERE id=?1",
+                    [collection_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?
+                .context("E_NOT_FOUND: Collection does not exist")?;
+            if coll_kind == "smart" {
+                let mut rules_val: Value = rules_json
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .context("E_INVALID: Corrupted smart collection rules")?
+                    .unwrap_or_else(|| json!({}));
+                if let Some(obj) = rules_val.as_object_mut() {
+                    obj.insert("library_id".into(), json!(coll_lib_id));
+                    obj.remove("collection_id");
+                }
+                let mut smart_query: AssetQuery = serde_json::from_value(rules_val)
+                    .context("E_INVALID: Corrupted smart collection query")?;
+                smart_query.collection_id = None;
+                let smart_parts = self.query_parts(&smart_query)?;
+                smart_uses_full_rev = true;
+                clauses.push(format!("({})", smart_parts.where_sql));
+                where_params.extend(smart_parts.where_params);
+            } else {
+                clauses.push(
+                    "id IN (SELECT asset_id FROM collection_items WHERE collection_id=?)"
+                        .to_owned(),
+                );
+                where_params.push(V::Text(collection_id.to_owned()));
+                smart_uses_full_rev = true;
+            }
+        }
         if let Some(batch) = &args.import_batch_id {
-            clauses.push("import_batch_id=?");
+            clauses.push("import_batch_id=?".to_owned());
             where_params.push(V::Text(batch.clone()));
         }
         if let Some(camera) = &args.camera {
-            clauses.push("camera=?");
+            clauses.push("camera=?".to_owned());
             where_params.push(V::Text(camera.clone()));
         }
         if let Some(lens) = &args.lens {
-            clauses.push("lens=?");
+            clauses.push("lens=?".to_owned());
             where_params.push(V::Text(lens.clone()));
         }
         if let Some(from) = &args.captured_from {
-            clauses.push("(captured_at<>'' AND captured_at>=? AND substr(captured_at,1,10)>=?)");
+            clauses.push("(captured_at<>'' AND captured_at>=? AND substr(captured_at,1,10)>=?)".to_owned());
             where_params.push(V::Text(from.clone()));
             where_params.push(V::Text(from.clone()));
         }
         if let Some(to) = &args.captured_to {
-            clauses.push("(captured_at<>'' AND captured_at<=? AND substr(captured_at,1,10)<=?)");
+            clauses.push("(captured_at<>'' AND captured_at<=? AND substr(captured_at,1,10)<=?)".to_owned());
             where_params.push(V::Text(format!("{to}\u{10ffff}")));
             where_params.push(V::Text(to.clone()));
         }
@@ -249,7 +335,7 @@ impl Core {
             } else {
                 format!("{prefix}/{folder}")
             };
-            clauses.push("(key=? OR key LIKE ? ESCAPE '\\')");
+            clauses.push("(key=? OR key LIKE ? ESCAPE '\\')".to_owned());
             where_params.push(V::Text(effective.clone()));
             where_params.push(V::Text(format!(
                 "{}/%",
@@ -260,25 +346,29 @@ impl Core {
             )));
         }
         if let Some(focal_min) = args.focal_min {
-            clauses.push("focal_length_mm>=?");
+            clauses.push("focal_length_mm>=?".to_owned());
             where_params.push(V::Real(focal_min));
         }
         if let Some(focal_max) = args.focal_max {
-            clauses.push("focal_length_mm<=?");
+            clauses.push("focal_length_mm<=?".to_owned());
             where_params.push(V::Real(focal_max));
         }
         if let Some(iso_min) = args.iso_min {
-            clauses.push("iso_value>=?");
+            clauses.push("iso_value>=?".to_owned());
             where_params.push(V::Real(iso_min));
         }
         if let Some(iso_max) = args.iso_max {
-            clauses.push("iso_value<=?");
+            clauses.push("iso_value<=?".to_owned());
             where_params.push(V::Real(iso_max));
         }
 
         let uses_full_revision = args.rating.is_some()
             || args.rating_max.is_some()
             || flag != "any"
+            || color_label != "any"
+            || args.keyword.as_deref().is_some_and(|k| !k.trim().is_empty())
+            || !search.is_empty()
+            || smart_uses_full_rev
             || args.import_batch_id.is_some()
             || matches!(sort, "rating" | "created_at");
 
@@ -295,6 +385,14 @@ impl Core {
             where_params,
             uses_full_revision,
         })
+    }
+
+    pub(super) fn count_displayed_for_query(&self, args: &AssetQuery) -> Result<usize> {
+        let parts = self.query_parts(args)?;
+        let db = self.db()?;
+        let read = db.unchecked_transaction()?;
+        let snapshot = self.cached_snapshot(&read, args, &parts)?;
+        Ok(snapshot.displayed.len())
     }
 
     fn cached_snapshot(
@@ -331,6 +429,9 @@ impl Core {
                 args.focal_max,
                 args.iso_min,
                 args.iso_max,
+                &args.color_label,
+                &args.collection_id,
+                &args.keyword,
             ),
             parts.sort,
             parts.direction,
@@ -404,10 +505,14 @@ impl Core {
                 .into_iter()
                 .map(|asset| (asset.id.clone(), asset))
                 .collect();
+            let mut kw_map = collections::load_keywords_for_assets(&read, &page)?;
             for id in page {
-                let asset = assets
+                let mut asset = assets
                     .remove(id)
                     .context("E_CONFLICT: Asset list changed while reading")?;
+                if let Some(kws) = kw_map.remove(id.as_str()) {
+                    asset.keywords = kws;
+                }
                 let mut value = serde_json::to_value(asset)?;
                 if let Some(pair) = snapshot.pairs.get(id.as_str()) {
                     value["variants"] = serde_json::to_value(&**pair)?;
@@ -539,6 +644,16 @@ impl Core {
         let mut statement = read.prepare(
             "SELECT id,key FROM assets WHERE library_id=?1 AND trashed_at IS NULL AND key IS NOT NULL",
         )?;
+        let root_path = Path::new(&library.root);
+        let root_basename = if library.storage_id.is_none() {
+            root_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty() && !root_path.join(n).is_dir())
+                .map(str::to_owned)
+        } else {
+            None
+        };
         let mut counts: BTreeMap<String, u64> = BTreeMap::new();
         for row in statement.query_map([library_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -550,7 +665,19 @@ impl Core {
             let Some(relative_key) = strip_library_prefix(&key, prefix) else {
                 continue;
             };
-            let segments: Vec<&str> = relative_key.split('/').filter(|s| !s.is_empty()).collect();
+            let mut segments: Vec<&str> = relative_key.split('/').filter(|s| !s.is_empty()).collect();
+            if let Some(ref base) = root_basename {
+                if segments.len() > 1 && segments[0] == base {
+                    segments.remove(0);
+                }
+            }
+            if segments.len() > 1
+                && segments[..segments.len() - 1]
+                    .iter()
+                    .any(|seg| scan::is_package_bundle_name(seg))
+            {
+                continue;
+            }
             for depth in 1..segments.len() {
                 *counts.entry(segments[..depth].join("/")).or_default() += 1;
             }

@@ -86,28 +86,58 @@ export function createUndoHistory(limit = 100) {
 }
 export type UndoHistory = ReturnType<typeof createUndoHistory>;
 
+import type { ColorLabel } from './model';
+
+export const COLOR_LABEL_NAMES: Record<ColorLabel, string> = {
+  none: '无色标',
+  red: '红色色标',
+  yellow: '黄色色标',
+  green: '绿色色标',
+  blue: '蓝色色标',
+};
+
+export function keyToColorLabel(key: string): Exclude<ColorLabel, 'none'> | undefined {
+  return ({ '6': 'red', '7': 'yellow', '8': 'green', '9': 'blue' } as const)[key];
+}
+
 /** Previous marks grouped so each group is one `asset.mark_batch` call (≤1000 ids). */
-export function groupMarks<T extends { id: string; rating: number; flag: string }>(
+export function groupMarks<
+  T extends { id: string; rating: number; flag: string; color_label?: ColorLabel },
+>(
   marks: T[],
   chunk = 1000,
-): { ids: string[]; rating: number; flag: string }[] {
-  const groups = new Map<string, { ids: string[]; rating: number; flag: string }>();
+): { ids: string[]; rating: number; flag: string; color_label?: ColorLabel }[] {
+  const groups = new Map<
+    string,
+    { ids: string[]; rating: number; flag: string; color_label?: ColorLabel }
+  >();
   for (const mark of marks) {
-    const key = `${mark.rating}:${mark.flag}`;
-    const group = groups.get(key) ?? { ids: [], rating: mark.rating, flag: mark.flag };
+    const key = `${mark.rating}:${mark.flag}:${mark.color_label ?? ''}`;
+    const group = groups.get(key) ?? {
+      ids: [],
+      rating: mark.rating,
+      flag: mark.flag,
+      ...(mark.color_label !== undefined ? { color_label: mark.color_label } : {}),
+    };
     group.ids.push(mark.id);
     groups.set(key, group);
   }
-  const out: { ids: string[]; rating: number; flag: string }[] = [];
+  const out: { ids: string[]; rating: number; flag: string; color_label?: ColorLabel }[] = [];
   for (const group of groups.values())
     for (let start = 0; start < group.ids.length; start += chunk)
       out.push({ ...group, ids: group.ids.slice(start, start + chunk) });
   return out;
 }
 
-/** Short HUD text for a mark: stars for a rating, a word for a flag. */
-export function markHudText(mark: { rating?: number; flag?: string }): string {
+/** Short HUD text for a mark: stars for a rating, a word for a flag or color label. */
+export function markHudText(mark: {
+  rating?: number;
+  flag?: string;
+  color_label?: ColorLabel;
+}): string {
   if (mark.rating !== undefined)
     return mark.rating ? `${'★'.repeat(mark.rating)}  ${mark.rating}` : '清除星级';
+  if (mark.color_label !== undefined)
+    return mark.color_label === 'none' ? '清除色标' : COLOR_LABEL_NAMES[mark.color_label];
   return mark.flag === 'pick' ? '留用' : mark.flag === 'reject' ? '淘汰' : '清除旗标';
 }

@@ -39,6 +39,7 @@ import {
   type Asset,
   type AssetListOptions,
   type AssetListResult,
+  type ColorLabel,
   type Crop,
   type Flag,
   type FocusInfo,
@@ -60,7 +61,7 @@ import {
 } from './culling';
 import CullPanel, { CullStatus } from './CullPanel';
 import { IconButton, Segmented, Toggle, createHud } from './ui';
-import { createUndoHistory, markHudText, type UndoEntry } from './undo';
+import { createUndoHistory, keyToColorLabel, markHudText, type UndoEntry } from './undo';
 import ViewerOverlay from './ViewerOverlay';
 import { readOverlayFades } from './overlay-layout';
 import CullStrip from './CullStrip';
@@ -634,42 +635,49 @@ export default function Viewer(props: {
     return markOf(await execute<Asset>('asset.get', { id: targetId }));
   }
   function applyLocal(updated: Mark) {
-    setItems((map) =>
-      map[updated.id]
-        ? {
-            ...map,
-            [updated.id]: { ...map[updated.id], rating: updated.rating, flag: updated.flag },
-          }
-        : map,
-    );
+    const patch = (item: Asset): Asset => ({
+      ...item,
+      rating: updated.rating,
+      flag: updated.flag,
+      ...(updated.color_label !== undefined ? { color_label: updated.color_label } : {}),
+    });
+    setItems((map) => (map[updated.id] ? { ...map, [updated.id]: patch(map[updated.id]) } : map));
     setAsset((previous) =>
-      previous && previous.id === updated.id
-        ? { ...previous, rating: updated.rating, flag: updated.flag }
-        : previous,
+      previous && previous.id === updated.id ? patch(previous) : previous,
     );
     setCompareAssets((map) =>
-      map[updated.id]
-        ? {
-            ...map,
-            [updated.id]: { ...map[updated.id], rating: updated.rating, flag: updated.flag },
-          }
-        : map,
+      map[updated.id] ? { ...map, [updated.id]: patch(map[updated.id]) } : map,
     );
   }
   async function persistMark(target: Mark, next: Mark) {
+    const colorChanged =
+      next.color_label !== undefined && next.color_label !== (target.color_label ?? 'none');
+    const flagChanged = next.flag !== target.flag;
+    const ratingChanged = next.rating !== target.rating;
+    const changedCount = Number(colorChanged) + Number(flagChanged) + Number(ratingChanged);
     const result =
-      next.flag !== target.flag && next.rating !== target.rating
+      changedCount > 1
         ? await execute<Asset>('asset.mark_batch', {
             ids: [next.id],
             rating: next.rating,
             flag: next.flag,
+            ...(next.color_label !== undefined ? { color_label: next.color_label } : {}),
           }).then(() => execute<Asset>('asset.get', { id: next.id }))
-        : next.flag !== target.flag
-          ? await execute<Asset>('asset.flag', { id: next.id, flag: next.flag })
-          : await execute<Asset>('asset.rate', { id: next.id, rating: next.rating });
-    await changed(result, next.flag !== target.flag ? 'flag' : 'rating');
+        : colorChanged
+          ? await execute<Asset>('asset.label', { id: next.id, color_label: next.color_label })
+          : flagChanged
+            ? await execute<Asset>('asset.flag', { id: next.id, flag: next.flag })
+            : await execute<Asset>('asset.rate', { id: next.id, rating: next.rating });
+    await changed(
+      result,
+      colorChanged ? 'color_label' : flagChanged ? 'flag' : 'rating',
+    );
   }
-  async function mark(kind: 'rate' | 'flag', value: number | Flag, fromKeyboard = false) {
+  async function mark(
+    kind: 'rate' | 'flag' | 'color_label',
+    value: number | Flag | ColorLabel,
+    fromKeyboard = false,
+  ) {
     // A key during the confirmation finishes it (and its advance) first, so each key
     // applies to the photo the user sees next; none is dropped or applied twice.
     if (pulse()) finishPulse();
@@ -684,9 +692,20 @@ export default function Viewer(props: {
     }
     if (!before || id() !== targetId) return;
     if (pulse()) finishPulse();
+    const nextColor =
+      kind === 'color_label'
+        ? ((before.color_label ?? 'none') === value ? 'none' : (value as ColorLabel))
+        : before.color_label;
     const next: Mark =
-      kind === 'rate' ? { ...before, rating: value as number } : { ...before, flag: value as Flag };
-    const unchanged = next.rating === before.rating && next.flag === before.flag;
+      kind === 'rate'
+        ? { ...before, rating: value as number }
+        : kind === 'flag'
+          ? { ...before, flag: value as Flag }
+          : { ...before, color_label: nextColor };
+    const unchanged =
+      next.rating === before.rating &&
+      next.flag === before.flag &&
+      (next.color_label ?? 'none') === (before.color_label ?? 'none');
     applyLocal(next);
     const position = ids().indexOf(targetId);
     const step = nextAfterMark(
@@ -694,18 +713,24 @@ export default function Viewer(props: {
       ids().length,
       cullView() === 'compare' ? false : autoAdvance(),
     );
-    setPulse({ kind, value: String(value), key: Date.now() });
-    if (fromKeyboard)
-      hud.show(
-        markHudText(kind === 'rate' ? { rating: value as number } : { flag: value as Flag }),
-        kind === 'rate' ? 'star' : 'flag',
-      );
+    setPulse({
+      kind: kind === 'color_label' ? 'flag' : kind,
+      value: String(kind === 'color_label' ? nextColor : value),
+      key: Date.now(),
+    });
+    const hudMark =
+      kind === 'rate'
+        ? { rating: value as number }
+        : kind === 'flag'
+          ? { flag: value as Flag }
+          : { color_label: nextColor };
+    if (fromKeyboard) hud.show(markHudText(hudMark), kind === 'rate' ? 'star' : 'flag');
     let failed = false;
     if (!unchanged) {
       const previous = before;
       optimistic.set(targetId, next);
       history.push({
-        label: markHudText(kind === 'rate' ? { rating: next.rating } : { flag: next.flag }),
+        label: markHudText(hudMark),
         ids: [targetId],
         revert: () => revertMark(previous),
       });
@@ -733,6 +758,7 @@ export default function Viewer(props: {
       ids: [previous.id],
       rating: previous.rating,
       flag: previous.flag,
+      color_label: previous.color_label ?? 'none',
     }).then(() => execute<Asset>('asset.get', { id: previous.id }));
     if (id() !== previous.id && ids().includes(previous.id)) setId(previous.id);
     applyLocal(previous);
@@ -822,7 +848,7 @@ export default function Viewer(props: {
     const action = cullKeyAction(event);
     if (!action) return false;
     event.preventDefault();
-    if (action.kind === 'rate' || action.kind === 'flag') {
+    if (action.kind === 'rate' || action.kind === 'flag' || action.kind === 'color_label') {
       if (!event.repeat) void mark(action.kind, action.value, true);
     } else if (action.kind === 'move') move(action.delta);
     else if (action.kind === 'view') {
@@ -1024,7 +1050,11 @@ export default function Viewer(props: {
       event.preventDefault();
       void escape();
     } else if (/^[0-5]$/.test(key)) void rate(Number(key), true);
-    else if (key === 'c' && event.shiftKey) toggleMode();
+    else if (/^[6-9]$/.test(key) && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      const color = keyToColorLabel(key);
+      if (color) void colorLabelPhoto(color, true);
+    } else if (key === 'c' && event.shiftKey) toggleMode();
   }
   function toggleFocus() {
     if (focusUnavailableReason()) return;
@@ -1049,7 +1079,10 @@ export default function Viewer(props: {
       queueMicrotask(() => recoverFocus(trigger));
     }
   }
-  async function changed(updated: Asset, change: 'rating' | 'flag' | 'crop' | 'refresh') {
+  async function changed(
+    updated: Asset,
+    change: 'rating' | 'flag' | 'color_label' | 'keywords' | 'crop' | 'refresh',
+  ) {
     const revision =
       change === 'crop' ? Date.now() : updated.preview_revision || revisions.get(updated.id);
     updated = { ...updated, preview_revision: revision };
@@ -1064,7 +1097,12 @@ export default function Viewer(props: {
           id: updated.id,
           change,
           asset: updated,
-          ...(change === 'rating' || change === 'flag' ? {} : { revision }),
+          ...(change === 'rating' ||
+          change === 'flag' ||
+          change === 'color_label' ||
+          change === 'keywords'
+            ? {}
+            : { revision }),
         });
       } catch {
         setError('编辑已保存，但未能通知图库更新。请在图库使用“扫描更新”。');
@@ -1166,7 +1204,9 @@ export default function Viewer(props: {
     const before: Flag = (optimistic.get(target.id)?.flag ?? target.flag ?? 'none') as Flag;
     if (fromKeyboard) hud.show(markHudText({ flag }), 'flag');
     if (before === flag) return;
-    const next: Mark = { id: target.id, rating: target.rating, flag };
+    const currentColor: ColorLabel =
+      (optimistic.get(target.id)?.color_label ?? target.color_label ?? 'none') as ColorLabel;
+    const next: Mark = { id: target.id, rating: target.rating, flag, color_label: currentColor };
     optimistic.set(target.id, next);
     applyLocal(next);
     history.push({
@@ -1174,7 +1214,12 @@ export default function Viewer(props: {
       ids: [target.id],
       revert: async () => {
         const updated = await execute<Asset>('asset.flag', { id: target.id, flag: before });
-        applyLocal({ id: target.id, rating: updated.rating, flag: before });
+        applyLocal({
+          id: target.id,
+          rating: updated.rating,
+          flag: before,
+          color_label: (updated.color_label ?? currentColor) as ColorLabel,
+        });
         await changed(updated, 'flag');
       },
     });
@@ -1183,9 +1228,62 @@ export default function Viewer(props: {
       if (optimistic.get(target.id) === next) await changed(updated, 'flag');
     } catch (e) {
       if (optimistic.get(target.id) === next) {
-        applyLocal({ id: target.id, rating: target.rating, flag: before });
+        applyLocal({ id: target.id, rating: target.rating, flag: before, color_label: currentColor });
       }
       setError(`标记未保存：${errorMessage(e)}`);
+    } finally {
+      if (optimistic.get(target.id) === next) optimistic.delete(target.id);
+    }
+  }
+  async function colorLabelPhoto(color: ColorLabel, fromKeyboard = false) {
+    const target = asset();
+    if (!target || cropMode()) return;
+    const before: ColorLabel =
+      (optimistic.get(target.id)?.color_label ?? target.color_label ?? 'none') as ColorLabel;
+    const desired: ColorLabel = fromKeyboard && before === color ? 'none' : color;
+    if (fromKeyboard) hud.show(markHudText({ color_label: desired }), 'flag');
+    if (before === desired) return;
+    const next: Mark = {
+      id: target.id,
+      rating: target.rating,
+      flag: (target.flag ?? 'none') as Flag,
+      color_label: desired,
+    };
+    optimistic.set(target.id, next);
+    applyLocal(next);
+    history.push({
+      label: markHudText({ color_label: desired }),
+      ids: [target.id],
+      revert: async () => {
+        const updated = await execute<Asset>('asset.label', {
+          id: target.id,
+          color_label: before,
+        });
+        applyLocal({
+          id: target.id,
+          rating: updated.rating,
+          flag: (updated.flag ?? 'none') as Flag,
+          color_label: before,
+        });
+        await changed(updated, 'color_label');
+      },
+    });
+    try {
+      const updated = await execute<Asset>('asset.label', {
+        id: target.id,
+        color_label: desired,
+      });
+      if (optimistic.get(target.id) === next) await changed(updated, 'color_label');
+    } catch (e) {
+      if (optimistic.get(target.id) === next) {
+        applyLocal({
+          id: target.id,
+          rating: target.rating,
+          flag: (target.flag ?? 'none') as Flag,
+          color_label: before,
+        });
+      }
+      setError(`色标未保存：${errorMessage(e)}`);
     } finally {
       if (optimistic.get(target.id) === next) optimistic.delete(target.id);
     }
@@ -1698,6 +1796,11 @@ export default function Viewer(props: {
           onSaveCrop={saveCrop}
           onResetCrop={resetCrop}
           onRate={rate}
+          onColorLabel={(color) => void colorLabelPhoto(color, false)}
+          onKeywordsUpdated={(keywords) => {
+            const current = asset();
+            if (current) void changed({ ...current, keywords }, 'keywords');
+          }}
           onCrop={beginCrop}
           onExport={exportImage}
           onRefresh={desktop ? refreshOriginal : undefined}

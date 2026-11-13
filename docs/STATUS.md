@@ -1,8 +1,8 @@
 # 实施状态
 
-版本：0.2.1。更新日期：2026-11-12。
+版本：0.2.1。更新日期：2026-11-13。
 
-目录升级到 schema13（在 schema12 汇合基础上完成 Stage 1 性能与交互基座升级：FTS5 触发器列守卫、EXIF 生成列复合索引、`structural_value` 修订分离、250 项分批扫描提交与 `asset.ids` 整库有序 ID 接口）；未知结构拒绝迁移，旧程序回退需要恢复备份。具体检查结果见 TESTING.md。
+目录升级到 schema14（在 schema13 性能基座基础上新增 Stage 4 完整虚拟组织层：`color_label` 色标体系、`collections`/`collection_items` 手动与智能精选集、`keywords`/`asset_keywords` 层级关键词树）；未知结构拒绝迁移，旧程序回退需要恢复备份。具体检查结果见 TESTING.md。
 
 当前发布 Windows x64 安装器和独立程序。Rust 核心、CLI 与 Tauri 桌面界面共用命令服务；其他平台尚未完成本版本构建与实机验收。
 
@@ -19,8 +19,10 @@
 - 位置表（v7）与隐式文件夹位置；存储卡身份、绑定、导入方案与导入批次（v8）；结构化目录整理规则。
 - 导入到 WebDAV / S3 图片库：显式写入测试、不覆盖发布与 SHA-256 校验、按目录记录判重（含“疑似重复”）。仅经回环模拟服务器验证，尚未对真实 NAS 产品做兼容性验收；S3 暂不支持超过 5 GiB 的分片上传。
 - 内容指纹：图片库设置中显式建立，网络图片库会先提示需要完整下载的数量与大小再开始。
-- 尚未实现：外接库盘的卷身份与挂载路径变化后自动重新定位；应用偏好由 Rust 统一保存（目前仍在 localStorage）。
-- 设计系统（[规范](superpowers/specs/2026-11-10-design-system-design.md)，开发版 `?design=1` 为组件参考）：统一的 token、内置 Tabler 线性图标与共享组件，所有页面同一骨架；`pnpm test` 包含设计检查，拦截组件与 token 之外的颜色、阴影、字重与像素字号。查看器在两种主题下都是深色。
+- 外接库盘离线浏览与手动无损重定位（`library.relocate`）：外接移动硬盘未挂载时仍可离线浏览缩略图、打标与整理精选集，挂载路径变更后支持一键重绑目录并保留全部资产 ID、配方、精选集与关键词；尚不支持跨卷序列号全自动后台重绑；应用偏好仍在 localStorage。
+- 虚拟组织层与效率工具（Schema v14）：红/黄/绿/蓝四色色标（`6–9` 快捷键、网格圆点、筛选、`BatchDock`、`⌘Z` 撤销）、手动精选集与动态规则智能精选集（`collections`）、`>` 分级层级关键词树与前缀筛选（`keywords`）、相邻 ≤ 2 秒同机身连拍自动折叠栈（`burst-stacks.ts`）、`⌘K` 全局命令面板与网格右侧时间轴快速定位滑尺（`DateScrubber`）。
+- 本地扫描自动识别并跳过 macOS / 摄影软件封装包目录（`.photoslibrary`、`.aplibrary`、`.lrdata`、`.app` 等），防止系统图库衍生缩略图污染目录树。
+- 设计系统（[规范](superpowers/specs/2026-11-10-design-system-design.md)，开发版 `?design=1` 为组件参考）：统一的 token、内置 Tabler 线性图标与共享组件，所有页面同一骨架（设置页收敛为 4 个单栏标签页，关于页去除裸 JSON，概览页升级为自适应日/周/月时间线与双栏卡片仪表盘）；`pnpm test` 包含设计检查，拦截组件与 token 之外的颜色、阴影、字重与像素字号。查看器在两种主题下都是深色。
 - 查看器四角叠加信息可自定义（拖放或键盘），信息栏字段可固定与排序。
 - 导入为一个步骤条、一个主操作的三步流程，历史在侧边抽屉；核对阶段支持按单张或按拍摄日勾选子集，支持双盘同步校验备份（`backup_destination`）、伴随组同号重命名（`keep` / `date_prefix_seq` / `prefix_original`）、实时字节/张数进度与协作式安全取消（`import.status` / `import.cancel`），以及导完安全推出存储卡（`eject_volume`）。
 - 本地 `.xmp` 伴随生态互通（`xmp.rs`）：初次扫描自动识别同名 `.xmp` 的星级、留用/淘汰旗标与轴对齐裁剪，支持开启自动同步（`xmp.policy.set`）或单张/批量/整库手动读写（`asset.xmp.write` / `asset.xmp.read`），合并时无损保留 Lightroom / Camera Raw 既有 `crs:*` 冲印参数与 `dc:*` 主题词，外部精修软件交接（`open_external`）前自动落盘 `.xmp`，原片始终只读。

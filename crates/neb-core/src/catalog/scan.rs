@@ -21,9 +21,45 @@ use crate::{
     Asset, Library,
 };
 
-use super::{file_created_at, location_key, path_is_within, path_key, Core, INSPECTION_VERSION};
+use super::{
+    collections, file_created_at, location_key, path_is_within, path_key, Core, INSPECTION_VERSION,
+};
 
 const SCAN_BATCH_SIZE: usize = 250;
+
+pub(super) fn is_package_bundle_name(name: &str) -> bool {
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "photoslibrary"
+            | "photolibrary"
+            | "aplibrary"
+            | "lrdata"
+            | "lrcat-data"
+            | "fcpbundle"
+            | "app"
+            | "bundle"
+            | "framework"
+    )
+}
+
+fn has_sub_bundle_ancestor(canonical_root: &Path, asset_path: &Path) -> bool {
+    let Ok(rel) = asset_path.strip_prefix(canonical_root) else {
+        return false;
+    };
+    let Some(parent) = rel.parent() else {
+        return false;
+    };
+    parent
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .any(is_package_bundle_name)
+}
 
 struct KnownLocalAsset {
     id: String,
@@ -66,7 +102,9 @@ struct PreparedLocalUpsert {
     quick_hash: Option<String>,
     initial_rating: Option<u8>,
     initial_flag: Option<String>,
+    initial_color_label: Option<String>,
     initial_crop_json: Option<String>,
+    initial_keywords: Vec<String>,
 }
 
 enum PendingPatch {
@@ -149,9 +187,16 @@ impl Core {
             .follow_links(false)
             .into_iter()
             .filter_entry(|entry| {
-                entry.depth() == 0
-                    || !entry.file_type().is_dir()
-                    || !entry.file_name().to_string_lossy().starts_with('.')
+                if entry.depth() == 0 {
+                    return true;
+                }
+                if entry.file_type().is_dir() {
+                    let name = entry.file_name().to_string_lossy();
+                    if name.starts_with('.') || is_package_bundle_name(&name) {
+                        return false;
+                    }
+                }
+                true
             })
         {
             let entry = match entry {
@@ -250,10 +295,16 @@ impl Core {
         }
 
         // Keep missing assets (including their edits) so reconnecting is lossless.
-        // Only probe rows not encountered in WalkDir; permission errors are never treated as deletion.
+        // Rows previously indexed inside child macOS package bundles (.photoslibrary, .lrdata, etc.)
+        // are removed cleanly when untouched, or marked missing if the user rated/flagged/tagged them.
         let mut missing: Vec<(String, u64, Option<String>)> = Vec::new();
+        let mut bundle_candidates: Vec<String> = Vec::new();
         for (key, known) in &known_local {
             if known.trashed || seen_keys.contains(key) {
+                continue;
+            }
+            if has_sub_bundle_ancestor(&canonical_root, Path::new(&known.path)) {
+                bundle_candidates.push(known.id.clone());
                 continue;
             }
             if let Err(error) = fs::metadata(&known.path) {
@@ -261,6 +312,27 @@ impl Core {
                     missing.push((known.id.clone(), known.size, known.quick_hash.clone()));
                 }
             }
+        }
+
+        if !bundle_candidates.is_empty() {
+            let mut db = self.db()?;
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            {
+                let mut delete_unmarked = tx.prepare_cached(
+                    "DELETE FROM assets WHERE id=?1
+                     AND rating=0 AND flag='none' AND color_label='none' AND crop_json IS NULL
+                     AND NOT EXISTS(SELECT 1 FROM collection_items WHERE asset_id=assets.id)
+                     AND NOT EXISTS(SELECT 1 FROM asset_keywords WHERE asset_id=assets.id)",
+                )?;
+                let mut hide_marked =
+                    tx.prepare_cached("UPDATE assets SET availability='missing' WHERE id=?1")?;
+                for id in &bundle_candidates {
+                    if delete_unmarked.execute([id])? == 0 {
+                        hide_marked.execute([id])?;
+                    }
+                }
+            }
+            tx.commit()?;
         }
 
         if !missing.is_empty() {
@@ -352,7 +424,7 @@ impl Core {
             if !upserts.is_empty() {
                 let mut upsert_stmt = tx.prepare_cached(LOCAL_UPSERT_SQL)?;
                 let mut sidecar_stmt = tx.prepare_cached(
-                    "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),crop_json=COALESCE(?3,crop_json) WHERE id=?4",
+                    "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),color_label=COALESCE(?3,color_label),crop_json=COALESCE(?4,crop_json) WHERE id=?5",
                 )?;
                 for item in upserts.drain(..) {
                     upsert_stmt.execute(params![
@@ -376,17 +448,28 @@ impl Core {
                         item.location_key,
                         item.quick_hash,
                     ])?;
-                    if item.is_new
-                        && (item.initial_rating.is_some()
+                    if item.is_new {
+                        if item.initial_rating.is_some()
                             || item.initial_flag.is_some()
-                            || item.initial_crop_json.is_some())
-                    {
-                        sidecar_stmt.execute(params![
-                            item.initial_rating,
-                            item.initial_flag,
-                            item.initial_crop_json,
-                            item.id,
-                        ])?;
+                            || item.initial_color_label.is_some()
+                            || item.initial_crop_json.is_some()
+                        {
+                            sidecar_stmt.execute(params![
+                                item.initial_rating,
+                                item.initial_flag,
+                                item.initial_color_label,
+                                item.initial_crop_json,
+                                item.id,
+                            ])?;
+                        }
+                        if !item.initial_keywords.is_empty() {
+                            collections::replace_asset_keywords_tx(
+                                &tx,
+                                &item.library_id,
+                                &item.id,
+                                &item.initial_keywords,
+                            )?;
+                        }
                     }
                     report.indexed += 1;
                     if let Some(message) = item.inspected.error {
@@ -560,11 +643,26 @@ impl Core {
                     .crop
                     .and_then(|c| c)
                     .and_then(|c| serde_json::to_string(&c).ok());
-                if sidecar.rating.is_some() || sidecar.flag.is_some() || crop_json.is_some() {
+                if sidecar.rating.is_some()
+                    || sidecar.flag.is_some()
+                    || sidecar.color_label.is_some()
+                    || crop_json.is_some()
+                {
                     self.db()?.execute(
-                        "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),crop_json=COALESCE(?3,crop_json) WHERE id=?4",
-                        params![sidecar.rating, sidecar.flag, crop_json, id],
+                        "UPDATE assets SET rating=COALESCE(?1,rating),flag=COALESCE(?2,flag),color_label=COALESCE(?3,color_label),crop_json=COALESCE(?4,crop_json) WHERE id=?5",
+                        params![sidecar.rating, sidecar.flag, sidecar.color_label, crop_json, id],
                     )?;
+                }
+                if !sidecar.keywords.is_empty() {
+                    let mut db = self.db()?;
+                    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    collections::replace_asset_keywords_tx(
+                        &tx,
+                        &library.id,
+                        &id,
+                        &sidecar.keywords,
+                    )?;
+                    tx.commit()?;
                 }
             }
         }
@@ -608,21 +706,24 @@ fn prepare_local_upsert(
         .map(|known| known.id.clone())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let inspected = inspect_file_metadata(&path, info.len())?;
-    let (initial_rating, initial_flag, initial_crop_json) = if is_new {
-        match crate::xmp::read_sidecar_for_image(&path).ok().flatten() {
-            Some(sidecar) => (
-                sidecar.rating,
-                sidecar.flag,
-                sidecar
-                    .crop
-                    .and_then(|c| c)
-                    .and_then(|c| serde_json::to_string(&c).ok()),
-            ),
-            None => (None, None, None),
-        }
-    } else {
-        (None, None, None)
-    };
+    let (initial_rating, initial_flag, initial_color_label, initial_crop_json, initial_keywords) =
+        if is_new {
+            match crate::xmp::read_sidecar_for_image(&path).ok().flatten() {
+                Some(sidecar) => (
+                    sidecar.rating,
+                    sidecar.flag,
+                    sidecar.color_label,
+                    sidecar
+                        .crop
+                        .and_then(|c| c)
+                        .and_then(|c| serde_json::to_string(&c).ok()),
+                    sidecar.keywords,
+                ),
+                None => (None, None, None, None, Vec::new()),
+            }
+        } else {
+            (None, None, None, None, Vec::new())
+        };
     let filename = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -647,7 +748,9 @@ fn prepare_local_upsert(
         quick_hash: quick_hash(&path, info.len()),
         initial_rating,
         initial_flag,
+        initial_color_label,
         initial_crop_json,
+        initial_keywords,
     })
 }
 

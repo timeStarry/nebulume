@@ -26,7 +26,7 @@ pub use focus_points::read_from as remote_focus;
 pub use focus_points::{FocusInfo, FocusRegion};
 pub use imaging::{histogram_from_jpeg, remote_preview, ExportColorSpace, ExportOptions};
 pub use ingest_records::{Card, CardIdentity, ImportBatch, ImportPreset};
-pub use model::{Asset, Crop, Library, Location};
+pub use model::{Asset, Collection, Crop, Library, Location};
 pub use preview::{PreviewImage, PreviewMemory, PreviewTier};
 
 pub fn image_kind(extension: &str) -> Option<&'static str> {

@@ -235,6 +235,10 @@ fn string<'a>(params: &'a Value, name: &str) -> Result<&'a str> {
 }
 
 impl Service {
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
         let data_dir = data_dir.as_ref();
         std::fs::create_dir_all(data_dir).context("Create application data directory")?;
@@ -287,7 +291,10 @@ impl Service {
             });
         }
         let structural_write =
-            matches!(command, "library.add" | "library.update" | "library.remove")
+            matches!(
+                command,
+                "library.add" | "library.update" | "library.relocate" | "library.remove"
+            )
                 || matches!(command, "storage.add" | "storage.remove" | "file.open")
                 || matches!(
                     command,
@@ -296,10 +303,16 @@ impl Service {
                         | "card.remove"
                         | "preset.remove"
                         | "xmp.policy.set"
+                        | "collection.create"
+                        | "collection.update"
+                        | "collection.delete"
                 );
         // Long operations hold only their own library lease. A slow remote file
         // or scan cannot monopolize the catalog for unrelated local libraries.
-        let _process_library = if matches!(command, "library.update" | "library.remove") {
+        let _process_library = if matches!(
+            command,
+            "library.update" | "library.relocate" | "library.remove"
+        ) {
             Some(
                 process_library_lock(
                     &self.data_dir,
@@ -310,7 +323,7 @@ impl Service {
             )
         } else if matches!(
             command,
-            "asset.mark_batch" | "asset.trash" | "asset.restore"
+            "asset.mark_batch" | "asset.keywords.set" | "asset.trash" | "asset.restore"
         ) {
             // Every id must belong to one library so a single lease covers the batch.
             let ids: Vec<String> = params
@@ -376,7 +389,15 @@ impl Service {
         let _process_catalog = if structural_write
             || matches!(
                 command,
-                "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+                "asset.list"
+                    | "asset.ids"
+                    | "asset.facets"
+                    | "asset.stats"
+                    | "collection.list"
+                    | "collection.get"
+                    | "collection.add_assets"
+                    | "collection.remove_assets"
+                    | "library.keywords"
             )
         {
             Some(
@@ -400,7 +421,13 @@ impl Service {
         // per-library lease above without occupying this global lock.
         let _catalog_read = if matches!(
             command,
-            "asset.list" | "asset.ids" | "asset.facets" | "asset.stats"
+            "asset.list"
+                | "asset.ids"
+                | "asset.facets"
+                | "asset.stats"
+                | "collection.list"
+                | "collection.get"
+                | "library.keywords"
         ) {
             Some(self.catalog_operations.read().map_err(|_| CommandError {
                 code: "E_OPERATION",
@@ -732,6 +759,17 @@ impl Service {
         };
         value["connected"] = json!(availability == "online");
         value["availability"] = json!(availability);
+        if source.as_ref().is_none_or(|s| s.kind == "local") {
+            let (removable, volume_label, relocatable_path) =
+                detect_removable_library_mount(&library.root, availability == "online");
+            value["removable"] = json!(removable);
+            if let Some(label) = volume_label {
+                value["volume_label"] = json!(label);
+            }
+            if let Some(candidate) = relocatable_path {
+                value["relocatable_path"] = json!(candidate);
+            }
+        }
         Ok(value)
     }
 
@@ -1023,12 +1061,21 @@ impl Service {
         if matches!(
             command,
             "asset.mark_batch"
+                | "asset.keywords.set"
                 | "asset.trash"
                 | "asset.restore"
                 | "asset.xmp.write"
                 | "asset.xmp.read"
                 | "xmp.policy.get"
                 | "xmp.policy.set"
+                | "collection.list"
+                | "collection.get"
+                | "collection.create"
+                | "collection.update"
+                | "collection.delete"
+                | "collection.add_assets"
+                | "collection.remove_assets"
+                | "library.keywords"
         ) {
             let mut value = self.core.dispatch(command, params)?;
             if let Some(obj) = value.as_object_mut() {
@@ -1062,6 +1109,12 @@ impl Service {
             "library.list" => self.library_list(),
             "library.add" => self.add_library(&params),
             "library.update" => self.update_library(params),
+            "library.relocate" => {
+                let id = string(&params, "id")?;
+                let root = string(&params, "root")?;
+                let relocated = self.core.relocate_local_library(id, Path::new(root))?;
+                self.library_value(&relocated)
+            }
             "library.remove" => {
                 let id = string(&params, "id")?;
                 Ok(json!({"id":id,"removed_assets":self.core.remove_library(id)?}))
@@ -1422,6 +1475,44 @@ fn parse_backup_destination(params: &Value) -> Option<PathBuf> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
+}
+
+fn detect_removable_library_mount(
+    root: &str,
+    online: bool,
+) -> (bool, Option<String>, Option<String>) {
+    let path = Path::new(root);
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => s.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect();
+    if components.len() >= 2 && matches!(components[0].as_str(), "Volumes" | "media" | "mnt") {
+        let mount_base = Path::new("/").join(&components[0]);
+        let volume_label = components[1].clone();
+        let relative: PathBuf = components[2..].iter().collect();
+        let relocatable = if !online && !relative.as_os_str().is_empty() && mount_base.is_dir() {
+            fs::read_dir(&mount_base)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .take(64)
+                .filter_map(|entry| {
+                    let candidate = entry.path().join(&relative);
+                    candidate
+                        .is_dir()
+                        .then(|| candidate.to_string_lossy().into_owned())
+                })
+                .next()
+        } else {
+            None
+        };
+        return (true, Some(volume_label), relocatable);
+    }
+    (false, None, None)
 }
 
 fn location_of(source: &StorageConfig) -> neb_core::Location {

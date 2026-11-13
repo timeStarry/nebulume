@@ -1,0 +1,63 @@
+.command-palette-body {
+  display: grid;
+  gap: var(--nl-s-3);
+}
+.command-palette-list {
+  display: grid;
+  gap: 2px;
+  max-height: 360px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: auto;
+}
+.command-palette-group {
+  padding: var(--nl-s-2) var(--nl-s-2) var(--nl-s-1);
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-11);
+  font-weight: 500;
+}
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nl-s-3);
+  width: 100%;
+  min-height: var(--nl-h-lg);
+  padding: var(--nl-s-2) var(--nl-s-3);
+  border-radius: var(--nl-r-md);
+  color: var(--nl-text);
+  text-align: start;
+}
+.command-palette-item:hover,
+.command-palette-item.active {
+  background: var(--nl-raised);
+}
+.command-palette-item.active {
+  box-shadow: inset 0 0 0 1px var(--nl-ring);
+}
+.command-palette-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.command-palette-copy strong {
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-palette-copy small {
+  color: var(--nl-text-2);
+  font-size: var(--nl-t-12);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-palette-empty {
+  padding: var(--nl-s-6) var(--nl-s-3);
+  color: var(--nl-text-3);
+  font-size: var(--nl-t-13);
+  text-align: center;
+}

@@ -717,7 +717,7 @@ impl Service {
                 let _lease = self.original(&asset, false)?;
                 self.core.dispatch(command, params)
             }
-            "asset.rate" | "asset.flag" | "asset.crop" | "asset.reset_crop" => {
+            "asset.rate" | "asset.flag" | "asset.label" | "asset.crop" | "asset.reset_crop" => {
                 self.core.dispatch(command, params.clone())?;
                 self.asset_value(&self.core.asset(id)?)
             }

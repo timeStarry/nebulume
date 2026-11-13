@@ -79,6 +79,54 @@
 .tile-flag.reject {
   color: var(--nl-reject);
 }
+.tile-color-dot {
+  position: absolute;
+  top: var(--nl-s-2);
+  right: var(--nl-s-2);
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--nl-r-pill);
+  border: 1px solid var(--nl-v-overlay);
+}
+.tile-color-dot[data-color='red'] {
+  background: var(--nl-label-red);
+}
+.tile-color-dot[data-color='yellow'] {
+  background: var(--nl-label-yellow);
+}
+.tile-color-dot[data-color='green'] {
+  background: var(--nl-label-green);
+}
+.tile-color-dot[data-color='blue'] {
+  background: var(--nl-label-blue);
+}
+.tile-burst-badge {
+  position: absolute;
+  bottom: var(--nl-s-2);
+  left: var(--nl-s-2);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-s-1);
+  min-height: 22px;
+  padding: 0 var(--nl-s-2);
+  border: 1px solid var(--nl-v-line);
+  border-radius: var(--nl-r-pill);
+  background: var(--nl-v-overlay);
+  color: var(--nl-v-text);
+  font-size: var(--nl-t-11);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--nl-d-fast) var(--nl-ease),
+    border-color var(--nl-d-fast) var(--nl-ease);
+}
+.tile-burst-badge:hover,
+.tile-burst-badge:focus-visible {
+  background: var(--nl-v-hover);
+  border-color: var(--nl-v-ring);
+}
 .tile-meta {
   position: absolute;
   left: 0;

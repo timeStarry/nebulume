@@ -1,18 +1,39 @@
 import { For, Show, createSignal } from 'solid-js';
 import Icon from './Icon';
 import OverflowMenu from './OverflowMenu';
+import { SidebarCollections, SidebarResizer } from './library/SidebarCollections';
 import { IconButton, StatusDot } from './ui';
 import type { MenuEntry } from './ui';
-import type { FolderNode, Library, LibraryFolders } from './model';
+import type { Collection, FolderNode, Library, LibraryFolders } from './model';
 
 export type FolderAction = 'cull' | 'overview' | 'export-picks' | 'scan';
 
-/** Libraries, and the open library's folders as a tree. Choosing a folder scopes every view. */
+const SIDEBAR_COLLAPSED_KEY = 'nebulume.sidebar-collapsed';
+
+export function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function writeSidebarCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    /* Applies to this session. */
+  }
+}
+
+/** Libraries, virtual collections, and the open library's folders as a clear subordinate tree. */
 export default function LibrarySidebar(props: {
   libraries: Library[];
   currentId?: string;
   folder: string;
   folders?: LibraryFolders;
+  collections?: Collection[];
+  collectionId?: string;
   usable: (library: Library) => boolean;
   unavailableLabel: (library: Library) => string;
   location: (library: Library) => string;
@@ -20,15 +41,17 @@ export default function LibrarySidebar(props: {
   onLibrary: (library: Library) => void;
   onFolder: (path: string) => void;
   onFolderAction: (action: FolderAction, path: string) => void;
+  onCollection?: (collectionId: string) => void;
+  onCreateCollection?: (kind: 'manual' | 'smart') => void;
+  onEditCollection?: (collection: Collection) => void;
+  onDeleteCollection?: (collection: Collection) => void;
+  onCommandPalette?: () => void;
   onAddLibrary: () => void;
-  /** Actions for one library (settings, scan, previews, capture time, fingerprint, remove). */
   libraryMenu: (library: Library) => MenuEntry[];
-  /** The all-libraries overview is open. */
   overviewOpen?: boolean;
   onOverview: () => void;
   onCollapse?: () => void;
 }) {
-  // Folders the user collapsed; everything starts expanded one level down.
   const [closed, setClosed] = createSignal<ReadonlySet<string>>(new Set());
   const [menu, setMenu] = createSignal<{ path: string; x: number; y: number }>();
   const toggle = (path: string) =>
@@ -58,12 +81,12 @@ export default function LibrarySidebar(props: {
       <li
         role="treeitem"
         aria-expanded={node().children.length ? open() : undefined}
-        aria-selected={props.folder === node().path}
+        aria-selected={props.folder === node().path && !props.collectionId}
       >
         <div
           class="tree-row"
-          classList={{ current: props.folder === node().path }}
-          style={{ '--depth': nodeProps.depth + 1 }}
+          classList={{ current: props.folder === node().path && !props.collectionId }}
+          style={{ '--depth': nodeProps.depth }}
         >
           <button
             class="tree-chevron"
@@ -114,6 +137,15 @@ export default function LibrarySidebar(props: {
           <span class="demo-label">浏览器演示</span>
         </Show>
         <span class="library-sidebar-actions">
+          <Show when={props.onCommandPalette}>
+            <IconButton
+              size="xs"
+              icon="search"
+              label="打开命令面板（⌘K）"
+              shortcut="Meta+K Control+K"
+              onClick={() => props.onCommandPalette?.()}
+            />
+          </Show>
           <IconButton
             size="xs"
             icon="plus"
@@ -135,21 +167,30 @@ export default function LibrarySidebar(props: {
         <For each={props.libraries}>
           {(library) => (
             <li>
-              <div class={`nav-library-row ${props.currentId === library.id ? 'active' : ''}`}>
+              <div
+                class={`nav-library-row ${props.currentId === library.id && !props.folder && !props.collectionId ? 'active' : ''}`}
+              >
                 <button
                   class={`nav-library-item ${props.currentId === library.id ? 'active' : ''}`}
                   aria-current={props.currentId === library.id ? 'page' : undefined}
                   aria-label={`打开图片库 ${library.name}，${props.unavailableLabel(library)}`}
                   title={props.location(library)}
-                  onClick={() =>
-                    props.currentId === library.id ? props.onFolder('') : props.onLibrary(library)
-                  }
+                  onClick={() => {
+                    if (props.currentId === library.id) {
+                      props.onCollection?.('');
+                      props.onFolder('');
+                    } else {
+                      props.onLibrary(library);
+                    }
+                  }}
                 >
                   <Icon
                     name={
                       library.source_kind && library.source_kind !== 'local'
                         ? 'server'
-                        : 'device-laptop'
+                        : library.removable
+                          ? 'usb'
+                          : 'device-laptop'
                     }
                     size={16}
                   />
@@ -173,18 +214,35 @@ export default function LibrarySidebar(props: {
                   />
                 </span>
               </div>
-              <Show
-                when={
-                  props.currentId === library.id &&
-                  props.folders?.library_id === library.id &&
-                  props.folders.folders.length
-                }
-              >
-                <ul class="folder-tree" role="tree" aria-label={`${library.name} 的文件夹`}>
-                  <For each={props.folders!.folders}>
-                    {(node) => <Node node={node} depth={0} />}
-                  </For>
-                </ul>
+              <Show when={props.currentId === library.id}>
+                <div class="library-subnav">
+                  <Show when={props.onCollection && props.onCreateCollection}>
+                    <SidebarCollections
+                      collections={props.collections ?? []}
+                      activeCollectionId={props.collectionId ?? ''}
+                      onSelect={(id) => props.onCollection?.(id)}
+                      onCreate={(kind) => props.onCreateCollection?.(kind)}
+                      onEdit={(coll) => props.onEditCollection?.(coll)}
+                      onDelete={(coll) => props.onDeleteCollection?.(coll)}
+                    />
+                  </Show>
+                  <Show
+                    when={
+                      props.folders?.library_id === library.id && props.folders.folders.length > 0
+                    }
+                  >
+                    <div class="sidebar-folders">
+                      <div class="library-subnav-head">
+                        <span>文件夹</span>
+                      </div>
+                      <ul class="folder-tree" role="tree" aria-label={`${library.name} 的文件夹`}>
+                        <For each={props.folders!.folders}>
+                          {(node) => <Node node={node} depth={0} />}
+                        </For>
+                      </ul>
+                    </div>
+                  </Show>
+                </div>
               </Show>
             </li>
           )}
@@ -238,102 +296,5 @@ export default function LibrarySidebar(props: {
         )}
       </Show>
     </aside>
-  );
-}
-
-const SIDEBAR_KEY = 'nebulume.sidebar-width';
-const SIDEBAR_COLLAPSED_KEY = 'nebulume.sidebar-collapsed';
-
-export function readSidebarCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-
-export function writeSidebarCollapsed(collapsed: boolean) {
-  try {
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
-  } catch {
-    /* Applies to this session. */
-  }
-}
-const MIN_WIDTH = 180;
-const MAX_WIDTH = 480;
-const clampWidth = (value: number) => Math.round(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value)));
-
-function applyWidth(value: number) {
-  document.documentElement.style.setProperty('--nl-sidebar-live', `${value}px`);
-}
-function savedWidth() {
-  try {
-    const value = Number(localStorage.getItem(SIDEBAR_KEY));
-    return Number.isFinite(value) && value > 0 ? clampWidth(value) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-const initial = savedWidth();
-if (initial) applyWidth(initial);
-
-/** The sidebar's right edge: drag (or use ← →) to resize; double-click resets. */
-function SidebarResizer() {
-  let handle!: HTMLDivElement;
-  const current = () => (handle.parentElement as HTMLElement).getBoundingClientRect().width;
-  const set = (value: number) => {
-    const next = clampWidth(value);
-    applyWidth(next);
-    try {
-      localStorage.setItem(SIDEBAR_KEY, String(next));
-    } catch {
-      /* Width applies to this window only. */
-    }
-    handle.setAttribute('aria-valuenow', String(next));
-  };
-  function pointerDown(event: PointerEvent) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = current();
-    handle.setPointerCapture(event.pointerId);
-    document.documentElement.classList.add('nl-resizing');
-    const move = (next: PointerEvent) => set(startWidth + next.clientX - startX);
-    const up = () => {
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-      handle.removeEventListener('pointercancel', up);
-      document.documentElement.classList.remove('nl-resizing');
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-    handle.addEventListener('pointercancel', up);
-  }
-  return (
-    <div
-      ref={handle}
-      class="library-sidebar-resizer"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="拖动调整侧栏"
-      aria-valuemin={MIN_WIDTH}
-      aria-valuemax={MAX_WIDTH}
-      aria-valuenow={initial ?? 220}
-      tabIndex={0}
-      onPointerDown={pointerDown}
-      onDblClick={() => {
-        document.documentElement.style.removeProperty('--nl-sidebar-live');
-        try {
-          localStorage.removeItem(SIDEBAR_KEY);
-        } catch {
-          /* Nothing saved. */
-        }
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-        event.preventDefault();
-        set(current() + (event.key === 'ArrowRight' ? 16 : -16));
-      }}
-    />
   );
 }

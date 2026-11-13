@@ -138,6 +138,11 @@
   --nl-tint-remote: rgba(143, 163, 191, 0.14);
   --nl-recipe: #b6a3d6;
   --nl-tint-recipe: rgba(182, 163, 214, 0.14);
+
+  --nl-label-red: #e86b64;
+  --nl-label-yellow: #ebbd4b;
+  --nl-label-green: #6fc98d;
+  --nl-label-blue: #619be6;
 }
 
 [data-theme='light'] {
@@ -189,6 +194,11 @@
   --nl-tint-remote: rgba(79, 101, 132, 0.1);
   --nl-recipe: #6a5590;
   --nl-tint-recipe: rgba(106, 85, 144, 0.1);
+
+  --nl-label-red: #c9463d;
+  --nl-label-yellow: #b08012;
+  --nl-label-green: #2c824b;
+  --nl-label-blue: #2d67b8;
 }
 
 /* Motion follows the user's choice (src/motion.ts), defaulting to the OS setting. */
