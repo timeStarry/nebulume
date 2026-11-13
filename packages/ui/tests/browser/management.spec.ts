@@ -980,8 +980,8 @@ test('viewer holds navigation during an edit and explicitly refreshing the origi
         .filter((call) => call.command === '$native/plugin:window|set_title')
         .map((call) => call.params.value),
     )
-    .toEqual(['Mountain.png — Nebulume', 'Second.png — Nebulume']);
-  await expect(page).toHaveTitle('Second.png — Nebulume');
+    .toEqual(['Mountain.png — Lumen', 'Second.png — Lumen']);
+  await expect(page).toHaveTitle('Second.png — Lumen');
 });
 test.describe('high-DPI grid', () => {
   test.use({ deviceScaleFactor: 2 });

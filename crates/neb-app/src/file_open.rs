@@ -167,7 +167,7 @@ pub fn open_paths(app: AppHandle, paths: Vec<PathBuf>) {
             }
             app.dialog()
                 .message(message)
-                .title("Nebulume · Cannot open image")
+                .title("Lumen · Cannot open image")
                 .kind(MessageDialogKind::Error)
                 .show(|_| {});
         }

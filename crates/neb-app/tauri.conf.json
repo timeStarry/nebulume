@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Nebulume",
+  "productName": "Lumen",
   "version": "0.2.1",
   "identifier": "app.nebulume.desktop",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Nebulume · 星雾",
+        "title": "Lumen",
         "width": 1440,
         "height": 960,
         "minWidth": 720,
@@ -30,7 +30,7 @@
     "active": true,
     "targets": ["nsis", "app"],
     "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
-    "shortDescription": "Local-first photo library and verified media ingest",
+    "shortDescription": "Quiet, effortless photo library and culling tool",
     "category": "Photography",
     "fileAssociations": [
       {

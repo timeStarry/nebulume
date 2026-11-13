@@ -1135,7 +1135,7 @@ impl Service {
             "library.capture_index.cancel" => self
                 .cancel_capture_index(string(&params, "library_id")?, string(&params, "job_id")?),
             "system.info" => Ok(json!({
-                "name": "Nebulume", "version": env!("CARGO_PKG_VERSION"), "api_version": 1,
+                "name": "Lumen", "version": env!("CARGO_PKG_VERSION"), "api_version": 1,
                 "platform": std::env::consts::OS,
                 "storage": ["local", "webdav", "s3"],
                 "storage_transport": {"lan_http": true, "tls": ["public_ca", "lan_certificate_sha256"]},

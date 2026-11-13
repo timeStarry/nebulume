@@ -108,7 +108,7 @@ export default function DesignReference() {
   return (
     <div class="ds">
       <nav class="ds-nav" aria-label="目录">
-        <b>Nebulume 设计系统</b>
+        <b>Lumen 设计系统</b>
         <For
           each={[
             ['color', '颜色'],

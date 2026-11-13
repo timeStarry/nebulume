@@ -83,7 +83,7 @@ async function openSettings(page: Page) {
     .getByRole('button', { name: '设置', exact: true })
     .click();
   await page.getByRole('tab', { name: '关于', exact: true }).click();
-  return page.getByRole('region', { name: 'Nebulume · 星雾' });
+  return page.getByRole('region', { name: 'Lumen' });
 }
 
 const calls = (page: Page) =>
@@ -92,7 +92,7 @@ const calls = (page: Page) =>
 test('about panel shows the build version and a manual up-to-date check', async ({ page }) => {
   await mockDesktop(page, { support: { supported: true, kind: 'installer' }, update: null });
   const about = await openSettings(page);
-  await expect(about).toContainText(`Nebulume ${appVersion} · 桌面应用`);
+  await expect(about).toContainText(`Lumen ${appVersion} · 桌面应用`);
   await expect(about.locator('pre')).toHaveCount(0);
   await expect(about).not.toContainText('originals_read_only');
   await expect(about.getByRole('button', { name: '打开数据目录' })).toBeVisible();
@@ -111,7 +111,7 @@ test('an available update shows notes, download progress, then prepares before i
   });
   const about = await openSettings(page);
   await about.getByRole('button', { name: '检查更新' }).click();
-  const prompt = page.getByRole('region', { name: 'Nebulume 0.2.0 可用' });
+  const prompt = page.getByRole('region', { name: 'Lumen 0.2.0 可用' });
   await expect(prompt).toContainText('修复若干问题');
   await prompt.getByRole('button', { name: '立即重启安装' }).click();
   await expect(prompt.getByRole('progressbar', { name: '更新下载进度' })).toBeVisible();
@@ -140,7 +140,7 @@ test('later dismisses the prompt without installing', async ({ page }) => {
   });
   const about = await openSettings(page);
   await about.getByRole('button', { name: '检查更新' }).click();
-  const prompt = page.getByRole('region', { name: 'Nebulume 0.2.0 可用' });
+  const prompt = page.getByRole('region', { name: 'Lumen 0.2.0 可用' });
   await prompt.getByRole('button', { name: '稍后' }).click();
   await expect(prompt).toHaveCount(0);
   expect(await calls(page)).not.toContain('plugin:updater|download');

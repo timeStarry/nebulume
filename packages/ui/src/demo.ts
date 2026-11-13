@@ -587,7 +587,7 @@ export async function demoCommand<T>(command: string, params: Record<string, unk
       break;
     }
     default:
-      throw new Error('此功能需要 Nebulume 桌面版。浏览器演示不会模拟文件系统或远程操作成功。');
+      throw new Error('此功能需要 Lumen 桌面版。浏览器演示不会模拟文件系统或远程操作成功。');
   }
   return result as T;
 }

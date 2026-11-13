@@ -1143,7 +1143,7 @@ export default function ImportWorkspace(props: {
                   tone="warn"
                   message={
                     plan()!.write_capability === 'unsupported'
-                      ? '这个网络位置无法保证不覆盖已有文件，Nebulume 不会向它导入。'
+                      ? '这个网络位置无法保证不覆盖已有文件，Lumen 不会向它导入。'
                       : '导入前需要先在“位置”中对这个网络位置“测试写入”，确认它能安全地新建文件且不覆盖已有内容。'
                   }
                   action={

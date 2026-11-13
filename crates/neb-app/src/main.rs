@@ -80,7 +80,7 @@ fn main() {
             watch::watch_libraries
         ])
         .build(tauri::generate_context!())
-        .expect("Nebulume failed to start")
+        .expect("Lumen failed to start")
         .run(move |app, event| match event {
             tauri::RunEvent::Ready => {
                 file_open::ready(app);

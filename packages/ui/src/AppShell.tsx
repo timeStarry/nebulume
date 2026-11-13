@@ -62,7 +62,7 @@ export default function AppShell(props: {
         </button>
         <div class="nl-brand">
           <BrandMark size={24} />
-          <strong>Nebulume</strong>
+          <strong>Lumen</strong>
         </div>
       </header>
       <Show when={props.drawerOpen}>

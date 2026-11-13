@@ -437,7 +437,7 @@ export default function Viewer(props: {
           };
         });
         setCrop({ ...(next.crop || fullCrop) });
-        document.title = `${next.filename} — Nebulume`;
+        document.title = `${next.filename} — Lumen`;
         // Only a viewer window names itself; inside the library window the title stays.
         if (desktop && !props.onClose) await getCurrentWindow().setTitle(document.title);
       }

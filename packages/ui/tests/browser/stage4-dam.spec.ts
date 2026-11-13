@@ -26,7 +26,7 @@ test('stage 4: settings convergence, color labels, hierarchical keywords, collec
   await expect(settingsTabs.getByText('其他配置')).toHaveCount(0);
 
   await settingsTabs.getByRole('tab', { name: '关于' }).click();
-  const aboutRegion = page.getByRole('region', { name: 'Nebulume · 星雾' });
+  const aboutRegion = page.getByRole('region', { name: 'Lumen' });
   await expect(aboutRegion).toBeVisible();
   await expect(aboutRegion.locator('pre')).toHaveCount(0);
 

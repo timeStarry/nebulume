@@ -94,11 +94,11 @@ export function listVolumes(): Promise<Volume[]> {
   return desktop ? invoke('list_volumes') : Promise.resolve([]);
 }
 export function revealInFolder(path: string): Promise<void> {
-  if (!desktop) return Promise.reject(new Error('此功能需要 Nebulume 桌面版。'));
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
   return invoke('reveal_in_folder', { path });
 }
 export function openDataDirectory(): Promise<void> {
-  if (!desktop) return Promise.reject(new Error('此功能需要 Nebulume 桌面版。'));
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
   return invoke('open_data_dir');
 }
 export function openExternal(options: {
@@ -106,7 +106,7 @@ export function openExternal(options: {
   path: string;
   appPath?: string;
 }): Promise<void> {
-  if (!desktop) return Promise.reject(new Error('此功能需要 Nebulume 桌面版。'));
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
   return invoke('open_external', {
     id: options.id ?? null,
     path: options.path,
@@ -124,7 +124,7 @@ export async function chooseExternalApp(): Promise<string | null> {
 export function ejectVolume(
   path: string,
 ): Promise<{ path: string; name: string; ejected: boolean }> {
-  if (!desktop) return Promise.reject(new Error('此功能需要 Nebulume 桌面版。'));
+  if (!desktop) return Promise.reject(new Error('此功能需要 Lumen 桌面版。'));
   return invoke('eject_volume', { path });
 }
 const PREGENERATE_KEY = 'nebulume.pregenerate-previews';

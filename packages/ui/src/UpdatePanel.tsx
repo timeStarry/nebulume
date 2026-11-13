@@ -61,7 +61,7 @@ export function AboutPanel(props: { system?: Record<string, unknown> }) {
       (typeof navigator !== 'undefined' && (navigator.platform || navigator.userAgent)) ||
       '未知平台';
     const summary = [
-      `版本：Nebulume ${__APP_VERSION__}`,
+      `版本：Lumen ${__APP_VERSION__}`,
       `运行模式：${desktop ? '桌面应用' : '浏览器演示'}`,
       `系统环境：${platform}`,
       `原片保护：${readOnly}`,
@@ -81,11 +81,11 @@ export function AboutPanel(props: { system?: Record<string, unknown> }) {
       <div class="about-hero">
         <BrandMark size={36} />
         <div class="about-hero-copy">
-          <h2 id="about-heading">Nebulume · 星雾</h2>
+          <h2 id="about-heading">Lumen</h2>
           <p class="about-version">
-            Nebulume {__APP_VERSION__} · {desktop ? '桌面应用' : '浏览器演示'}
+            Lumen {__APP_VERSION__} · {desktop ? '桌面应用' : '浏览器演示'}
           </p>
-          <p class="about-tagline">面向摄影工作者的本地优先选片与多盘资产管理基座 · 原片严格只读</p>
+          <p class="about-tagline">安静、顺手的照片库与选片工具 · 原片始终只读</p>
         </div>
       </div>
 
@@ -193,7 +193,7 @@ export function UpdatePrompt() {
   return (
     <Show when={visible()}>
       <section class="update-prompt" aria-labelledby="update-prompt-title" role="region">
-        <h2 id="update-prompt-title">Nebulume {version()} 可用</h2>
+        <h2 id="update-prompt-title">Lumen {version()} 可用</h2>
         <SolidSwitch>
           <Match when={state().kind === 'available' && state()}>
             {(current) => {

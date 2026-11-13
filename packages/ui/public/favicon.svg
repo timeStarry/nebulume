@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <title>Nebulume</title>
+  <title>Lumen</title>
   <desc>Application icon with a six-blade aperture.</desc>
   <defs>
     <clipPath id="plate-clip">
@@ -13,50 +13,60 @@
       <path d="M 72.246,193.327 Q 70.792,196.178 69.567,193.222 L 40.563,123.200 Q 39.339,120.243 42.508,119.799 L 87.744,113.460 Q 90.913,113.016 91.219,116.201 L 94.146,146.600 Q 94.453,149.786 92.999,152.636 L 72.246,193.327 Z" fill="white" />
       <path d="M 43.548,112.379 Q 40.352,112.545 42.300,110.007 L 88.439,49.877 Q 90.387,47.339 92.356,49.861 L 120.464,85.867 Q 122.433,88.389 119.828,90.248 L 94.965,107.982 Q 92.360,109.840 89.164,110.007 L 43.548,112.379 Z" fill="white" />
     </clipPath>
-    <radialGradient id="local-light" gradientUnits="userSpaceOnUse" cx="143" cy="155" r="58">
-      <stop offset="0" stop-color="#FFF0D9" stop-opacity="1" />
-      <stop offset=".3" stop-color="#FFF0D9" stop-opacity=".75" />
-      <stop offset=".67" stop-color="#FFF0D9" stop-opacity=".18" />
-      <stop offset="1" stop-color="#FFF0D9" stop-opacity="0" />
+    <linearGradient id="plate-surface" gradientUnits="userSpaceOnUse" x1="36" y1="16" x2="220" y2="240">
+      <stop offset="0" stop-color="#242426" />
+      <stop offset="1" stop-color="#141416" />
+    </linearGradient>
+    <linearGradient id="plate-bevel" gradientUnits="userSpaceOnUse" x1="128" y1="12" x2="128" y2="244">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.14" />
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.06" />
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.03" />
+    </linearGradient>
+    <radialGradient id="ambient-haze" gradientUnits="userSpaceOnUse" cx="154" cy="156" r="78">
+      <stop offset="0" stop-color="#F0C050" stop-opacity=".28" />
+      <stop offset=".55" stop-color="#F0C050" stop-opacity=".08" />
+      <stop offset="1" stop-color="#F0C050" stop-opacity="0" />
     </radialGradient>
-    <radialGradient id="ambient-haze" gradientUnits="userSpaceOnUse" cx="143" cy="156" r="52">
-      <stop offset="0" stop-color="#FFF0D9" stop-opacity=".6" />
-      <stop offset=".4" stop-color="#FFF0D9" stop-opacity=".35" />
-      <stop offset="1" stop-color="#FFF0D9" stop-opacity="0" />
+    <radialGradient id="local-light" gradientUnits="userSpaceOnUse" cx="154" cy="156" r="66">
+      <stop offset="0" stop-color="#FFF2D6" stop-opacity="1" />
+      <stop offset=".35" stop-color="#F0C050" stop-opacity=".72" />
+      <stop offset=".72" stop-color="#F0C050" stop-opacity=".18" />
+      <stop offset="1" stop-color="#F0C050" stop-opacity="0" />
     </radialGradient>
     <filter id="soft-bloom" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
       <feGaussianBlur stdDeviation="2.4" />
     </filter>
     <linearGradient id="surface-1" gradientUnits="userSpaceOnUse" x1="140.026" y1="101.611" x2="169.469" y2="37.004">
-      <stop offset="0" stop-color="#CFD4E2" />
-      <stop offset="1" stop-color="#959CB9" />
+      <stop offset="0" stop-color="#EFEFEB" />
+      <stop offset="1" stop-color="#9B9CA1" />
     </linearGradient>
     <linearGradient id="surface-2" gradientUnits="userSpaceOnUse" x1="156.866" y1="125.220" x2="227.540" y2="118.415">
-      <stop offset="0" stop-color="#B2C9D8" />
-      <stop offset="1" stop-color="#758EAA" />
+      <stop offset="0" stop-color="#DFDFDB" />
+      <stop offset="1" stop-color="#85868C" />
     </linearGradient>
     <linearGradient id="surface-3" gradientUnits="userSpaceOnUse" x1="144.840" y1="151.609" x2="186.070" y2="209.412">
-      <stop offset="0" stop-color="#D9D0E8" />
-      <stop offset="1" stop-color="#A099BA" />
+      <stop offset="0" stop-color="#F7DA9C" />
+      <stop offset="1" stop-color="#BA8A43" />
     </linearGradient>
     <linearGradient id="surface-4" gradientUnits="userSpaceOnUse" x1="115.974" y1="154.389" x2="86.531" y2="218.996">
-      <stop offset="0" stop-color="#A3BECF" />
-      <stop offset="1" stop-color="#748DA7" />
+      <stop offset="0" stop-color="#D6D4CE" />
+      <stop offset="1" stop-color="#7D7E83" />
     </linearGradient>
     <linearGradient id="surface-5" gradientUnits="userSpaceOnUse" x1="99.134" y1="130.780" x2="28.460" y2="137.585">
-      <stop offset="0" stop-color="#B4C7DE" />
-      <stop offset="1" stop-color="#8197B4" />
+      <stop offset="0" stop-color="#E3E3DF" />
+      <stop offset="1" stop-color="#8D8E93" />
     </linearGradient>
     <linearGradient id="surface-6" gradientUnits="userSpaceOnUse" x1="111.160" y1="104.391" x2="69.930" y2="46.588">
-      <stop offset="0" stop-color="#D1D8E6" />
-      <stop offset="1" stop-color="#A0AFC6" />
+      <stop offset="0" stop-color="#F5F5F1" />
+      <stop offset="1" stop-color="#A9AAB0" />
     </linearGradient>
   </defs>
   <g id="background">
-    <rect x="12" y="12" width="232" height="232" rx="52" fill="#1a222a" />
+    <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#plate-surface)" />
+    <rect x="12.75" y="12.75" width="230.5" height="230.5" rx="51.25" fill="none" stroke="url(#plate-bevel)" stroke-width="1.5" />
   </g>
   <g id="ambient" clip-path="url(#plate-clip)">
-    <rect width="256" height="256" fill="url(#ambient-haze)" opacity="0.055" />
+    <rect width="256" height="256" fill="url(#ambient-haze)" opacity="0.32" />
   </g>
   <g id="aperture">
     <path id="blade-1" d="M 99.302,47.052 Q 97.560,44.367 100.733,44.785 L 175.876,54.678 Q 179.048,55.095 177.848,58.062 L 160.720,100.407 Q 159.520,103.374 156.609,102.047 L 128.818,89.382 Q 125.907,88.055 124.165,85.370 L 99.302,47.052 Z" fill="url(#surface-1)" />
@@ -67,17 +77,17 @@
     <path id="blade-6" d="M 43.548,112.379 Q 40.352,112.545 42.300,110.007 L 88.439,49.877 Q 90.387,47.339 92.356,49.861 L 120.464,85.867 Q 122.433,88.389 119.828,90.248 L 94.965,107.982 Q 92.360,109.840 89.164,110.007 L 43.548,112.379 Z" fill="url(#surface-6)" />
   </g>
   <g id="surface-light" clip-path="url(#blades-clip)">
-    <rect width="256" height="256" fill="url(#local-light)" opacity="0.34" />
+    <rect width="256" height="256" fill="url(#local-light)" opacity="0.32" />
   </g>
-  <g id="inner-edge" clip-path="url(#blades-clip)" opacity="0.48">
-    <path d="M 99.302,47.052 Q 97.560,44.367 100.733,44.785 L 175.876,54.678 Q 179.048,55.095 177.848,58.062 L 160.720,100.407 Q 159.520,103.374 156.609,102.047 L 128.818,89.382 Q 125.907,88.055 124.165,85.370 L 99.302,47.052 Z" fill="none" stroke="url(#local-light)" stroke-width=".7" />
-    <path d="M 183.754,62.673 Q 185.208,59.822 186.433,62.778 L 215.437,132.800 Q 216.661,135.757 213.492,136.201 L 168.256,142.540 Q 165.087,142.984 164.781,139.799 L 161.854,109.400 Q 161.547,106.214 163.001,103.364 L 183.754,62.673 Z" fill="none" stroke="url(#local-light)" stroke-width=".7" />
-    <path d="M 212.452,143.621 Q 215.648,143.455 213.700,145.993 L 167.561,206.123 Q 165.613,208.661 163.644,206.139 L 135.536,170.133 Q 133.567,167.611 136.172,165.752 L 161.035,148.018 Q 163.640,146.160 166.836,145.993 L 212.452,143.621 Z" fill="none" stroke="url(#local-light)" stroke-width=".7" />
-    <path d="M 156.698,208.948 Q 158.440,211.633 155.267,211.215 L 80.124,201.322 Q 76.952,200.905 78.152,197.938 L 95.280,155.593 Q 96.480,152.626 99.391,153.953 L 127.182,166.618 Q 130.093,167.945 131.835,170.630 L 156.698,208.948 Z" fill="none" stroke="url(#local-light)" stroke-width=".7" />
-    <path d="M 72.246,193.327 Q 70.792,196.178 69.567,193.222 L 40.563,123.200 Q 39.339,120.243 42.508,119.799 L 87.744,113.460 Q 90.913,113.016 91.219,116.201 L 94.146,146.600 Q 94.453,149.786 92.999,152.636 L 72.246,193.327 Z" fill="none" stroke="url(#local-light)" stroke-width=".7" />
-    <path d="M 43.548,112.379 Q 40.352,112.545 42.300,110.007 L 88.439,49.877 Q 90.387,47.339 92.356,49.861 L 120.464,85.867 Q 122.433,88.389 119.828,90.248 L 94.965,107.982 Q 92.360,109.840 89.164,110.007 L 43.548,112.379 Z" fill="none" stroke="url(#local-light)" stroke-width=".7" />
+  <g id="inner-edge" clip-path="url(#blades-clip)" opacity="0.52">
+    <path d="M 99.302,47.052 Q 97.560,44.367 100.733,44.785 L 175.876,54.678 Q 179.048,55.095 177.848,58.062 L 160.720,100.407 Q 159.520,103.374 156.609,102.047 L 128.818,89.382 Q 125.907,88.055 124.165,85.370 L 99.302,47.052 Z" fill="none" stroke="url(#local-light)" stroke-width=".85" />
+    <path d="M 183.754,62.673 Q 185.208,59.822 186.433,62.778 L 215.437,132.800 Q 216.661,135.757 213.492,136.201 L 168.256,142.540 Q 165.087,142.984 164.781,139.799 L 161.854,109.400 Q 161.547,106.214 163.001,103.364 L 183.754,62.673 Z" fill="none" stroke="url(#local-light)" stroke-width=".85" />
+    <path d="M 212.452,143.621 Q 215.648,143.455 213.700,145.993 L 167.561,206.123 Q 165.613,208.661 163.644,206.139 L 135.536,170.133 Q 133.567,167.611 136.172,165.752 L 161.035,148.018 Q 163.640,146.160 166.836,145.993 L 212.452,143.621 Z" fill="none" stroke="url(#local-light)" stroke-width=".85" />
+    <path d="M 156.698,208.948 Q 158.440,211.633 155.267,211.215 L 80.124,201.322 Q 76.952,200.905 78.152,197.938 L 95.280,155.593 Q 96.480,152.626 99.391,153.953 L 127.182,166.618 Q 130.093,167.945 131.835,170.630 L 156.698,208.948 Z" fill="none" stroke="url(#local-light)" stroke-width=".85" />
+    <path d="M 72.246,193.327 Q 70.792,196.178 69.567,193.222 L 40.563,123.200 Q 39.339,120.243 42.508,119.799 L 87.744,113.460 Q 90.913,113.016 91.219,116.201 L 94.146,146.600 Q 94.453,149.786 92.999,152.636 L 72.246,193.327 Z" fill="none" stroke="url(#local-light)" stroke-width=".85" />
+    <path d="M 43.548,112.379 Q 40.352,112.545 42.300,110.007 L 88.439,49.877 Q 90.387,47.339 92.356,49.861 L 120.464,85.867 Q 122.433,88.389 119.828,90.248 L 94.965,107.982 Q 92.360,109.840 89.164,110.007 L 43.548,112.379 Z" fill="none" stroke="url(#local-light)" stroke-width=".85" />
   </g>
-  <g id="bloom" clip-path="url(#plate-clip)" opacity="0.07">
+  <g id="bloom" clip-path="url(#plate-clip)" opacity="0.08">
     <g filter="url(#soft-bloom)">
       <path d="M 99.302,47.052 Q 97.560,44.367 100.733,44.785 L 175.876,54.678 Q 179.048,55.095 177.848,58.062 L 160.720,100.407 Q 159.520,103.374 156.609,102.047 L 128.818,89.382 Q 125.907,88.055 124.165,85.370 L 99.302,47.052 Z" fill="none" stroke="url(#local-light)" stroke-width="1.5" />
       <path d="M 183.754,62.673 Q 185.208,59.822 186.433,62.778 L 215.437,132.800 Q 216.661,135.757 213.492,136.201 L 168.256,142.540 Q 165.087,142.984 164.781,139.799 L 161.854,109.400 Q 161.547,106.214 163.001,103.364 L 183.754,62.673 Z" fill="none" stroke="url(#local-light)" stroke-width="1.5" />

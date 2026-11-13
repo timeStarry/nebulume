@@ -444,7 +444,7 @@ export function StorageDialog(props: {
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (!desktop) {
-      setError('连接远程存储与读取设备证书需要 Nebulume 桌面版。');
+      setError('连接远程存储与读取设备证书需要 Lumen 桌面版。');
       return;
     }
     if (kind() !== 'local' && trustPin() === undefined) {
@@ -488,7 +488,7 @@ export function StorageDialog(props: {
           <Banner
             tone="info"
             role="status"
-            message="连接远程存储与读取设备证书需要 Nebulume 桌面版。"
+            message="连接远程存储与读取设备证书需要 Lumen 桌面版。"
             detail="浏览器演示不访问局域网设备。"
           />
         </Show>

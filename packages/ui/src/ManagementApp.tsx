@@ -1287,7 +1287,7 @@ export default function ManagementApp() {
     const photo = document.querySelector<HTMLImageElement>('.viewer-overlay .main-photo');
     const from = photo?.getBoundingClientRect();
     setOverlay(undefined);
-    document.title = 'Nebulume — 影像管理';
+    document.title = 'Lumen';
     if (!id) return;
     // Come back to the photo the viewer ended on. The viewer hands focus back to
     // the tile it opened from as it unmounts, so move selection and focus after it.

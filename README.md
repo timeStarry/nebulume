@@ -1,33 +1,22 @@
-# Nebulume
+# Lumen
 
-本地优先的图像管理工具。选择本地目录建立图片库，或连接 WebDAV、S3 浏览远端照片；双击图片进入独立查看窗口。
+安静、顺手的照片库与选片工具。选择本地或外接硬盘目录原地建立图片库，或连接 WebDAV、S3 浏览远端照片；原片始终严格只读。
 
-[下载 Windows x64 版本](https://github.com/timeStarry/nebulume/releases) · [更新记录](CHANGELOG.md)
+[更新记录](CHANGELOG.md) · [品牌与设计矩阵](docs/IDENTITY.md)
 
-当前提供 Windows x64 安装器与独立程序。macOS、Linux 尚未完成本版本发布验收，暂不提供对应安装包。
+## 核心能力
 
-## 功能
+- **图库组织与检索**：支持文件夹层级树、精选集与智能精选集、星级（`1–5`）、选片旗标（`P/X/U`）、四色标签（`6–9`）、层级关键词、连拍自动堆叠（Burst Stacks）、RAW+JPEG 合并及右侧时间轴快速定位，`⌘K` 全局直达。
+- **沉浸式查看与同步对比**：`40px` 常驻非遮挡窄顶栏（可选自动隐藏）、零跳变邻帧预解码切图、真 1:1 原生查焦、对焦点覆盖、高光/暗部溢出警告（`J`）、2/4 图同步缩放平移对比台（`C`）与定比非破坏裁剪。
+- **现代格式与色彩管理**：支持主流相机 RAW（含 CR3、NEF、ARW、RAF、DNG 等）、HEIC/HEIF、AVIF、JPEG、PNG、TIFF、WebP 解码及内嵌 ICC 到 sRGB/Display P3 色彩转换。
+- **伴随生态与专业导入导出**：非破坏性 `.xmp` 伴随文件双向同步、访达定位与外部精修软件移交（`⌘E`）；支持存储卡勾选导入、双盘同步备份、模板重命名与校验去重；提供可配置 ICC 与锐化的预设化批量导出。
+- **网络位置与可控缓存**：支持公网 HTTPS、局域网（含 Tailscale / CGNAT）HTTP 及设备证书指纹信任管理；凭据存入系统钥匙串；远端缓存支持总配额、期限策略与离线固定。
 
-- 图库搜索、星级、格式筛选、RAW/JPEG 合并及整库排序。默认按 EXIF 拍摄时间排序，支持后台补索引；未知时间保持未知。
-- WebDAV、S3 目录索引与按需预览，支持部分 TIFF/RAW 的分段内嵌 JPEG 读取。
-- 可设置缓存位置、总容量、原图保留期限及自动获取策略，支持缓存清理、迁移和固定离线。
-- 独立查看窗口提供缩放、全屏、EXIF、直方图、非破坏裁剪和 JPEG 导出；部分 Nikon 照片可显示记录的对焦区域。
-- 从存储卡或挂载目录安全导入本地图库，支持计划审核、校验、内容去重和结果记录。
-- 深色、浅色及跟随系统主题。
+原片默认只读：扫描建立索引，评分/色标/裁剪保存于本地目录与可选 `.xmp` 伴随文件，导出始终写入新文件。
 
-原片默认只读。扫描建立索引，裁剪保存为配方，导出写入新文件；导入保留源文件，不覆盖无关目标内容。
+## 开发与构建
 
-## 使用范围
-
-RAW 支持受格式和机型限制，不支持 CR3、HEIC/HEIF、AVIF。查看器使用最长边 2560px 的预览，1:1 对应该预览像素；完整分辨率瓦片与专业 ICC 色彩管理尚未实现。
-
-远端当前只读；普通 JPEG/PNG 首次预览通常需要下载完整文件。导入目标限于本地图库，尚不支持暂停、续传、多份备份或安全弹出。更多限制见[实施状态](docs/STATUS.md#已知边界)。
-
-WebDAV、S3 公网连接使用 HTTPS，也支持局域网 HTTP 和用户确认的设备证书。凭据默认保存在系统凭据库，也可选择仅本次会话；配置和 SQLite 不保存秘密。
-
-## 开发
-
-需要 Rust 1.90+、Node.js 22+、pnpm 9，以及 Tauri 2 系统依赖。Windows 需要 Visual Studio C++ Build Tools 和 WebView2。
+需要 Rust 1.90+、Node.js 22+、pnpm 9，以及 Tauri 2 系统依赖。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -38,20 +27,18 @@ pnpm typecheck
 pnpm desktop
 ```
 
-浏览器模式：`pnpm dev`。可选择浏览器支持的图片进行临时会话，关闭页面后清除；完整 EXIF、RAW、远端存储和导入能力需使用桌面版。
+- 浏览器演示模式：`pnpm dev`。完整 EXIF、RAW 解码、网络存储与导入导出能力需使用桌面版。
+- 命令行入口：`cargo run -p neb-cli -- --help`。
+- 图标资产校验：`python3 scripts/make-icon.py`。
 
-命令行入口：`cargo run -p neb-cli -- --help`。使用 `--data-dir` 指定隔离测试目录。桌面开发和验收可通过 `NEBULUME_DATA_DIR` 指定独立数据目录；默认路径由平台确定，应用标识为 `app.nebulume.desktop`。
+## 文档索引
 
-在 `crates/neb-app` 运行 `pnpm exec tauri build --no-bundle` 构建桌面程序，运行 `pnpm exec tauri build --bundles nsis -- --locked` 构建 Windows 安装器。完整步骤见[发布指南](docs/RELEASING.md)。
-
-## 文档
-
+- [品牌识别与设计矩阵](docs/IDENTITY.md)
 - [架构与数据设计](docs/ARCHITECTURE.md)
 - [管理与查看交互](docs/INTERACTION.md)
 - [命令契约](docs/API.md)
 - [实施状态与限制](docs/STATUS.md)
 - [测试策略](docs/TESTING.md)
 - [发布指南](docs/RELEASING.md)
-- [治理与重构设计](docs/REFACTOR_DESIGN.md)
 
 本项目未授予开源许可。
