@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
@@ -50,7 +50,7 @@ function fixture(index, width = 960, height = 640) {
     chunk('IEND', Buffer.alloc(0)),
   ]);
 }
-const root = await mkdtemp(join(tmpdir(), 'nebulume-smoke-'));
+const root = await mkdtemp(join(await realpath(tmpdir()), 'nebulume-smoke-'));
 const photos = join(root, 'photos'),
   card = join(root, 'card'),
   destination = join(root, 'archive');
@@ -166,6 +166,14 @@ try {
   const exported = join(root, 'crop.jpg');
   await rpc('asset.export', { id: asset.id, destination: exported });
   await assert.rejects(rpc('asset.export', { id: asset.id, destination: exported }));
+  const exportedOrig = join(root, 'orig-copy.png');
+  await rpc('asset.export_original', { id: asset.id, destination: exportedOrig });
+  assert.equal(
+    createHash('sha256')
+      .update(await readFile(exportedOrig))
+      .digest('hex'),
+    before,
+  );
   assert.equal(
     createHash('sha256')
       .update(await readFile(asset.path))
@@ -207,7 +215,9 @@ try {
       ),
     );
     context.on('page', (page) => page.on('pageerror', (e) => errors.push(e.message)));
-    const exportPath = join(root, 'ui-export.jpg');
+    const originalExportPath = join(root, 'ui-original.png');
+    const exportDir = join(root, 'ui-exports');
+    await mkdir(exportDir, { recursive: true });
     // Chromium cannot run a Tauri custom protocol. Only its transport is bridged:
     // every requested tier is rendered by the real CLI/shared Rust service.
     await context.route('**/__neb_preview/**', async (route) => {
@@ -254,7 +264,7 @@ try {
       const { command, params } = route.request().postDataJSON();
       try {
         const result = await rpc(command, params);
-        if (['asset.rate', 'asset.crop', 'asset.export'].includes(command))
+        if (['asset.rate', 'asset.crop', 'asset.export', 'asset.export_original'].includes(command))
           uiWrites.push({ command, params });
         await route.fulfill({ json: { result } });
       } catch (e) {
@@ -262,7 +272,7 @@ try {
       }
     });
     await context.addInitScript(
-      ({ exportPath }) => {
+      ({ originalExportPath, exportDir }) => {
         window.isTauri = true;
         window.__TAURI_INTERNALS__ = {
           convertFileSrc: (path, protocol) => {
@@ -287,8 +297,8 @@ try {
             }
             if (cmd === 'viewer_context')
               return JSON.parse(sessionStorage.getItem('smoke-viewer-context'));
-            if (cmd === 'plugin:dialog|save') return exportPath;
-            if (cmd === 'plugin:dialog|open') return null;
+            if (cmd === 'plugin:dialog|save') return originalExportPath;
+            if (cmd === 'plugin:dialog|open') return exportDir;
             if (cmd === 'plugin:window|set_title') return null;
             if (cmd === 'plugin:window|set_theme') return null;
             if (cmd === 'plugin:window|theme') return 'dark';
@@ -304,7 +314,7 @@ try {
           },
         };
       },
-      { exportPath },
+      { originalExportPath, exportDir },
     );
     const page = await context.newPage();
     await page.goto(uiUrl);
@@ -333,8 +343,14 @@ try {
     await viewer.getByRole('button', { name: '保存裁剪', exact: true }).click();
     await viewer.waitForFunction(() => !document.querySelector('.crop-panel'));
     await viewer.getByRole('button', { name: '更多', exact: true }).click();
-    await viewer.getByRole('menuitem', { name: '导出为 JPEG…', exact: true }).click();
-    await viewer.waitForFunction(() => document.body.textContent.includes('已导出：'));
+    await viewer.getByRole('menuitem', { name: '导出原片…', exact: true }).click();
+    await viewer.waitForFunction(() => document.body.textContent.includes('已导出原片：'));
+    await viewer.getByRole('button', { name: '更多', exact: true }).click();
+    await viewer.getByRole('menuitem', { name: /^导出 JPEG…/ }).click();
+    await viewer.getByRole('dialog', { name: '导出 JPEG 交付件' }).waitFor();
+    await viewer.getByRole('button', { name: '浏览…', exact: true }).click();
+    await viewer.getByRole('button', { name: '导出 JPEG', exact: true }).click();
+    await viewer.waitForFunction(() => document.body.textContent.includes('已导出 1 张到'));
     await mkdir('artifacts', { recursive: true });
     await viewer.screenshot({ path: 'artifacts/workspace-viewer.png', fullPage: true });
     await viewer.close();
@@ -356,7 +372,10 @@ try {
     const saved = await rpc('asset.get', { id: cropWrite.params.id });
     assert.equal(saved.rating, 5);
     assert.equal(saved.crop.width, 0.4);
-    assert.ok((await readFile(exportPath)).length > 0);
+    assert.ok((await readFile(originalExportPath)).length > 0);
+    const jpegWrite = uiWrites.find((write) => write.command === 'asset.export');
+    assert.ok(jpegWrite, 'UI must export JPEG through the real Rust service');
+    assert.ok((await readFile(jpegWrite.params.destination)).length > 0);
     assert.deepEqual(
       await Promise.all(
         assets.map(async ({ path }) =>

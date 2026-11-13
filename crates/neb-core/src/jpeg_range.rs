@@ -61,7 +61,7 @@ pub(crate) fn read_jpeg_range_preview<R: Read + Seek>(
     tier: PreviewTier,
 ) -> Result<JpegRangePreview> {
     ensure!(
-        length >= 4 && length <= crate::imaging::MAX_FILE_BYTES,
+        (4..=crate::imaging::MAX_FILE_BYTES).contains(&length),
         "E_UNSUPPORTED_CODEC: Invalid or oversized remote JPEG"
     );
     let head_len = length.min(MAX_HEADER_SCAN_BYTES) as usize;
@@ -374,7 +374,7 @@ fn parse_mpf_directory(
             continue;
         }
         let byte_count = read_u32(&entry[4..8]) as usize;
-        if byte_count < 32 || byte_count % 16 != 0 || byte_count > MAX_MPF_ENTRIES * 16 {
+        if !(32..=MAX_MPF_ENTRIES * 16).contains(&byte_count) || !byte_count.is_multiple_of(16) {
             continue;
         }
         let value_offset = read_u32(&entry[8..12]) as usize;
@@ -386,7 +386,7 @@ fn parse_mpf_directory(
         }
         let mp_entries = &mpf_tiff[value_offset..value_end];
         // Skip entry 0 (the primary full-resolution JPEG itself).
-        for chunk in mp_entries.chunks_exact(16).skip(1) {
+        for chunk in mp_entries.as_chunks::<16>().0.iter().skip(1) {
             let attr = read_u32(&chunk[0..4]);
             let format = (attr >> 24) & 0x07;
             if format != 0 {

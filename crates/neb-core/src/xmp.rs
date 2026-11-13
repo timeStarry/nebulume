@@ -490,7 +490,10 @@ pub fn write_sidecar_for_image_with_tags(
         .into_bytes()
     };
 
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
+    let mut temp = tempfile::Builder::new()
+        .prefix(".neb-xmp-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
         .context("E_IO: Cannot create temporary XMP file")?;
     temp.write_all(&xml_bytes)
         .context("E_IO: Cannot write temporary XMP file")?;
