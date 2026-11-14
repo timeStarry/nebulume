@@ -1,6 +1,7 @@
 import { For, Show, type JSX } from 'solid-js';
 import BrandMark from './BrandMark';
 import Icon, { type IconName } from './Icon';
+import { useHasPendingUpdate } from './UpdatePanel';
 import type { WorkspaceSection } from './workspace';
 import './AppShell.css';
 
@@ -30,20 +31,28 @@ export default function AppShell(props: {
   sidebar?: JSX.Element;
   children: JSX.Element;
 }) {
-  const item = (entry: { id: WorkspaceSection; label: string; icon: IconName }) => (
-    <button
-      type="button"
-      class={`nl-rail-item workspace-nav-item${props.current === entry.id ? ' active' : ''}`}
-      aria-label={entry.label}
-      aria-current={props.current === entry.id ? 'page' : undefined}
-      data-tooltip={entry.label}
-      data-tip-side="right"
-      onClick={() => props.onSection(entry.id)}
-    >
-      <Icon name={entry.icon} size={20} />
-      <span class="nl-rail-label">{entry.label}</span>
-    </button>
-  );
+  const hasUpdate = useHasPendingUpdate();
+  const item = (entry: { id: WorkspaceSection; label: string; icon: IconName }) => {
+    const showBadge = () => entry.id === 'settings' && hasUpdate();
+    return (
+      <button
+        type="button"
+        class={`nl-rail-item workspace-nav-item${props.current === entry.id ? ' active' : ''}`}
+        aria-label={entry.label}
+        aria-current={props.current === entry.id ? 'page' : undefined}
+        data-tooltip={showBadge() ? `${entry.label} · 有新版本可用` : entry.label}
+        data-tip-side="right"
+        data-has-update={showBadge() ? 'true' : undefined}
+        onClick={() => props.onSection(entry.id)}
+      >
+        <Icon name={entry.icon} size={20} />
+        <span class="nl-rail-label">{entry.label}</span>
+        <Show when={showBadge()}>
+          <span class="nl-rail-badge" aria-hidden="true" />
+        </Show>
+      </button>
+    );
+  };
   return (
     <div
       class={`nl-shell${props.drawerOpen ? ' nav-open' : ''}${props.sidebar ? '' : ' nl-shell--no-side'}`}

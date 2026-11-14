@@ -46,7 +46,7 @@ export function ListRow(
     class?: string;
     labelFor?: string;
     children?: JSX.Element;
-  } & Pick<JSX.HTMLAttributes<HTMLElement>, 'aria-label' | 'aria-current' | 'title'>,
+  } & Pick<JSX.HTMLAttributes<HTMLElement>, 'aria-label' | 'aria-current'>,
 ) {
   const [own, rest] = splitProps(props, [
     'title',

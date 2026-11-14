@@ -1,7 +1,7 @@
 import { splitProps, type JSX } from 'solid-js';
 import Icon, { type IconName } from '../Icon';
 import './IconButton.css';
-import './Tooltip.css';
+import './Tooltip';
 
 export type IconButtonSize = 'xs' | 'sm' | 'md';
 const ICON_SIZE: Record<IconButtonSize, number> = { xs: 14, sm: 16, md: 18 };

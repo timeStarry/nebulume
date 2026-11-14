@@ -76,6 +76,18 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+.nl-rail-badge {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  box-sizing: content-box;
+  width: 6px;
+  height: 6px;
+  border: 2px solid var(--nl-rail);
+  border-radius: var(--nl-r-pill);
+  background: var(--nl-star);
+  pointer-events: none;
+}
 .nl-shell > .manager-workspace,
 .nl-shell > main {
   min-width: 0;
@@ -134,8 +146,10 @@
     width: 100%;
     padding: 0 var(--nl-s-3);
   }
-  .nl-rail-item[data-tooltip]::after {
-    display: none;
+  .nl-rail-badge {
+    top: 50%;
+    right: var(--nl-s-3);
+    transform: translateY(-50%);
   }
   .nl-rail-label {
     position: static;

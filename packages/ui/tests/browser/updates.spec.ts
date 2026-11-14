@@ -109,20 +109,40 @@ test('about panel shows the build version and a manual up-to-date check', async 
   await expect(about.getByRole('switch', { name: '自动检查更新' })).toBeChecked();
 });
 
-test('an available update shows notes, download progress, then prepares before installing', async ({
+test('an available update renders structured release notes, progress, and prepares before installing', async ({
   page,
 }) => {
   await mockDesktop(page, {
     support: { supported: true, kind: 'installer' },
-    update: { version: '0.2.0', body: '修复若干问题' },
+    update: {
+      version: '0.2.0',
+      body: [
+        '聚焦远端预览与高频细节打磨。',
+        '',
+        '界面与交互细节',
+        '- 自研 `<Select>` 下拉菜单组件与 `.xmp` 默认同步。',
+      ].join('\n'),
+    },
   });
   const about = await openSettings(page);
   await about.getByRole('button', { name: '检查更新' }).click();
-  const prompt = page.getByRole('region', { name: 'Lumen 0.2.0 可用' });
-  await expect(prompt).toContainText('修复若干问题');
-  await prompt.getByRole('button', { name: '立即重启安装' }).click();
-  await expect(prompt.getByRole('progressbar', { name: '更新下载进度' })).toBeVisible();
-  await expect(prompt).toContainText('正在下载 2.0/4.0 MB');
+
+  // While AboutPanel is open, the update lives in-place without duplicating the top workspace bar.
+  await expect(page.locator('.update-bar')).toHaveCount(0);
+  const prompt = about.getByRole('region', { name: 'Lumen 0.2.0 可用' });
+  await expect(prompt).toContainText('聚焦远端预览与高频细节打磨。');
+
+  // Structured release-notes dialog formats headings, bullets and inline code pills cleanly.
+  await prompt.getByRole('button', { name: '更新内容' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Lumen 0.2.0 更新内容' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.update-notes-heading')).toHaveText(['界面与交互细节']);
+  await expect(dialog.locator('code.update-inline-code')).toHaveText(['<Select>', '.xmp']);
+  await expect(dialog).not.toContainText('`');
+
+  await dialog.getByRole('button', { name: '立即重启安装' }).click();
+  await expect(dialog.getByRole('progressbar', { name: '更新下载进度' })).toBeVisible();
+  await expect(dialog).toContainText('正在下载 2.0/4.0 MB');
   await expect.poll(() => calls(page)).toContain('plugin:process|restart');
   const order = (await calls(page)).filter((command) =>
     [
@@ -140,17 +160,42 @@ test('an available update shows notes, download progress, then prepares before i
   ]);
 });
 
-test('later dismisses the prompt without installing', async ({ page }) => {
+test('workspace update bar stays compact and dismissing preserves the settings badge and About install', async ({
+  page,
+}) => {
   await mockDesktop(page, {
     support: { supported: true, kind: 'installer' },
-    update: { version: '0.2.0', body: '' },
+    update: { version: '0.2.0', body: '修复若干问题' },
   });
   const about = await openSettings(page);
   await about.getByRole('button', { name: '检查更新' }).click();
-  const prompt = page.getByRole('region', { name: 'Lumen 0.2.0 可用' });
-  await prompt.getByRole('button', { name: '稍后' }).click();
-  await expect(prompt).toHaveCount(0);
+  await expect(about.getByRole('region', { name: 'Lumen 0.2.0 可用' })).toBeVisible();
+
+  const nav = page.getByRole('navigation', { name: '主导航' });
+  const settingsBtn = nav.getByRole('button', { name: '设置', exact: true });
+  await expect(settingsBtn).toHaveAttribute('data-has-update', 'true');
+  await expect(settingsBtn).toHaveAttribute('data-tooltip', '设置 · 有新版本可用');
+  await expect(settingsBtn.locator('.nl-rail-badge')).toBeVisible();
+
+  // Leaving About reveals the compact single-line workspace bar without pushing content by hundreds of pixels.
+  await nav.getByRole('button', { name: '图片库', exact: true }).click();
+  const bar = page.locator('.update-bar');
+  await expect(bar).toBeVisible();
+  await expect(bar).toContainText('Lumen 0.2.0 可用');
+  await expect(bar).toContainText('修复若干问题');
+  const barBox = await bar.boundingBox();
+  expect(barBox!.height).toBeLessThanOrEqual(52);
+
+  await bar.getByRole('button', { name: '稍后' }).click();
+  await expect(bar).toHaveCount(0);
   expect(await calls(page)).not.toContain('plugin:updater|download');
+
+  // Pending update remains indicated on the Settings rail icon and actionable inside About.
+  await expect(settingsBtn).toHaveAttribute('data-has-update', 'true');
+  await settingsBtn.click();
+  await page.getByRole('tab', { name: '关于', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Lumen 0.2.0 可用' })).toBeVisible();
+  await expect(page.locator('.update-bar')).toHaveCount(0);
 });
 
 test('portable builds explain why updates are unavailable and offer no check', async ({ page }) => {
