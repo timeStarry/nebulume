@@ -17,7 +17,7 @@ Windows x64，Rust 1.99.1；所有样片操作只读原片，目录、缓存及�
 
 | 检查 | 实际结果 |
 | --- | --- |
-| `cargo test --workspace --locked` | 353 通过，0 失败，3 项既有原生/规模测试默认忽略 |
+| `cargo test --workspace --locked` | 仅本次 PR 提交的干净源码：346 通过，0 失败，3 项既有原生/规模测试默认忽略 |
 | `cargo clippy --workspace --all-targets --locked -- -D warnings` | 通过 |
 | `cargo fmt --all -- --check`、`git diff --check` | 通过 |
 | UI 设计门禁及 Vitest | 设计门禁 0 例外，183 项通过 |
@@ -45,4 +45,4 @@ cargo run -p neb-core --example nikon_z5ii_probe --locked
 
 UI_WORKFLOW 自检：本次无组件、样式、交互、快捷键或虚拟网格修改；状态/视图边界及设计 allowlist 保持原状，设计门禁和 UI 单测通过。主题、动效、1 万张滚动及原生窗口点击验收本次未重跑。macOS/Linux 未验证，本次不提供新增跨平台 CI 结论，也未发布或覆盖当前安装程序。
 
-当前已安装程序仍需退出，再运行 `C:\work\lumen\target\debug\nebulume.exe` 才能使用修复；该文件为本地 debug 构建，未改变已安装版本。验证日志及照片派生预览保存在 Git 忽略的 `.local/z5ii-investigation/`。
+当前已安装程序仍需退出，再运行 `C:\work\lumen\target\debug\nebulume.exe` 才能使用修复；该文件为本地 debug 构建，未改变已安装版本。验证日志及照片派生预览保存在 Git 忽略的 `.local/z5ii-investigation/`；`pr-workspace-tests.log` 与 `pr-clippy.log` 为隔离当前 PR 源码的检查结果。
