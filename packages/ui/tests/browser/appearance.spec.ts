@@ -1,5 +1,18 @@
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { selectChoice } from './fixtures';
+
+const desktopImgCsp = (() => {
+  const conf = JSON.parse(
+    readFileSync(new URL('../../../../crates/neb-app/tauri.conf.json', import.meta.url), 'utf8'),
+  ) as { app: { security: { csp: string } } };
+  const imgSrc = conf.app.security.csp
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith('img-src '));
+  if (!imgSrc) throw new Error('Missing img-src in tauri.conf.json');
+  return imgSrc;
+})();
 
 async function appearance(page: Page) {
   await page
@@ -9,20 +22,68 @@ async function appearance(page: Page) {
   return page.getByLabel('外观主题');
 }
 
-test('Appearance persists and uses a dark mark on a light surface', async ({ page }) => {
+test('Appearance persists and renders every BrandMark cleanly under desktop img-src CSP', async ({
+  page,
+}) => {
+  // Enforce the exact Tauri desktop `img-src` directive so `data:` image regressions fail immediately.
+  await page.addInitScript((imgDirective: string) => {
+    const violations: string[] = [];
+    Object.assign(window, { __cspViolations: violations });
+    document.addEventListener('securitypolicyviolation', (event) => {
+      violations.push(`${event.violatedDirective}:${event.blockedURI}`);
+    });
+    const inject = () => {
+      const meta = document.createElement('meta');
+      meta.httpEquiv = 'Content-Security-Policy';
+      meta.content = imgDirective;
+      document.head.prepend(meta);
+    };
+    if (document.head) inject();
+    else document.addEventListener('DOMContentLoaded', inject, { once: true });
+  }, desktopImgCsp);
+
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('.brand-mark:visible')).toHaveAttribute('src', /brand-mark\.svg/);
+  await expect(page.locator('.brand-mark:visible')).toHaveAttribute('src', /brand-mark.*\.svg/);
   await selectChoice(await appearance(page), 'light');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+
+  // Open About so both the rail mark (24px) and About hero mark (40px) are visible at once.
+  await page.getByRole('tab', { name: '关于', exact: true }).click();
+  const visibleMarks = page.locator('.brand-mark:visible');
+  await expect(visibleMarks).toHaveCount(2);
   await expect
-    .poll(async () => {
-      const source = await page.locator('.brand-mark:visible').getAttribute('src');
-      return source?.startsWith('data:')
-        ? decodeURIComponent(source).includes("fill='#1F1F1F'")
-        : source?.includes('brand-mark-ink');
-    })
+    .poll(async () =>
+      visibleMarks.evaluateAll((els) =>
+        els.every((el) => {
+          const img = el as HTMLImageElement;
+          return (
+            !img.src.startsWith('data:') &&
+            img.src.includes('brand-mark-ink') &&
+            img.complete &&
+            img.naturalWidth > 0
+          );
+        }),
+      ),
+    )
     .toBe(true);
+
+  // Also verify the compact titlebar BrandMark (< 960px) renders cleanly in light mode.
+  await page.setViewportSize({ width: 900, height: 768 });
+  const titlebarMark = page.locator('.nl-titlebar .brand-mark');
+  await expect(titlebarMark).toBeVisible();
+  expect(
+    await titlebarMark.evaluate(
+      (el) => (el as HTMLImageElement).complete && (el as HTMLImageElement).naturalWidth > 0,
+    ),
+  ).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 960 });
+
+  expect(
+    await page.evaluate(() => (window as unknown as { __cspViolations: string[] }).__cspViolations),
+  ).toEqual([]);
+
+  await page.getByRole('tab', { name: '外观与浏览', exact: true }).click();
   await expect(page.locator('body')).toHaveCSS('color', 'rgb(31, 31, 31)');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');

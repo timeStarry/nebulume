@@ -14,6 +14,7 @@ export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(version) },
   server: { port: 5173, strictPort: true },
   envPrefix: ['VITE_', 'TAURI_'],
-  build: { target: 'es2022', outDir: 'dist' },
+  // Tauri's desktop CSP forbids `data:` in `img-src`; never inline small SVG/raster assets as data URIs.
+  build: { target: 'es2022', outDir: 'dist', assetsInlineLimit: 0 },
   test: { environment: 'node', include: ['tests/**/*.test.ts'] },
 });
