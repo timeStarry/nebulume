@@ -1440,13 +1440,24 @@ test('settings sections switch with a segmented control and keep their content',
   await expect(page.getByRole('navigation', { name: '设置分区' })).toHaveCount(0);
   await header.getByRole('tab', { name: '快捷键' }).click();
   await expect(page.getByRole('table', { name: '查看窗口' })).toContainText('显示或隐藏叠加信息');
+  await expect(page.getByRole('table', { name: '查看窗口' })).toContainText('[ / ]');
   await expect(page.getByRole('table', { name: '选图模式' })).toContainText('显示或隐藏叠加信息');
+  await expect(page.getByRole('table', { name: '选图模式' })).toContainText('[ / ]');
   await header.getByRole('tab', { name: '外观与浏览' }).click();
   await page.getByRole('switch', { name: '叠加信息随工具栏淡出' }).click();
   expect(await page.evaluate(() => localStorage.getItem('nebulume.viewer.overlay-fades'))).toBe(
     'true',
   );
-  await expect(page.getByRole('switch', { name: '打标后自动下一张' })).toBeChecked();
+  const autoAdvanceSelect = page.getByRole('combobox', { name: '打标后自动下一张' });
+  await expect(autoAdvanceSelect).toContainText('快（0.2 秒）');
+  await selectChoice(autoAdvanceSelect, 'standard');
+  await expect(autoAdvanceSelect).toContainText('标准（0.45 秒）');
+  expect(await page.evaluate(() => localStorage.getItem('nebulume.cull.auto-advance'))).toBe(
+    'standard',
+  );
+  expect(
+    await page.evaluate(() => localStorage.getItem('nebulume.cull.auto-advance-speed')),
+  ).toBe('standard');
 });
 
 test('choosing a menu action returns focus to the button that opened the menu', async ({

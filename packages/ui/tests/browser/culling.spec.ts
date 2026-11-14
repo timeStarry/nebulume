@@ -55,15 +55,105 @@ test('marks advance after confirmation, keep a frozen queue and undo across phot
   expect(assets.get('photo-2')!.flag).toBe('none');
 });
 
-test('rapid keys are each applied without skipping photos', async ({ page }) => {
+test('rapid keys within the dwell window combine on the current photo and manual navigation cancels pending advance', async ({
+  page,
+}) => {
+  await page.addInitScript(() => localStorage.setItem('nebulume.cull.auto-advance', 'standard'));
   const { assets } = await fixture(page);
   await page.goto('/?viewer=1');
   await expect(hud(page)).toContainText('1 / 3');
-  await page.keyboard.press('1');
+  await page.keyboard.press('p');
   await page.keyboard.press('2');
+  // Still on photo 1 right after both keys; advances once to photo 2 after the 450ms idle dwell.
+  await expect(hud(page)).toContainText('1 / 3');
+  await expect(hud(page)).toContainText('2 / 3');
+  expect(assets.get('photo-1')!.flag).toBe('pick');
+  expect(assets.get('photo-1')!.rating).toBe(2);
+  expect(assets.get('photo-2')!.rating).toBe(0);
+
+  // Manual ArrowRight during dwell moves immediately and cancels the scheduled auto-advance.
+  await page.keyboard.press('3');
+  await page.keyboard.press('ArrowRight');
   await expect(hud(page)).toContainText('3 / 3');
-  expect(assets.get('photo-1')!.rating).toBe(1);
-  expect(assets.get('photo-2')!.rating).toBe(2);
+  expect(assets.get('photo-2')!.rating).toBe(3);
+});
+
+test('bracket keys step ratings with 0–5 saturation, CJK IME codes, and multi-select per-photo undo', async ({
+  page,
+}) => {
+  await page.addInitScript(() => localStorage.setItem('nebulume.cull.auto-advance', 'standard'));
+  const { assets } = await fixture(page);
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: /本地摄影/ })
+    .first()
+    .click();
+  const thumbs = page.locator('.thumbnail');
+  await expect(thumbs).toHaveCount(3);
+
+  // Set photo-1 to 2 stars and photo-2 to 5 stars, then multi-select both and press `]`.
+  await thumbs.nth(0).click();
+  await page.keyboard.press('2');
+  await expect.poll(() => assets.get('photo-1')!.rating).toBe(2);
+  await thumbs.nth(1).click();
+  await page.keyboard.press('5');
+  await expect.poll(() => assets.get('photo-2')!.rating).toBe(5);
+
+  await thumbs.nth(0).click({ modifiers: ['Shift'] });
+  await page.keyboard.press(']');
+  await expect.poll(() => assets.get('photo-1')!.rating).toBe(3);
+  await expect.poll(() => assets.get('photo-2')!.rating).toBe(5);
+
+  // Undo restores photo-1 back to 2 while keeping photo-2 at 5.
+  await page.keyboard.press('Control+z');
+  await expect.poll(() => assets.get('photo-1')!.rating).toBe(2);
+  await expect.poll(() => assets.get('photo-2')!.rating).toBe(5);
+
+  // Enter Cull Mode on photo-3 (0 stars): `[` clamps at 0, then `]` + CJK `】` step up to 2 before advancing.
+  await thumbs.nth(2).click();
+  await page.keyboard.press('Shift+C');
+  await expect(hud(page)).toContainText('3 / 3');
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await expect(hud(page)).toContainText('1 / 3');
+
+  // Switch to plain View mode: `[` steps photo-1 from 2 -> 1 without advancing.
+  await page.keyboard.press('Shift+C');
+  await page.keyboard.press('[');
+  await expect.poll(() => assets.get('photo-1')!.rating).toBe(1);
+
+  // Back in Cull Mode on photo-1 (1 star): `]` + CJK `】` (BracketRight) -> 3 stars, then advances to 2 / 3.
+  await page.keyboard.press('Shift+C');
+  await expect(hud(page)).toContainText('1 / 3');
+  await page.keyboard.press(']');
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '】', code: 'BracketRight', bubbles: true }),
+    );
+  });
+  await expect.poll(() => assets.get('photo-1')!.rating).toBe(3);
+  await expect(hud(page)).toContainText('2 / 3');
+});
+
+test('toolbar auto-advance toggle pauses and restores the configured speed tier', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('nebulume.cull.auto-advance', 'relaxed');
+    localStorage.setItem('nebulume.cull.auto-advance-speed', 'relaxed');
+  });
+  await fixture(page);
+  await page.goto('/?viewer=1');
+  const toggle = page.getByRole('button', { name: '自动下一张' });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => localStorage.getItem('nebulume.cull.auto-advance'))).toBe('off');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => localStorage.getItem('nebulume.cull.auto-advance'))).toBe(
+    'relaxed',
+  );
 });
 
 test('auto-advance off keeps the photo and a failed mark rolls back', async ({ page }) => {
@@ -119,6 +209,7 @@ test('culling shows progress and marks beside the photo, then finishes with expo
   await expect(panel).toContainText('已看 2 / 3');
   await expect(panel).toContainText('1 留用');
   await page.keyboard.press('x');
+  await expect(panel).toContainText('已看 3 / 3');
   await expect(panel).toContainText('1 淘汰');
   await expect(page.locator('.cull-strip-mark.pick')).toHaveCount(1);
   await expect(page.locator('.cull-strip-mark.reject')).toHaveCount(1);

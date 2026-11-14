@@ -20,7 +20,12 @@ import {
   SinglePage,
   Switch,
 } from './ui';
-import { readAutoAdvance, writeAutoAdvance } from './culling';
+import {
+  AUTO_ADVANCE_OPTIONS,
+  readAutoAdvanceMode,
+  writeAutoAdvanceMode,
+  type AutoAdvanceMode,
+} from './culling';
 import {
   readOverlayFades,
   readToolbarAutoHide,
@@ -35,7 +40,7 @@ import { SHORTCUT_GROUPS } from './keymap';
 import type { WorkspaceSection } from './workspace';
 
 function CullingSettings() {
-  const [auto, setAuto] = createSignal(readAutoAdvance());
+  const [autoMode, setAutoMode] = createSignal<AutoAdvanceMode>(readAutoAdvanceMode());
   const [pregenerate, setPregenerate] = createSignal(readPregenerate());
   const [watching, setWatching] = createSignal(readWatchLibraries());
   const [toolbarAutoHide, setToolbarAutoHide] = createSignal(readToolbarAutoHide(localStorage));
@@ -45,20 +50,27 @@ function CullingSettings() {
     void execute<XmpPolicy>('xmp.policy.get')
       .then((res) => setXmpAutoWrite(res?.auto_write ?? true))
       .catch(() => undefined);
+    const syncAutoMode = () => setAutoMode(readAutoAdvanceMode());
+    window.addEventListener('storage', syncAutoMode);
+    onCleanup(() => window.removeEventListener('storage', syncAutoMode));
   });
   return (
     <Group title="浏览与选片">
       <ListRow
         title="打标后自动下一张"
-        description="选片时打星或打旗后，确认动效结束即前进。查看器顶栏可随时切换。"
+        labelFor="cull-auto-advance"
+        description="选片打星、打旗或标色后，无后续操作满设定时长即自动翻到下一张；查看器顶栏可随时一键暂停或恢复。"
         control={
-          <Switch
-            label="打标后自动下一张"
-            checked={auto()}
+          <Select
+            id="cull-auto-advance"
+            size="sm"
+            value={autoMode()}
             onChange={(value) => {
-              setAuto(value);
-              writeAutoAdvance(value);
+              const next = value as AutoAdvanceMode;
+              setAutoMode(next);
+              writeAutoAdvanceMode(next);
             }}
+            options={AUTO_ADVANCE_OPTIONS}
           />
         }
       />

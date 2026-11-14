@@ -96,6 +96,7 @@ import LibraryFilterBar from './library/LibraryFilterBar';
 import DateScrubber from './wall/DateScrubber';
 import { fitRect, fly } from './zoom-transition';
 import { createFeedback, FeedbackStack } from './feedback';
+import { ratingStepDelta, stepRating } from './culling';
 import { COLOR_LABEL_NAMES, groupMarks, keyToColorLabel, markHudText, type UndoEntry } from './undo';
 import { UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
@@ -1275,6 +1276,78 @@ export default function ManagementApp() {
     // asset fields themselves have already been patched successfully.
     if (libraryId() && dirtyLibraries.has(libraryId()!)) await loadAssets(false, true);
   }
+  function patchAssetMarks(
+    marks: { id: string; rating?: number; flag?: Flag | string; color_label?: ColorLabel | string }[],
+  ) {
+    if (!marks.length) return;
+    const values = new Map(marks.map((item) => [item.id, item]));
+    setAssets((items) =>
+      items.map((item) => {
+        const next = values.get(item.id);
+        if (!next) return item;
+        return {
+          ...item,
+          ...(next.rating !== undefined ? { rating: next.rating } : {}),
+          ...(next.flag !== undefined ? { flag: next.flag as Flag } : {}),
+          ...(next.color_label !== undefined ? { color_label: next.color_label as ColorLabel } : {}),
+        };
+      }),
+    );
+    const current = detail()?.asset;
+    const own = current && values.get(current.id);
+    if (current && own)
+      mutateDetail({
+        asset: {
+          ...current,
+          ...(own.rating !== undefined ? { rating: own.rating } : {}),
+          ...(own.flag !== undefined ? { flag: own.flag as Flag } : {}),
+          ...(own.color_label !== undefined ? { color_label: own.color_label as ColorLabel } : {}),
+        },
+        error: '',
+      });
+  }
+  async function writeMarkGroups(
+    groups: { ids: string[]; rating?: number; flag?: string; color_label?: string }[],
+  ) {
+    let batched = false;
+    for (const group of groups) {
+      const fields =
+        Number(group.rating !== undefined) +
+        Number(group.flag !== undefined) +
+        Number(group.color_label !== undefined);
+      if (group.ids.length === 1 && fields === 1) {
+        const id = group.ids[0];
+        if (group.color_label !== undefined) {
+          await acceptAsset(
+            await execute<Asset>('asset.label', { id, color_label: group.color_label }),
+            'color_label',
+          );
+        } else if (group.flag !== undefined) {
+          await acceptAsset(
+            await execute<Asset>('asset.flag', { id, flag: group.flag }),
+            'flag',
+          );
+        } else {
+          await acceptAsset(
+            await execute<Asset>('asset.rate', { id, rating: group.rating }),
+            'rating',
+          );
+        }
+      } else {
+        for (const chunk of chunkIds(group.ids))
+          await execute('asset.mark_batch', {
+            ids: chunk,
+            ...(group.rating !== undefined ? { rating: group.rating } : {}),
+            ...(group.flag !== undefined ? { flag: group.flag } : {}),
+            ...(group.color_label !== undefined ? { color_label: group.color_label } : {}),
+          });
+        batched = true;
+        if (libraryId()) dirtyLibraries.add(libraryId()!);
+      }
+    }
+    // Single writes reconcile through acceptAsset; batches re-read the loaded range.
+    if (batched) await loadAssets(false, true);
+  }
   /**
    * Rates or flags the selection. The grid updates at once; the catalog write follows and a
    * failure restores the previous marks. Every mark is one undo step (Ctrl/⌘+Z) when all items
@@ -1310,81 +1383,9 @@ export default function ManagementApp() {
         mark.flag || mark.color_label ? 'flag' : 'star',
       );
     if (!writeIds.length) return;
-    const patch = (
-      marks: { id: string; rating?: number; flag?: Flag | string; color_label?: ColorLabel | string }[],
-    ) => {
-      if (!marks.length) return;
-      const values = new Map(marks.map((item) => [item.id, item]));
-      setAssets((items) =>
-        items.map((item) => {
-          const next = values.get(item.id);
-          if (!next) return item;
-          return {
-            ...item,
-            ...(next.rating !== undefined ? { rating: next.rating } : {}),
-            ...(next.flag !== undefined ? { flag: next.flag as Flag } : {}),
-            ...(next.color_label !== undefined ? { color_label: next.color_label as ColorLabel } : {}),
-          };
-        }),
-      );
-      const current = detail()?.asset;
-      const own = current && values.get(current.id);
-      if (current && own)
-        mutateDetail({
-          asset: {
-            ...current,
-            ...(own.rating !== undefined ? { rating: own.rating } : {}),
-            ...(own.flag !== undefined ? { flag: own.flag as Flag } : {}),
-            ...(own.color_label !== undefined ? { color_label: own.color_label as ColorLabel } : {}),
-          },
-          error: '',
-        });
-    };
-    const write = async (
-      groups: { ids: string[]; rating?: number; flag?: string; color_label?: string }[],
-    ) => {
-      let batched = false;
-      for (const group of groups) {
-        const fields =
-          Number(group.rating !== undefined) +
-          Number(group.flag !== undefined) +
-          Number(group.color_label !== undefined);
-        if (group.ids.length === 1 && fields === 1) {
-          const id = group.ids[0];
-          if (group.color_label !== undefined) {
-            await acceptAsset(
-              await execute<Asset>('asset.label', { id, color_label: group.color_label }),
-              'color_label',
-            );
-          } else if (group.flag !== undefined) {
-            await acceptAsset(
-              await execute<Asset>('asset.flag', { id, flag: group.flag }),
-              'flag',
-            );
-          } else {
-            await acceptAsset(
-              await execute<Asset>('asset.rate', { id, rating: group.rating }),
-              'rating',
-            );
-          }
-        } else {
-          for (const chunk of chunkIds(group.ids))
-            await execute('asset.mark_batch', {
-              ids: chunk,
-              ...(group.rating !== undefined ? { rating: group.rating } : {}),
-              ...(group.flag !== undefined ? { flag: group.flag } : {}),
-              ...(group.color_label !== undefined ? { color_label: group.color_label } : {}),
-            });
-          batched = true;
-          if (libraryId()) dirtyLibraries.add(libraryId()!);
-        }
-      }
-      // Single writes reconcile through acceptAsset; batches re-read the loaded range.
-      if (batched) await loadAssets(false, true);
-    };
-    patch(changes.map((item) => ({ id: item.id, ...mark })));
+    patchAssetMarks(changes.map((item) => ({ id: item.id, ...mark })));
     // Undo is available at once when previous marks are known; reverting waits for this write.
-    const forward = write([{ ids: writeIds, ...mark }]);
+    const forward = writeMarkGroups([{ ids: writeIds, ...mark }]);
     const entry: UndoEntry | undefined =
       unloadedIds.length === 0
         ? {
@@ -1392,11 +1393,11 @@ export default function ManagementApp() {
             ids: changes.map((item) => item.id),
             revert: async () => {
               await forward;
-              patch(changes);
+              patchAssetMarks(changes);
               try {
-                await write(groupMarks(changes));
+                await writeMarkGroups(groupMarks(changes));
               } catch (e) {
-                patch(changes.map((item) => ({ id: item.id, ...mark })));
+                patchAssetMarks(changes.map((item) => ({ id: item.id, ...mark })));
                 throw e;
               }
             },
@@ -1407,12 +1408,107 @@ export default function ManagementApp() {
       await forward;
     } catch (e) {
       if (entry) feedback.history.remove(entry);
-      patch(changes);
+      patchAssetMarks(changes);
       setError(`标记未保存：${errorMessage(e)}`);
       return;
     }
     if (collections().some((item) => item.kind === 'smart')) void refreshCollections();
     if (ids.length > 1) setNotice(`已标记 ${ids.length} 张照片。`);
+  }
+  /**
+   * Steps each selected photo's rating independently by `+1` or `-1` (saturating at `0..5`),
+   * matching Lightroom's `[` / `]` multi-select behavior with full per-photo undo.
+   */
+  async function stepSelectionRating(delta: 1 | -1, fromKeyboard = false) {
+    const ids = selectedIds();
+    if (!ids.length) return;
+    const byId = new Map(assets().map((item) => [item.id, item]));
+    const missing = new Set(ids.filter((id) => !byId.has(id)));
+    if (missing.size && libraryId()) {
+      const opts = listOptions();
+      for (let offset = 0; missing.size && offset < 10_000; ) {
+        try {
+          const page = await execute<AssetListResult>('asset.list', {
+            ...opts,
+            limit: 1000,
+            offset,
+          });
+          for (const item of page.items) {
+            if (missing.delete(item.id)) byId.set(item.id, item);
+          }
+          offset += page.items.length;
+          if (!page.items.length || offset >= page.total) break;
+        } catch {
+          break;
+        }
+      }
+    }
+    const resolved = ids.map((id) => byId.get(id)).filter((item): item is Asset => !!item);
+    if (!resolved.length) return;
+    const singleTargetRating = resolved.length === 1 ? stepRating(resolved[0].rating, delta) : undefined;
+    if (fromKeyboard) {
+      feedback.hud.show(
+        singleTargetRating !== undefined
+          ? markHudText({ rating: singleTargetRating })
+          : delta > 0
+            ? '星级 +1'
+            : '星级 -1',
+        'star',
+      );
+    }
+    const previous: { id: string; rating: number; flag: Flag; color_label: ColorLabel }[] = [];
+    const nextMarks: { id: string; rating: number }[] = [];
+    for (const item of resolved) {
+      const nextRating = stepRating(item.rating, delta);
+      if (nextRating !== item.rating) {
+        previous.push({
+          id: item.id,
+          rating: item.rating,
+          flag: (item.flag || 'none') as Flag,
+          color_label: (item.color_label || 'none') as ColorLabel,
+        });
+        nextMarks.push({ id: item.id, rating: nextRating });
+      }
+    }
+    if (!nextMarks.length) return;
+    patchAssetMarks(nextMarks);
+    const byNextRating = new Map<number, string[]>();
+    for (const item of nextMarks) {
+      const list = byNextRating.get(item.rating) ?? [];
+      list.push(item.id);
+      byNextRating.set(item.rating, list);
+    }
+    const forward = writeMarkGroups(
+      [...byNextRating.entries()].map(([rating, groupIds]) => ({ ids: groupIds, rating })),
+    );
+    const entry: UndoEntry = {
+      label:
+        ids.length > 1
+          ? `标记 ${previous.length} 张照片`
+          : markHudText({ rating: nextMarks[0].rating }),
+      ids: previous.map((item) => item.id),
+      revert: async () => {
+        await forward;
+        patchAssetMarks(previous);
+        try {
+          await writeMarkGroups(groupMarks(previous));
+        } catch (e) {
+          patchAssetMarks(nextMarks);
+          throw e;
+        }
+      },
+    };
+    feedback.history.push(entry);
+    try {
+      await forward;
+    } catch (e) {
+      feedback.history.remove(entry);
+      patchAssetMarks(previous);
+      setError(`标记未保存：${errorMessage(e)}`);
+      return;
+    }
+    if (collections().some((item) => item.kind === 'smart')) void refreshCollections();
+    if (ids.length > 1) setNotice(`已标记 ${previous.length} 张照片。`);
   }
   async function rate(value: number) {
     const target = selected();
@@ -1816,7 +1912,12 @@ export default function ManagementApp() {
       void openAsset(selected()!);
     }
     else if (event.key.toLowerCase() === 'i') setInfo((value) => !value);
-    else if (/^[0-5]$/.test(event.key)) void markSelection({ rating: Number(event.key) }, true);
+    else if (/^[0-5]$/.test(event.key) && !event.repeat)
+      void markSelection({ rating: Number(event.key) }, true);
+    else if (ratingStepDelta(event) !== null && !event.repeat) {
+      event.preventDefault();
+      void stepSelectionRating(ratingStepDelta(event)!, true);
+    }
     else if (/^[6-9]$/.test(event.key) && !event.repeat) {
       const color = keyToColorLabel(event.key);
       if (color) {

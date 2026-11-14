@@ -1,11 +1,41 @@
-import { describe, expect, it } from 'vitest';
-import { compareWindow, cullKeyAction, nextAfterMark, snapshotQueue } from '../src/culling';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  AUTO_ADVANCE_KEY,
+  AUTO_ADVANCE_MS,
+  AUTO_ADVANCE_SPEED_KEY,
+  autoAdvanceDelayMs,
+  compareWindow,
+  cullKeyAction,
+  nextAfterMark,
+  ratingStepDelta,
+  readAutoAdvance,
+  readAutoAdvanceMode,
+  snapshotQueue,
+  stepRating,
+  toggleAutoAdvanceMode,
+  writeAutoAdvance,
+  writeAutoAdvanceMode,
+} from '../src/culling';
 import type { AssetListResult } from '../src/model';
 
 describe('culling shortcuts', () => {
-  it('maps the culling key table', () => {
+  it('maps the culling key table including bracket rating step keys and CJK IME codes', () => {
     expect(cullKeyAction({ key: '3' })).toEqual({ kind: 'rate', value: 3 });
     expect(cullKeyAction({ key: '0' })).toEqual({ kind: 'rate', value: 0 });
+    expect(cullKeyAction({ key: '[' })).toEqual({ kind: 'rate_step', delta: -1 });
+    expect(cullKeyAction({ key: ']' })).toEqual({ kind: 'rate_step', delta: 1 });
+    expect(cullKeyAction({ key: '【', code: 'BracketLeft' })).toEqual({
+      kind: 'rate_step',
+      delta: -1,
+    });
+    expect(cullKeyAction({ key: '】', code: 'BracketRight' })).toEqual({
+      kind: 'rate_step',
+      delta: 1,
+    });
+    expect(cullKeyAction({ key: '{', code: 'BracketLeft', shiftKey: true })).toBeNull();
+    expect(cullKeyAction({ key: '[', ctrlKey: true })).toBeNull();
+    expect(cullKeyAction({ key: ']', metaKey: true })).toBeNull();
+    expect(ratingStepDelta({ key: '[', altKey: true })).toBeNull();
     expect(cullKeyAction({ key: 'p' })).toEqual({ kind: 'flag', value: 'pick' });
     expect(cullKeyAction({ key: 'X' })).toEqual({ kind: 'flag', value: 'reject' });
     expect(cullKeyAction({ key: 'u' })).toEqual({ kind: 'flag', value: 'none' });
@@ -28,6 +58,53 @@ describe('culling shortcuts', () => {
     expect(cullKeyAction({ key: 'p', altKey: true })).toBeNull();
     expect(cullKeyAction({ key: 'z', ctrlKey: true, shiftKey: true })).toBeNull();
     expect(cullKeyAction({ key: 'q' })).toBeNull();
+  });
+
+  it('clamps rating steps within 0..5 without wrapping', () => {
+    expect(stepRating(0, -1)).toBe(0);
+    expect(stepRating(1, -1)).toBe(0);
+    expect(stepRating(3, 1)).toBe(4);
+    expect(stepRating(5, 1)).toBe(5);
+  });
+});
+
+describe('auto-advance speed tiers and storage migration', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('migrates legacy boolean values and remembers last speed across pause/resume', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+    });
+
+    expect(readAutoAdvanceMode()).toBe('fast');
+    expect(readAutoAdvance()).toBe(true);
+    expect(autoAdvanceDelayMs('fast')).toBe(AUTO_ADVANCE_MS.fast);
+
+    store.set(AUTO_ADVANCE_KEY, 'false');
+    expect(readAutoAdvanceMode()).toBe('off');
+    expect(readAutoAdvance()).toBe(false);
+    expect(autoAdvanceDelayMs('off')).toBeNull();
+
+    store.set(AUTO_ADVANCE_KEY, 'true');
+    expect(readAutoAdvanceMode()).toBe('fast');
+
+    writeAutoAdvanceMode('relaxed');
+    expect(readAutoAdvanceMode()).toBe('relaxed');
+    expect(store.get(AUTO_ADVANCE_SPEED_KEY)).toBe('relaxed');
+
+    const paused = toggleAutoAdvanceMode('relaxed');
+    expect(paused).toBe('off');
+    writeAutoAdvanceMode(paused);
+    expect(readAutoAdvanceMode()).toBe('off');
+
+    const resumed = toggleAutoAdvanceMode('off');
+    expect(resumed).toBe('relaxed');
+    writeAutoAdvance(true);
+    expect(readAutoAdvanceMode()).toBe('relaxed');
   });
 });
 

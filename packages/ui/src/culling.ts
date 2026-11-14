@@ -3,6 +3,7 @@ import type { Asset, AssetListOptions, AssetListResult, ColorLabel, Flag } from 
 /** Actions available while the viewer is in culling mode. */
 export type CullAction =
   | { kind: 'rate'; value: number }
+  | { kind: 'rate_step'; delta: 1 | -1 }
   | { kind: 'flag'; value: Flag }
   | { kind: 'color_label'; value: Exclude<ColorLabel, 'none'> }
   | { kind: 'move'; delta: 1 | -1 }
@@ -19,15 +20,49 @@ export type CullAction =
 
 export interface KeyLike {
   key: string;
+  code?: string;
   shiftKey?: boolean;
   ctrlKey?: boolean;
   metaKey?: boolean;
   altKey?: boolean;
 }
 
+export type AutoAdvanceMode = 'off' | 'fast' | 'standard' | 'relaxed';
+export type AutoAdvanceSpeed = Exclude<AutoAdvanceMode, 'off'>;
+
 export const CULL_QUEUE_LIMIT = 10_000;
-export const CULL_MARK_ANIMATION_MS = 250;
+export const CULL_MARK_ANIMATION_MS = 200;
 export const AUTO_ADVANCE_KEY = 'nebulume.cull.auto-advance';
+export const AUTO_ADVANCE_SPEED_KEY = 'nebulume.cull.auto-advance-speed';
+
+export const AUTO_ADVANCE_MS: Record<AutoAdvanceSpeed, number> = {
+  fast: 200,
+  standard: 450,
+  relaxed: 800,
+};
+
+export const AUTO_ADVANCE_OPTIONS: { value: AutoAdvanceMode; label: string }[] = [
+  { value: 'off', label: '关闭' },
+  { value: 'fast', label: '快（0.2 秒）' },
+  { value: 'standard', label: '标准（0.45 秒）' },
+  { value: 'relaxed', label: '从容（0.8 秒）' },
+];
+
+/** Saturating star step within `0..=5` (`0` + `-1` -> `0`, `5` + `+1` -> `5`). */
+export function stepRating(rating: number, delta: 1 | -1): number {
+  return Math.max(0, Math.min(5, Math.round(rating) + delta));
+}
+
+/**
+ * Returns `-1` for `[` and `+1` for `]`, including physical `BracketLeft` / `BracketRight`
+ * so Chinese / Japanese full-width `【` / `】` still step ratings outside text inputs.
+ */
+export function ratingStepDelta(event: KeyLike): 1 | -1 | null {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return null;
+  if (event.key === '[' || event.code === 'BracketLeft') return -1;
+  if (event.key === ']' || event.code === 'BracketRight') return 1;
+  return null;
+}
 
 export function cullKeyAction(event: KeyLike): CullAction | null {
   if (event.altKey) return null;
@@ -39,6 +74,8 @@ export function cullKeyAction(event: KeyLike): CullAction | null {
     if (key === 'f') return { kind: 'focus' };
     return null;
   }
+  const stepDelta = ratingStepDelta(event);
+  if (stepDelta !== null) return { kind: 'rate_step', delta: stepDelta };
   if (/^[0-5]$/.test(key)) return { kind: 'rate', value: Number(key) };
   if (key === '6') return { kind: 'color_label', value: 'red' };
   if (key === '7') return { kind: 'color_label', value: 'yellow' };
@@ -146,18 +183,54 @@ export async function snapshotQueue(
   return unique.includes(startId) ? unique : [startId, ...unique].slice(0, CULL_QUEUE_LIMIT);
 }
 
-export function readAutoAdvance(): boolean {
+function isAutoAdvanceSpeed(value: string | null): value is AutoAdvanceSpeed {
+  return value === 'fast' || value === 'standard' || value === 'relaxed';
+}
+
+export function readLastAutoAdvanceSpeed(): AutoAdvanceSpeed {
   try {
-    return localStorage.getItem(AUTO_ADVANCE_KEY) !== 'false';
+    const savedSpeed = localStorage.getItem(AUTO_ADVANCE_SPEED_KEY);
+    if (isAutoAdvanceSpeed(savedSpeed)) return savedSpeed;
+    const current = localStorage.getItem(AUTO_ADVANCE_KEY);
+    if (isAutoAdvanceSpeed(current)) return current;
   } catch {
-    return true;
+    /* Fall back to default speed. */
+  }
+  return 'fast';
+}
+
+export function readAutoAdvanceMode(): AutoAdvanceMode {
+  try {
+    const raw = localStorage.getItem(AUTO_ADVANCE_KEY);
+    if (raw === 'off' || raw === 'false') return 'off';
+    if (isAutoAdvanceSpeed(raw)) return raw;
+    return 'fast';
+  } catch {
+    return 'fast';
   }
 }
 
-export function writeAutoAdvance(value: boolean) {
+export function writeAutoAdvanceMode(mode: AutoAdvanceMode) {
   try {
-    localStorage.setItem(AUTO_ADVANCE_KEY, String(value));
+    localStorage.setItem(AUTO_ADVANCE_KEY, mode);
+    if (mode !== 'off') localStorage.setItem(AUTO_ADVANCE_SPEED_KEY, mode);
   } catch {
     /* The choice still applies for this window. */
   }
+}
+
+export function toggleAutoAdvanceMode(current: AutoAdvanceMode): AutoAdvanceMode {
+  return current === 'off' ? readLastAutoAdvanceSpeed() : 'off';
+}
+
+export function autoAdvanceDelayMs(mode: AutoAdvanceMode): number | null {
+  return mode === 'off' ? null : AUTO_ADVANCE_MS[mode];
+}
+
+export function readAutoAdvance(): boolean {
+  return readAutoAdvanceMode() !== 'off';
+}
+
+export function writeAutoAdvance(value: boolean) {
+  writeAutoAdvanceMode(value ? readLastAutoAdvanceSpeed() : 'off');
 }
