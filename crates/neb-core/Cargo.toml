@@ -16,6 +16,7 @@ image = { version = "=0.25.6", default-features = false, features = ["jpeg", "pn
 kamadak-exif = "0.6"
 quick-xml = "0.37"
 rawloader = "=0.37.2"
+rawler = { version = "=0.8.0", default-features = false }
 walkdir = "2"
 dunce = "1"
 tempfile.workspace = true

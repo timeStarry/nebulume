@@ -16,6 +16,7 @@ mod jpeg_range;
 #[cfg(target_os = "macos")]
 mod macos_imageio;
 mod model;
+mod nikon_raw;
 pub mod preview;
 pub mod recycle;
 mod remote_exif;
@@ -69,7 +70,7 @@ pub fn capabilities() -> serde_json::Value {
         "catalog": "sqlite_fts5",
         "raster": raster,
         "raw": {
-            "engine": "rawloader 0.37.2 + bounded CR3/TIFF embedded preview",
+            "engine": "rawloader 0.37.2 + rawler 0.8.0 (Nikon Z5 II) + bounded CR3/TIFF embedded preview",
             "mode": "embedded_camera_jpeg_default_with_optional_sensor_demosaic",
             "preview_fallback": "bounded_standard_tiff_and_cr3_embedded_jpeg; viewing and rendered RGB histograms only",
             "formats": ["dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "pef", "srw", "raw"],
@@ -79,7 +80,7 @@ pub fn capabilities() -> serde_json::Value {
         "histogram": "256-bin RGB and Rec.709 luma over the rendered crop, sampled at max 2048 pixels per side",
         "focus_points": {
             "source": "Nikon Type 3 MakerNote AFInfo2",
-            "versions": ["0300", "0301"],
+            "versions": ["0300", "0301", "0400", "0401", "0402"],
             "mode": "explicit recorded area coordinates, normalized to oriented full image",
             "limitations": "JPEG/classic TIFF only; selected area does not confirm achieved focus. Other vendors/versions and point-grid-only records are unsupported. No inferred positions or private MakerNote fields are returned."
         },

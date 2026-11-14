@@ -4,6 +4,8 @@
 
 ## 本版本验证
 
+2026-11-14 Windows 本地 Nikon Z5 II 修复：真实 14-bit 无损压缩 NEF 的传感器预览、纯内存预览、全尺寸导出及 AFInfo2 0402 对焦坐标通过，原片哈希不变。范围与复现方法见下文「Nikon Z5 II 验证」；此项不代表 macOS/Linux 验证或已发布更新。
+
 0.2.3（2026-11-14）完成可选远端流式/纯内存缓存架构与 JPEG MPF Range 金字塔优化、跨平台统一自研 `<Select>` 下拉组件、侧栏折叠与顶层 Portal 浮层体系、照片墙原生稳定吸顶日期头、无损原片导出（`asset.export_original`）与预设 JPEG 导出解耦、连接测试与启动自动探活，以及默认开启本地 `.xmp` 伴随同步。本机 macOS 全量验证覆盖 Rust workspace（含 `neb-app`）、`rustfmt`、Clippy（`-D warnings`）、设计系统门禁（`check:design` 0 例外）、UI 单元测试、Playwright 浏览器全流程（166 项）、发布脚本单测及真实 Rust/UI bridge（`smoke.mjs --ui`）；Windows x64 与 macOS Universal 双平台安装包、更新包签名及回读核验由 GitHub Actions `Release` 工作流执行。
 
 0.2.2（2026-11-13）完成 **Lumen** 品牌升级、查看器零跳变预解码管线、Schema v14 虚拟组织层、`.xmp` 伴随互通、预设化导出、双盘导入与 CGNAT/证书更新修复。本机 macOS 全量验证覆盖 Rust workspace（含 `neb-app` 壳层 URL 白名单校验）、`rustfmt`、Clippy（`-D warnings`）、设计系统门禁（`check:design` 0 例外）、UI 单元测试、Playwright 浏览器全流程（含关于页 GitHub 外链交互）、`make-icon.py` 全平台图标结构校验、发布脚本单测及真实 Rust/UI bridge（`smoke.mjs --ui`）；Windows x64 安装包与签名回读由 GitHub Actions `Release` 工作流执行。
@@ -38,6 +40,40 @@
 实际 WebDAV 验收覆盖局域网连接、目录浏览、属性索引、系统凭据恢复，以及 JPEG 和部分 NEF 预览。远端拍摄时间补索引的停止、重试和读取预算使用 loopback fixture 验证，不代表实际 NAS 吞吐测试。
 
 浏览器流程使用可控 IPC fixture。真实 Rust stdio 服务与浏览器 bridge 另行验证索引、评级、裁剪、导出和导入；该 bridge 模拟窗口 IPC，不等于原生窗口测试。安装/卸载、默认文件关联和本版本 macOS/Linux 发布验收尚未完成。
+
+## Nikon Z5 II 验证
+
+适配器仅匹配 `NEF`、主 EXIF `Make=NIKON CORPORATION` 及 `Model=NIKON Z5_2`，使用固定版本 rawler 0.8.0 的 `data/cameras/nikon/z5_mk2.toml`；其他相机保留 rawloader。Z5 II 的公共 EXIF 使用现有有界 TIFF 读取器（128 KiB 预算），本地 RAW 使用文件映射，头校验与像素解码复用一个 decoder。映射不等于零 I/O：rawler 在 Unix 上会请求预读。完整像素分配前验证 512 MiB / 120 MP 限制。
+
+共享解码入口自行启动 8 MiB 栈线程，覆盖桌面工作池、预生成、CLI 与纯内存调用；example 无额外栈包装。合成回归从 1 MiB 调用线程验证本地/内存的头探测、像素解码及错误返回。保留全局 `inspect-v2` 指纹，在初始化事务内通过一次性标记，只清空公共机型名匹配 Z5 II 的本地 NEF 指纹；混合图库与故障重试测试覆盖其他机型/JPEG/远端不失效、重启幂等及失败回滚，资产 ID、星级和裁剪保留。
+
+rawler 0.8.0 已在 `NefDecoder::raw_image` 的像素访问前拒绝 HE / HE*，包括 `dummy=true`。合成容器分别覆盖新 MakerNote `0x51` 与旧 `0x93` 中的模式 13/14，验证入库及纯内存检查写入 `Decode Status`、默认内嵌 JPEG 成功、强制传感器预览与 JPEG 导出明确失败且不创建目标。没有真实 HE / HE* 样片验证，不声称支持 TicoRAW。
+
+AFInfo2 布局依据 [ExifTool Nikon.pm](https://github.com/exiftool/exiftool/blob/master/lib/Image/ExifTool/Nikon.pm)：0300/0301 坐标从偏移 42 开始，0400/0401/0402 从偏移 62 开始。测试覆盖五个版本、TIFF/JPEG、大小端、八种方向、无坐标/未知版本、逐字节截断及读取预算。仅返回明确记录的区域，不推测纯 bitmask 坐标或暴露 MakerNote 原文。
+
+| 实片检查（Windows x64） | 结果 |
+| --- | --- |
+| 默认内嵌 / 强制传感器预览 | 来源分别为 `embedded_jpeg` / `raw_demosaic`，均为 1707×2560，主 EXIF 方向 8 |
+| 纯内存传感器预览 | 1707×2560，Decoder 正确标注 rawler |
+| 全尺寸 JPEG 导出 | 4032×6048；同名目标再次导出被拒绝 |
+| 本地及有界 Read+Seek 对焦读取 | 一致返回 `available`，参考帧 4032×6048，1 个区域 |
+| 旧缓存升级 | 重开图库后更新不支持状态，保留资产 ID 与 3 星标记 |
+| 原片完整性 | 前后 SHA-256 一致；目录、缓存及导出均在隔离临时目录 |
+
+基础传感器显影与相机直出亮度、色彩有差异。实片工具由环境变量指定一张自有样片，不提交相机图像或私有元数据：
+
+```powershell
+# 将环境变量设为自有 Z5 II 无损压缩 NEF 的绝对路径。
+cargo run -p neb-core --example nikon_z5ii_probe --locked
+```
+
+环境变量名为 `NEBULUME_NIKON_Z5II_SAMPLE`；可传一个尚不存在的输出目录作为首参数，保存两种预览及 `focus.json`。
+
+本次 review 修订在 rebase 最新主分支后验证：`cargo test --workspace --locked` 为 351 通过、0 失败、3 项既有测试忽略；workspace/all-targets Clippy（`-D warnings`）、fmt 与差异空白检查通过。UI 189 项单测、设计门禁（0 例外）、TypeScript 与 Vite 生产构建通过；直接使用已有安装的工具验证隔离工作树。`cargo build -p neb-app -p neb-cli --features tauri/custom-protocol --locked` 通过，桌面 debug 构建包含当前前端资源。新增稀疏 TIFF 回归验证 256 MiB 本地容器仅保留有界公共 EXIF，流式元数据读取同样不复制完整 TIFF。
+
+依赖显式设置 `default-features=false`。rawler 0.8.0 未声明默认特性，`backtrace`、`jxl-oxide` 及其传递依赖属于必选依赖，因此 Cargo.lock 不会因此缩减；未启用可选的 `clap` / `rawdb` / `inspector`。
+
+UI_WORKFLOW 自检：本次没有组件、样式、交互、快捷键或虚拟网格修改；未新增设计 allowlist。主题、动效、1 万张滚动及原生窗口点击验收本次未重跑。
 
 ## 运行检查
 

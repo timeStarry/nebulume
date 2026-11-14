@@ -19,6 +19,7 @@ use crate::{
 };
 
 mod collections;
+mod nikon_upgrade;
 mod query;
 mod scan;
 mod xmp_sync;
@@ -483,6 +484,7 @@ impl Core {
                 value TEXT NOT NULL
             );",
         )?;
+        nikon_upgrade::invalidate(&migration)?;
         migration.commit()?;
         database.execute(
      "DELETE FROM assets WHERE trashed_at IS NOT NULL AND trashed_at < datetime('now','-30 days')",
