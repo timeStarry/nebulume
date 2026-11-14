@@ -4,7 +4,7 @@
 
 ## 本版本验证
 
-2026-11-14 Windows 本地 Nikon Z5 II 修复：真实 14-bit 无损压缩 NEF 的传感器预览、纯内存预览、全尺寸导出及 AFInfo2 0402 对焦坐标通过，原片哈希不变。范围与复现方法见下文「Nikon Z5 II 验证」；此项不代表 macOS/Linux 验证或已发布更新。
+0.2.4（2026-11-14）完成 Nikon Z5 II（`NIKON Z5_2`）无损压缩 NEF 传感器显影与导出（`rawler 0.8.0` 定向接入、`8 MiB` 栈隔离、有界 EXIF 读取与存量缓存一次性定向刷新）、Nikon Expeed 7 `AFInfo2` `0400/0401/0402` 对焦区域叠加、应用内更新分层交互改造、浅色主题品牌徽标桌面 CSP 修复及全局顶层 Portal `[data-tooltip]` 重构。范围与实片复现方法见下文「Nikon Z5 II 验证」；本机 macOS 全量验证覆盖 Rust workspace（含 `neb-app`）、`rustfmt`、Clippy（`-D warnings`）、设计系统门禁（`check:design` 0 例外）、UI 单元测试、Playwright 浏览器全流程与发布脚本单测；Windows x64 与 macOS Universal 双平台安装包、更新包签名及回读核验由 GitHub Actions `Release` 工作流执行。
 
 0.2.3（2026-11-14）完成可选远端流式/纯内存缓存架构与 JPEG MPF Range 金字塔优化、跨平台统一自研 `<Select>` 下拉组件、侧栏折叠与顶层 Portal 浮层体系、照片墙原生稳定吸顶日期头、无损原片导出（`asset.export_original`）与预设 JPEG 导出解耦、连接测试与启动自动探活，以及默认开启本地 `.xmp` 伴随同步。本机 macOS 全量验证覆盖 Rust workspace（含 `neb-app`）、`rustfmt`、Clippy（`-D warnings`）、设计系统门禁（`check:design` 0 例外）、UI 单元测试、Playwright 浏览器全流程（166 项）、发布脚本单测及真实 Rust/UI bridge（`smoke.mjs --ui`）；Windows x64 与 macOS Universal 双平台安装包、更新包签名及回读核验由 GitHub Actions `Release` 工作流执行。
 
