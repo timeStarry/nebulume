@@ -206,10 +206,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             format!("{} × {}", raw.width, raw.height),
         );
         metadata.insert("CFA".into(), raw.cfa.name.clone());
-        metadata.insert(
-            "Decoder".into(),
-            "rawloader 0.37.2 · basic sensor rendering".into(),
-        );
+        metadata.insert("Decoder".into(), raw_decoder_label(path, &raw).into());
         let (width, height) = raw_dimensions(&raw)?;
         (
             width,
@@ -292,6 +289,13 @@ fn raw_header(path: &Path) -> Result<rawloader::RawImage> {
     if extension(path) == "cr3" {
         bail!("E_UNSUPPORTED_CODEC: Canon CR3 decoding is not available in this build");
     }
+    if extension(path) == "nef"
+        && read_parsed_exif(path)
+            .as_ref()
+            .is_some_and(crate::nikon_raw::supports)
+    {
+        return crate::nikon_raw::decode_path(path, true);
+    }
     let mut file = File::open(path)?;
     let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rawloader::decode_dummy(&mut file)
@@ -303,6 +307,14 @@ fn raw_header(path: &Path) -> Result<rawloader::RawImage> {
     check_dimensions(u32::try_from(raw.width)?, u32::try_from(raw.height)?)?;
     raw_dimensions(&raw)?;
     Ok(raw)
+}
+
+fn raw_decoder_label(path: &Path, raw: &rawloader::RawImage) -> &'static str {
+    if extension(path) == "nef" && raw.model == crate::nikon_raw::MODEL {
+        crate::nikon_raw::DECODER
+    } else {
+        "rawloader 0.37.2 · basic sensor rendering"
+    }
 }
 
 fn raw_dimensions(raw: &rawloader::RawImage) -> Result<(u32, u32)> {
@@ -492,10 +504,14 @@ fn finish_frame(
 }
 
 fn render_sensor(path: &Path, max_side: Option<u32>) -> Result<(DynamicImage, u8)> {
-    raw_header(path)?;
-    let raw = std::panic::catch_unwind(|| rawloader::decode_file(path))
+    let header = raw_header(path)?;
+    let raw = if extension(path) == "nef" && header.model == crate::nikon_raw::MODEL {
+        crate::nikon_raw::decode_path(path, false)?
+    } else {
+        std::panic::catch_unwind(|| rawloader::decode_file(path))
         .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected this file"))?
-        .context("E_UNSUPPORTED_CODEC: RAW decoding failed; this camera or compression may be unsupported")?;
+        .context("E_UNSUPPORTED_CODEC: RAW decoding failed; this camera or compression may be unsupported")?
+    };
     let orientation = Orientation::from_exif(raw.orientation.to_u16() as u8)
         .unwrap_or(Orientation::NoTransforms)
         .to_exif();
@@ -924,17 +940,28 @@ pub fn stream_preview_from_bytes(
     };
 
     let (full_width, full_height, frame) = if kind(&ext) == Some("raw") {
+        let modern_nikon =
+            ext == "nef" && parsed_exif.as_ref().is_some_and(crate::nikon_raw::supports);
+        let decoder_label = if modern_nikon {
+            crate::nikon_raw::DECODER
+        } else {
+            "rawloader 0.37.2 · basic sensor rendering"
+        };
         let raw_limit = scaled_decode_limit(Some(target_max), crop);
         let render_mem_sensor = |limit: Option<u32>| -> Result<(DynamicImage, u8, u32, u32)> {
             if ext == "cr3" {
                 bail!("E_UNSUPPORTED_CODEC: Canon CR3 decoding is not available in this build");
             }
-            let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut reader = Cursor::new(bytes);
-                rawloader::decode(&mut reader)
-            }))
-            .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected streamed file"))?
-            .context("E_UNSUPPORTED_CODEC: Streamed RAW decoding failed")?;
+            let raw = if modern_nikon {
+                crate::nikon_raw::decode_bytes(bytes, false)?
+            } else {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut reader = Cursor::new(bytes);
+                    rawloader::decode(&mut reader)
+                }))
+                .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected streamed file"))?
+                .context("E_UNSUPPORTED_CODEC: Streamed RAW decoding failed")?
+            };
             let (mut fw, mut fh) = raw_dimensions(&raw)?;
             let orient_enum = Orientation::from_exif(raw.orientation.to_u16() as u8)
                 .unwrap_or(Orientation::NoTransforms);
@@ -953,10 +980,7 @@ pub fn stream_preview_from_bytes(
         if prefer_raw {
             let (img, orient, fw, fh) = render_mem_sensor(raw_limit)
                 .context("此 RAW 格式暂不支持传感器原始显影，请使用相机内嵌预览模式查看。")?;
-            metadata.insert(
-                "Decoder".into(),
-                "rawloader 0.37.2 · basic sensor rendering".into(),
-            );
+            metadata.insert("Decoder".into(), decoder_label.into());
             (
                 fw,
                 fh,
@@ -979,10 +1003,7 @@ pub fn stream_preview_from_bytes(
             )
         } else {
             let (img, orient, fw, fh) = render_mem_sensor(raw_limit)?;
-            metadata.insert(
-                "Decoder".into(),
-                "rawloader 0.37.2 · basic sensor rendering".into(),
-            );
+            metadata.insert("Decoder".into(), decoder_label.into());
             (
                 fw,
                 fh,

@@ -366,16 +366,21 @@ impl<R: Read + Seek> Reader<R> {
         }
         let af = af.span(maker, order, 1, MAX_AF_BYTES)?;
         let version = self.read(af.part(0, 4)?)?;
-        // These exact versions share the documented Nikon AFInfo2 v0300 layout.
-        // Point-grid codes and inferred positions are intentionally not decoded.
-        if version != b"0300" && version != b"0301" {
-            return Ok(FocusInfo::unavailable(
-                "unsupported",
-                "暂不支持此 Nikon AFInfo2 版本。",
-                orientation,
-                Some("nikon_afinfo2"),
-            ));
-        }
+        // Expeed 7 moves the explicit area by 20 bytes (Z5 II uses 0402).
+        // Exact versions only; never interpret point-grid codes as coordinates.
+        // Layout: ExifTool Nikon::AFInfo2V0300 / AFInfo2V0400.
+        let area_offset = match version.as_slice() {
+            b"0300" | b"0301" => 42,
+            b"0400" | b"0401" | b"0402" => 62,
+            _ => {
+                return Ok(FocusInfo::unavailable(
+                    "unsupported",
+                    "暂不支持此 Nikon AFInfo2 版本。",
+                    orientation,
+                    Some("nikon_afinfo2"),
+                ))
+            }
+        };
         let coordinates_available = self.read(af.part(7, 1)?)?[0];
         if coordinates_available != 1 {
             return Ok(FocusInfo::unavailable(
@@ -387,7 +392,7 @@ impl<R: Read + Seek> Reader<R> {
         }
         // Only read dimensions and the recorded area. Do not export private
         // MakerNote fields, point bitmaps, or camera/owner identifiers.
-        let values = self.read(af.part(42, 12)?)?;
+        let values = self.read(af.part(area_offset, 12)?)?;
         let numbers: Vec<_> = values
             .as_chunks::<2>()
             .0
@@ -528,6 +533,15 @@ mod tests {
     const MAKER_TIFF: usize = MAKER_OFFSET + 10;
     const AF_ENTRY: usize = MAKER_TIFF + 10;
     const AF_OFFSET: usize = MAKER_TIFF + 38;
+    const VERSIONS: [&[u8; 4]; 5] = [b"0300", b"0301", b"0400", b"0401", b"0402"];
+
+    fn coordinate_offset(version: &[u8; 4]) -> usize {
+        if version.starts_with(b"04") {
+            62
+        } else {
+            42
+        }
+    }
 
     fn put16(bytes: &mut [u8], offset: usize, value: u16, little: bool) {
         bytes[offset..offset + 2].copy_from_slice(&if little {
@@ -577,7 +591,8 @@ mod tests {
         version: &[u8; 4],
     ) -> Vec<u8> {
         let private = b"PRIVATE-FIXTURE-SERIAL";
-        let mut bytes = vec![0; AF_OFFSET + 60 + private.len()];
+        let af_length = coordinate_offset(version) + 18;
+        let mut bytes = vec![0; AF_OFFSET + af_length + private.len()];
         header(&mut bytes, 0, outer_little);
         put16(&mut bytes, 8, 3, outer_little);
         entry(&mut bytes, 10, 0x010f, 2, 6, 50, outer_little);
@@ -614,14 +629,22 @@ mod tests {
         bytes[MAKER_OFFSET..MAKER_TIFF].copy_from_slice(b"Nikon\0\x02\x10\0\0");
         header(&mut bytes, MAKER_TIFF, maker_little);
         put16(&mut bytes, MAKER_TIFF + 8, 2, maker_little);
-        entry(&mut bytes, AF_ENTRY, 0x00b7, 7, 60, 38, maker_little);
+        entry(
+            &mut bytes,
+            AF_ENTRY,
+            0x00b7,
+            7,
+            af_length as u32,
+            38,
+            maker_little,
+        );
         entry(
             &mut bytes,
             AF_ENTRY + 12,
             0x001d,
             2,
             private.len() as u32,
-            98,
+            (38 + af_length) as u32,
             maker_little,
         );
         bytes[AF_OFFSET..AF_OFFSET + 4].copy_from_slice(version);
@@ -629,9 +652,14 @@ mod tests {
         bytes[AF_OFFSET + 6] = 0; // A disabled point-grid schema does not invalidate explicit coordinates.
         bytes[AF_OFFSET + 7] = 1;
         for (index, value) in [400, 300, 100, 90, 40, 60].into_iter().enumerate() {
-            put16(&mut bytes, AF_OFFSET + 42 + index * 2, value, maker_little);
+            put16(
+                &mut bytes,
+                AF_OFFSET + coordinate_offset(version) + index * 2,
+                value,
+                maker_little,
+            );
         }
-        bytes[AF_OFFSET + 60..].copy_from_slice(private);
+        bytes[AF_OFFSET + af_length..].copy_from_slice(private);
         bytes
     }
 
@@ -666,7 +694,7 @@ mod tests {
     fn supported_versions_use_maker_byte_order_in_both_tiff_and_jpeg() {
         for outer in [false, true] {
             for maker in [false, true] {
-                for version in [b"0300", b"0301"] {
+                for version in VERSIONS {
                     let bytes = fixture(outer, maker, 1, version);
                     for container in [bytes.clone(), jpeg(&bytes)] {
                         let info = inspect(container);
@@ -724,17 +752,19 @@ mod tests {
             [0.2, 0.7, 0.2, 0.1],
         ];
         for orientation in 1..=8 {
-            let info = inspect(fixture(true, true, orientation, b"0301"));
-            assert_region(&info, expected[usize::from(orientation - 1)]);
-            assert_eq!(info.orientation, orientation);
-            assert_eq!(
-                (info.image_width, info.image_height),
-                if orientation >= 5 {
-                    (Some(300), Some(400))
-                } else {
-                    (Some(400), Some(300))
-                }
-            );
+            for version in VERSIONS {
+                let info = inspect(fixture(true, true, orientation, version));
+                assert_region(&info, expected[usize::from(orientation - 1)]);
+                assert_eq!(info.orientation, orientation);
+                assert_eq!(
+                    (info.image_width, info.image_height),
+                    if orientation >= 5 {
+                        (Some(300), Some(400))
+                    } else {
+                        (Some(400), Some(300))
+                    }
+                );
+            }
         }
     }
 
@@ -746,19 +776,21 @@ mod tests {
             put16(&mut bytes, offset, 0xffff, true);
             assert_eq!(inspect(bytes).status, "missing");
         }
-        for version in [b"0100", b"0200", b"0302", b"0400", b"9999"] {
+        for version in [b"0100", b"0200", b"0302", b"0403", b"0499", b"9999"] {
             let info = inspect(fixture(true, true, 1, version));
             assert_eq!(info.status, "unsupported");
             assert!(info.regions.is_empty());
         }
-        for flag in [0, 2, 255] {
-            let mut bytes = fixture(true, true, 1, b"0300");
-            bytes[AF_OFFSET + 7] = flag;
-            bytes[AF_OFFSET + 6] = 8;
-            bytes[AF_OFFSET + 10] = 255; // Used-point bitmap must not become guessed coordinates.
-            let info = inspect(bytes);
-            assert_eq!(info.status, "unsupported");
-            assert!(info.regions.is_empty());
+        for version in VERSIONS {
+            for flag in [0, 2, 255] {
+                let mut bytes = fixture(true, true, 1, version);
+                bytes[AF_OFFSET + 7] = flag;
+                bytes[AF_OFFSET + 6] = 8;
+                bytes[AF_OFFSET + 10] = 255; // Used-point bitmap must not become guessed coordinates.
+                let info = inspect(bytes);
+                assert_eq!(info.status, "unsupported");
+                assert!(info.regions.is_empty());
+            }
         }
         let mut bytes = fixture(true, true, 1, b"0300");
         bytes[50..56].copy_from_slice(b"CANON\0");
@@ -768,23 +800,30 @@ mod tests {
 
     #[test]
     fn invalid_dimensions_bounds_and_orientation_are_not_clamped_or_guessed() {
-        for (field, value) in [
-            (0, 0),
-            (1, 0),
-            (4, 0),
-            (5, 0),
-            (2, 0),
-            (3, 0),
-            (2, 400),
-            (3, 300),
-            (4, 401),
-            (5, 301),
-        ] {
-            let mut bytes = fixture(true, true, 1, b"0301");
-            put16(&mut bytes, AF_OFFSET + 42 + field * 2, value, true);
-            let info = inspect(bytes);
-            assert_eq!(info.status, "unsupported");
-            assert!(info.regions.is_empty());
+        for version in VERSIONS {
+            for (field, value) in [
+                (0, 0),
+                (1, 0),
+                (4, 0),
+                (5, 0),
+                (2, 0),
+                (3, 0),
+                (2, 400),
+                (3, 300),
+                (4, 401),
+                (5, 301),
+            ] {
+                let mut bytes = fixture(true, true, 1, version);
+                put16(
+                    &mut bytes,
+                    AF_OFFSET + coordinate_offset(version) + field * 2,
+                    value,
+                    true,
+                );
+                let info = inspect(bytes);
+                assert_eq!(info.status, "unsupported");
+                assert!(info.regions.is_empty());
+            }
         }
         for orientation in [0, 9, 255] {
             assert_eq!(
@@ -799,6 +838,25 @@ mod tests {
 
     #[test]
     fn truncated_and_out_of_container_offsets_fail_without_signature_searches() {
+        for version in VERSIONS {
+            let bytes = fixture(true, true, 1, version);
+            for length in 0..bytes.len() {
+                assert_ne!(
+                    inspect(bytes[..length].to_vec()).status,
+                    "available",
+                    "{version:?} length={length}"
+                );
+            }
+            // A valid-looking legacy area must not rescue truncated 040x coordinates.
+            let mut escaped = bytes.clone();
+            put32(
+                &mut escaped,
+                AF_ENTRY + 4,
+                (coordinate_offset(version) + 11) as u32,
+                true,
+            );
+            assert_eq!(inspect(escaped).status, "unsupported");
+        }
         let bytes = fixture(true, true, 1, b"0301");
         for length in 0..bytes.len() {
             assert_ne!(
@@ -818,6 +876,29 @@ mod tests {
         let mut fake = b"unrelated payload Nikon\0\x02\x10\0\0".to_vec();
         fake.extend_from_slice(&bytes);
         assert_eq!(inspect(fake).status, "unsupported");
+    }
+
+    #[test]
+    fn z5ii_0402_recorded_area_uses_expeed7_offsets_and_portrait_orientation() {
+        let mut bytes = fixture(true, true, 8, b"0402");
+        bytes[MAKER_OFFSET + 7] = 0x11;
+        for (index, value) in [6048, 4032, 3023, 2016, 293, 316].into_iter().enumerate() {
+            put16(&mut bytes, AF_OFFSET + 62 + index * 2, value, true);
+        }
+        let info = inspect(bytes);
+        assert_region(
+            &info,
+            [
+                1858.0 / 4032.0,
+                2878.5 / 6048.0,
+                316.0 / 4032.0,
+                293.0 / 6048.0,
+            ],
+        );
+        assert_eq!(
+            (info.image_width, info.image_height),
+            (Some(4032), Some(6048))
+        );
     }
 
     #[test]

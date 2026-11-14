@@ -98,13 +98,15 @@ Metadata uses human-readable keys (Camera, Lens, ISO etc); absent data remains a
 
 `asset.list.rating` 表示最低星级，`asset.rate.rating` 为 0–5 整数。预览档位为五档：`t256`/`t512`/`t1024`/`p2560`/`full`（最长边 256/512/1024/2560/9600px）；网格按滑块尺寸与 devicePixelRatio 选档，最高 `t1024`；查看器默认请求 `p2560`，放大超过 `p2560` 分辨率时后台无缝升级到 `full`。直方图基于已应用裁剪的渲染图，不能作为传感器 RAW 直方图。预览与 JPEG 导出保留源文件内嵌 ICC 配置（如 Display P3 / Adobe RGB），若相机内嵌 JPEG 或源文件未附 ICC 但 EXIF 标注 `ColorSpace=2` / `InteropIndex=R03` 则自动合成标准 `Adobe RGB (1998)` ICC v2.1 配置；导出剥离源 EXIF，永不修改原文件。
 
-`FocusInfo={status:'available'|'missing'|'unsupported',reason?:string,source:'nikon_afinfo2'|null,coordinate_space:'oriented_full_image',orientation:number,image_width?:number,image_height?:number,regions:[{x,y,width,height,kind:'selected'|'active'}]}`。区域为按主EXIF方向校正后的完整图像归一化矩形，未应用用户裁剪；宽高是对应方向下AF坐标帧尺寸。当前只解析标准JPEG EXIF/TIFF中的Nikon Type3 MakerNote（2.10/2.11）AFInfo2 0300/0301显式坐标，不推断纯点位bitmask、不读取其他私有字段、不返回MakerNote原文。记录缺失与格式/版本不支持明确区分，损坏或越界数据不猜测为中心点。
+`FocusInfo={status:'available'|'missing'|'unsupported',reason?:string,source:'nikon_afinfo2'|null,coordinate_space:'oriented_full_image',orientation:number,image_width?:number,image_height?:number,regions:[{x,y,width,height,kind:'selected'|'active'}]}`。区域为按主EXIF方向校正后的完整图像归一化矩形，未应用用户裁剪；宽高是对应方向下AF坐标帧尺寸。当前只解析标准JPEG EXIF/TIFF（含NEF）中的Nikon Type3 MakerNote（2.10/2.11）AFInfo2 0300/0301、0400/0401/0402显式坐标；040x使用独立的Expeed 7布局（Z5 II实片为0402），不推断纯点位bitmask、不读取其他私有字段、不返回MakerNote原文。记录缺失与格式/版本不支持明确区分，损坏或越界数据不猜测为中心点。
 
 查看器核对实际预览的方向及帧比例后，按实际crop映射并裁边区域，跟随缩放/平移；无法可靠显示时将对焦按钮置灰，原因放在悬停提示与可访问描述中，不占用画布。裁剪编辑期间暂隐藏对焦框。选定区域不代表合焦成功或最终最清晰区域，锁焦后重新构图、主体移动或后期编辑可使其不再对应当前主体。
 
 RAW 传感器解码失败时，查看与直方图可回退到标准 TIFF IFD / IFD1 / SubIFD 中最大的可解码内嵌 JPEG，`source=embedded_jpeg`。界面明确标识“相机内嵌预览 · RAW 原始解码不可用”。若 RAW 元数据头也无法解析，Asset 宽高使用方向校正后的预览尺寸，并附 `Preview Source/Preview Dimensions/Decode Status`，不能视为传感器分辨率；元数据头可读时仍保留原始尺寸，实际渲染来源以预览/直方图响应为准。JPEG 自身有效 EXIF 方向优先，再采用所在 IFD 和主/父 IFD 方向。`asset.export` 始终要求 RAW 传感器解码成功，绝不悄悄导出内嵌预览。
 
 该回退只读取经典 TIFF 明确标注的 JPEGInterchangeFormat/Length，或 Compression 6/7 的完整单条 JPEG strip；不扫描 JPEG 签名、不解析 MakerNote/BigTIFF、不拼接多 strip。上限：32 个 IFD、深度 8、每目录 1024/总计 4096 条目、16 个候选、单 JPEG 32 MiB、累计读取 96 MiB、目录元数据 1 MiB、单图 120 MP、候选累计解码 240 MP；原文件仍限制 512 MiB。EXIF ASCII 字段去除空白/NUL 填充，空字段省略，原始有效字段保留在 EXIF 展开区。
+
+Nikon Z5 II（EXIF `NIKON Z5_2`）使用固定版本 rawler 0.8.0 的机型资料与传感器解码，适用于本地预览、纯内存预览及 JPEG 导出；其余相机继续使用 rawloader 0.37.2。Z5 II 仍走共享基础显影流程并返回 `source=raw_demosaic`，`Decoder` 标注实际后端；默认相机内嵌预览保持 `source=embedded_jpeg`。不因此宣称支持其他 rawler 机型或 CR3 传感器显影。
 
 ## 本机缓存（service + core/cache）
 

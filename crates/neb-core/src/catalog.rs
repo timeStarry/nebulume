@@ -40,7 +40,7 @@ const LIBRARY_COLUMNS: &str =
     "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg,location_id";
 // Bump when inspection semantics change. This lives only in the private cache
 // fingerprint, so old catalogs upgrade on access without rewriting user EXIF.
-pub(super) const INSPECTION_VERSION: &str = "inspect-v2";
+pub(super) const INSPECTION_VERSION: &str = "inspect-v3";
 const PREVIEW_MEMORY_ENTRIES: usize = 256;
 const PREVIEW_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 
