@@ -1,11 +1,7 @@
 //! Modern Nikon support without changing the established decoder for other cameras.
 //! Adapt only the verified Z5 II Bayer layout to the shared basic development path.
 
-use std::{
-    fs::File,
-    io::{Cursor, Read},
-    path::Path,
-};
+use std::path::Path;
 
 use anyhow::{anyhow, ensure, Context, Result};
 use exif::{In, Tag};
@@ -13,6 +9,9 @@ use rawler::{decoders::RawDecodeParams, imgop::xyz::Illuminant, rawsource::RawSo
 
 pub(crate) const MODEL: &str = "NIKON Z5_2";
 pub(crate) const DECODER: &str = "rawler 0.8.0 · basic sensor rendering";
+
+#[cfg(test)]
+mod regression;
 
 pub(crate) fn supports(exif: &exif::Exif) -> bool {
     let text = |tag| -> Option<&[u8]> {
@@ -26,51 +25,93 @@ pub(crate) fn supports(exif: &exif::Exif) -> bool {
     text(Tag::Make) == Some(b"NIKON CORPORATION") && text(Tag::Model) == Some(MODEL.as_bytes())
 }
 
-pub(crate) fn decode_path(path: &Path, dummy: bool) -> Result<rawloader::RawImage> {
-    let mut bytes = Vec::new();
-    File::open(path)?
-        .take(super::imaging::MAX_FILE_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    decode_bytes(&bytes, dummy)
+pub(crate) fn decode_path(
+    path: &Path,
+    exif: &exif::Exif,
+    dummy: bool,
+) -> Result<rawloader::RawImage> {
+    let info = path.metadata()?;
+    ensure!(info.is_file(), "E_INVALID: Nikon RAW is not a regular file");
+    check_size(info.len())?;
+    let orientation = orientation(exif)?;
+    decoder_thread(|| {
+        // Map the local source instead of copying the entire NEF into a Vec.
+        let source = RawSource::new(path)?;
+        check_size(source.len() as u64)?;
+        decode_source(&source, orientation, dummy)
+    })
 }
 
-pub(crate) fn decode_bytes(bytes: &[u8], dummy: bool) -> Result<rawloader::RawImage> {
+pub(crate) fn decode_bytes(
+    bytes: &[u8],
+    exif: &exif::Exif,
+    dummy: bool,
+) -> Result<rawloader::RawImage> {
+    check_size(bytes.len() as u64)?;
+    let orientation = orientation(exif)?;
+    decoder_thread(|| decode_source(&RawSource::new_from_slice(bytes), orientation, dummy))
+}
+
+fn check_size(length: u64) -> Result<()> {
     ensure!(
-        !bytes.is_empty() && bytes.len() as u64 <= super::imaging::MAX_FILE_BYTES,
+        length > 0 && length <= super::imaging::MAX_FILE_BYTES,
         "E_LIMIT: Nikon RAW exceeds the 512 MiB decode limit"
     );
-    let exif = exif::Reader::new()
-        .continue_on_error(true)
-        .read_from_container(&mut Cursor::new(bytes))
-        .or_else(|error| error.distill_partial_result(|_| {}))?;
+    Ok(())
+}
+
+fn orientation(exif: &exif::Exif) -> Result<u16> {
     ensure!(
-        supports(&exif),
+        supports(exif),
         "E_UNSUPPORTED_CODEC: Unverified Nikon camera"
     );
-    let orientation = match exif.get_field(Tag::Orientation, In::PRIMARY) {
+    Ok(match exif.get_field(Tag::Orientation, In::PRIMARY) {
         Some(field) => field
             .value
             .get_uint(0)
             .filter(|value| (1..=8).contains(value))
             .context("E_DECODE: Invalid Nikon EXIF orientation")?,
         None => 1,
+    } as u16)
+}
+
+// rawler's camera-table initialization needs more than the default Windows
+// worker stack. Protect every caller, including Tauri blocking/pregenerate
+// workers. Stack overflow cannot be recovered with catch_unwind.
+fn decoder_thread(
+    decode: impl FnOnce() -> Result<rawloader::RawImage> + Send,
+) -> Result<rawloader::RawImage> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("nikon-raw".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn_scoped(scope, decode)
+            .context("E_DECODE: Cannot start Nikon RAW decoder")?
+            .join()
+            .map_err(|_| anyhow!("E_DECODE: Nikon RAW decoder rejected this file"))?
+    })
+}
+
+fn decode_source(source: &RawSource, orientation: u16, dummy: bool) -> Result<rawloader::RawImage> {
+    // Parse the TIFF and MakerNote once; reuse this decoder for both passes.
+    let decoder = rawler::get_decoder(source)
+        .context("E_UNSUPPORTED_CODEC: Nikon RAW metadata decoding failed")?;
+    let params = RawDecodeParams::default();
+    // Validate dimensions before allocating the sensor plane, including the
+    // in-memory path. A dummy decode must never become the displayed image.
+    // rawler 0.8.0 rejects Nikon HE/HE* before pixel access even when dummy.
+    let header = decoder
+        .raw_image(source, &params, true)
+        .context("E_UNSUPPORTED_CODEC: Nikon RAW metadata decoding failed")?;
+    validate(&header)?;
+    let raw = if dummy {
+        header
+    } else {
+        decoder
+            .raw_image(source, &params, false)
+            .context("E_UNSUPPORTED_CODEC: Nikon RAW sensor decoding failed")?
     };
-    let source = RawSource::new_from_slice(bytes);
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Validate dimensions before allocating the sensor plane, including the
-        // in-memory path. A dummy decode must never become the displayed image.
-        let header = rawler::decode_dummy(&source)
-            .context("E_UNSUPPORTED_CODEC: Nikon RAW metadata decoding failed")?;
-        validate(&header)?;
-        let raw = if dummy {
-            header
-        } else {
-            rawler::decode(&source, &RawDecodeParams::default())
-                .context("E_UNSUPPORTED_CODEC: Nikon RAW sensor decoding failed")?
-        };
-        adapt(raw, orientation as u16)
-    }))
-    .map_err(|_| anyhow!("E_DECODE: Nikon RAW decoder rejected this file"))?
+    adapt(raw, orientation)
 }
 
 fn validate(raw: &rawler::RawImage) -> Result<()> {
@@ -261,7 +302,7 @@ mod tests {
         let mut raw = fixture();
         raw.color_matrix.clear();
         assert!(adapt(raw, 1).is_err());
-        assert!(decode_bytes(b"damaged NEF", false).is_err());
-        assert!(decode_bytes(&[], false).is_err());
+        assert!(check_size(0).is_err());
+        assert!(check_size(super::super::imaging::MAX_FILE_BYTES + 1).is_err());
     }
 }

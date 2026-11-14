@@ -71,6 +71,16 @@ pub fn read_exif(path: &Path) -> BTreeMap<String, String> {
 fn read_parsed_exif(path: &Path) -> Option<exif::Exif> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
+    if extension(path) == "nef" {
+        // kamadak-exif reads a whole TIFF container into a Vec. Use the bounded
+        // public-field reader for this adapter, retaining other cameras' path.
+        if let Ok(Some(exif)) = crate::remote_exif::read(&mut file, len) {
+            if crate::nikon_raw::supports(&exif) {
+                return Some(exif);
+            }
+        }
+        file.seek(SeekFrom::Start(0)).ok()?;
+    }
     if let Ok(Some(merged)) = crate::cr3::merged_exif_tiff(&mut file, len) {
         return exif::Reader::new()
             .continue_on_error(true)
@@ -88,6 +98,56 @@ fn read_parsed_exif(path: &Path) -> Option<exif::Exif> {
 
 fn is_file_adobe_rgb(path: &Path) -> bool {
     read_parsed_exif(path).is_some_and(|exif| crate::icc::is_adobe_rgb_exif(&exif))
+}
+
+#[cfg(test)]
+mod nikon_metadata_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn local_and_streamed_z5ii_exif_retain_only_bounded_metadata() {
+        let make = b"NIKON CORPORATION\0";
+        let model = b"NIKON Z5_2\0";
+        let mut bytes = b"II\x2a\x00\x08\x00\x00\x00".to_vec();
+        bytes.extend(3u16.to_le_bytes());
+        for (tag, kind, count, value) in [
+            (271u16, 2u16, make.len() as u32, 50u32),
+            (272, 2, model.len() as u32, 50 + make.len() as u32),
+            (274, 3, 1, 8),
+        ] {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(0u32.to_le_bytes());
+        bytes.extend(make);
+        bytes.extend(model);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("sparse.nef");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.set_len(256 * 1024 * 1024).unwrap();
+        drop(file);
+        let local = read_parsed_exif(&path).unwrap();
+        bytes.resize(1024 * 1024, 0);
+        let streamed = read_parsed_exif_bytes(&bytes, "nef").unwrap();
+        for exif in [local, streamed] {
+            assert!(crate::nikon_raw::supports(&exif));
+            assert_eq!(
+                exif.get_field(Tag::Orientation, In::PRIMARY)
+                    .unwrap()
+                    .value
+                    .get_uint(0),
+                Some(8)
+            );
+            assert!(
+                exif.buf().len() < 128 * 1024,
+                "must not retain the full TIFF container"
+            );
+        }
+    }
 }
 
 fn exif_metadata(exif: &exif::Exif) -> BTreeMap<String, String> {
@@ -167,7 +227,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             .or_insert_with(|| "Adobe RGB (1998)".into());
     }
     let (mut width, mut height, orientation) = if kind(&extension) == Some("raw") {
-        let raw = match raw_header(path) {
+        let raw = match raw_header_with_exif(path, parsed_exif.as_ref()) {
             Ok(raw) => raw,
             Err(raw_error) => {
                 let preview = crate::embedded_preview::read_embedded(path).with_context(|| {
@@ -286,15 +346,20 @@ fn image_reader(path: &Path) -> Result<ImageReader<BufReader<File>>> {
 // rawloader's metadata-only pass avoids allocating a full sensor plane while
 // indexing, and supplies dimensions before the full decode's allocation.
 fn raw_header(path: &Path) -> Result<rawloader::RawImage> {
+    let exif = (extension(path) == "nef")
+        .then(|| read_parsed_exif(path))
+        .flatten();
+    raw_header_with_exif(path, exif.as_ref())
+}
+
+fn raw_header_with_exif(path: &Path, exif: Option<&exif::Exif>) -> Result<rawloader::RawImage> {
     if extension(path) == "cr3" {
         bail!("E_UNSUPPORTED_CODEC: Canon CR3 decoding is not available in this build");
     }
-    if extension(path) == "nef"
-        && read_parsed_exif(path)
-            .as_ref()
-            .is_some_and(crate::nikon_raw::supports)
+    if let Some(exif) =
+        exif.filter(|exif| extension(path) == "nef" && crate::nikon_raw::supports(exif))
     {
-        return crate::nikon_raw::decode_path(path, true);
+        return crate::nikon_raw::decode_path(path, exif, true);
     }
     let mut file = File::open(path)?;
     let raw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -504,10 +569,16 @@ fn finish_frame(
 }
 
 fn render_sensor(path: &Path, max_side: Option<u32>) -> Result<(DynamicImage, u8)> {
-    let header = raw_header(path)?;
-    let raw = if extension(path) == "nef" && header.model == crate::nikon_raw::MODEL {
-        crate::nikon_raw::decode_path(path, false)?
+    let exif = (extension(path) == "nef")
+        .then(|| read_parsed_exif(path))
+        .flatten();
+    let raw = if let Some(exif) = exif
+        .as_ref()
+        .filter(|exif| extension(path) == "nef" && crate::nikon_raw::supports(exif))
+    {
+        crate::nikon_raw::decode_path(path, exif, false)?
     } else {
+        raw_header_with_exif(path, exif.as_ref())?;
         std::panic::catch_unwind(|| rawloader::decode_file(path))
         .map_err(|_| anyhow!("E_DECODE: RAW sensor decoder rejected this file"))?
         .context("E_UNSUPPORTED_CODEC: RAW decoding failed; this camera or compression may be unsupported")?
@@ -886,9 +957,17 @@ pub fn remote_preview_bundle<R: Read + Seek>(
     Ok((preview, companion))
 }
 
-fn read_parsed_exif_bytes(bytes: &[u8]) -> Option<exif::Exif> {
+fn read_parsed_exif_bytes(bytes: &[u8], ext: &str) -> Option<exif::Exif> {
     let len = bytes.len() as u64;
     let mut cursor = Cursor::new(bytes);
+    if ext == "nef" {
+        if let Ok(Some(exif)) = crate::remote_exif::read(&mut cursor, len) {
+            if crate::nikon_raw::supports(&exif) {
+                return Some(exif);
+            }
+        }
+        cursor.set_position(0);
+    }
     if let Ok(Some(merged)) = crate::cr3::merged_exif_tiff(&mut cursor, len) {
         return exif::Reader::new()
             .continue_on_error(true)
@@ -920,7 +999,7 @@ pub fn stream_preview_from_bytes(
         "E_LIMIT: Streamed image exceeds the 512 MiB decode limit"
     );
     let ext = ext.to_ascii_lowercase();
-    let parsed_exif = read_parsed_exif_bytes(bytes);
+    let parsed_exif = read_parsed_exif_bytes(bytes, &ext);
     let adobe_rgb = parsed_exif
         .as_ref()
         .is_some_and(crate::icc::is_adobe_rgb_exif);
@@ -953,7 +1032,7 @@ pub fn stream_preview_from_bytes(
                 bail!("E_UNSUPPORTED_CODEC: Canon CR3 decoding is not available in this build");
             }
             let raw = if modern_nikon {
-                crate::nikon_raw::decode_bytes(bytes, false)?
+                crate::nikon_raw::decode_bytes(bytes, parsed_exif.as_ref().unwrap(), false)?
             } else {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut reader = Cursor::new(bytes);
@@ -996,6 +1075,16 @@ pub fn stream_preview_from_bytes(
             let fh = emb.image.height();
             metadata.insert("Preview Source".into(), "embedded_jpeg".into());
             metadata.insert("Decoder".into(), "相机内嵌预览".into());
+            if modern_nikon {
+                if let Err(error) =
+                    crate::nikon_raw::decode_bytes(bytes, parsed_exif.as_ref().unwrap(), true)
+                {
+                    metadata.insert(
+                        "Decode Status".into(),
+                        format!("RAW 原始解码不可用：{error:#}"),
+                    );
+                }
+            }
             (
                 fw,
                 fh,

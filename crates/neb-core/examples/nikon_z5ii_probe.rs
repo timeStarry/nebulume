@@ -9,14 +9,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 fn main() {
-    // Match the CLI's decoder stack budget on Windows executables.
-    std::thread::Builder::new()
-        .name("nikon-z5ii-probe".into())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(verify)
-        .unwrap()
-        .join()
-        .unwrap();
+    // Exercise the shared decoder's stack guard from the default main stack.
+    verify();
 }
 
 fn verify() {
@@ -32,15 +26,22 @@ fn verify() {
     let database = rusqlite::Connection::open(temp.path().join("catalog.sqlite3")).unwrap();
     database
         .execute(
-            "UPDATE assets SET modified_stamp=replace(modified_stamp,'inspect-v3:','inspect-v2:'),
-         metadata_json=?1,rating=3 WHERE id=?2",
+            "UPDATE assets SET metadata_json=?1,rating=3 WHERE id=?2",
             rusqlite::params![
                 json!({"Camera":"NIKON Z5_2","Decode Status":"RAW 原始解码不可用"}).to_string(),
                 original_asset["id"].as_str().unwrap()
             ],
         )
         .unwrap();
+    database
+        .execute(
+            "DELETE FROM app_settings WHERE key='inspection.nikon-z5ii.v1'",
+            [],
+        )
+        .unwrap();
     drop(database);
+    drop(core);
+    let core = Core::open(temp.path()).unwrap();
     let asset = core.dispatch("file.open", json!({"path":source})).unwrap();
     assert_eq!(asset["id"], original_asset["id"]);
     assert_eq!(asset["rating"], 3);

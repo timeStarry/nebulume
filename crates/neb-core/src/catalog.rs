@@ -19,6 +19,7 @@ use crate::{
 };
 
 mod collections;
+mod nikon_upgrade;
 mod query;
 mod scan;
 mod xmp_sync;
@@ -40,7 +41,7 @@ const LIBRARY_COLUMNS: &str =
     "id,name,root,created_at,storage_id,source_prefix,hidden,pair_raw_jpeg,location_id";
 // Bump when inspection semantics change. This lives only in the private cache
 // fingerprint, so old catalogs upgrade on access without rewriting user EXIF.
-pub(super) const INSPECTION_VERSION: &str = "inspect-v3";
+pub(super) const INSPECTION_VERSION: &str = "inspect-v2";
 const PREVIEW_MEMORY_ENTRIES: usize = 256;
 const PREVIEW_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 
@@ -483,6 +484,7 @@ impl Core {
                 value TEXT NOT NULL
             );",
         )?;
+        nikon_upgrade::invalidate(&migration)?;
         migration.commit()?;
         database.execute(
      "DELETE FROM assets WHERE trashed_at IS NOT NULL AND trashed_at < datetime('now','-30 days')",

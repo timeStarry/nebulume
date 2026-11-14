@@ -106,7 +106,7 @@ RAW 传感器解码失败时，查看与直方图可回退到标准 TIFF IFD / I
 
 该回退只读取经典 TIFF 明确标注的 JPEGInterchangeFormat/Length，或 Compression 6/7 的完整单条 JPEG strip；不扫描 JPEG 签名、不解析 MakerNote/BigTIFF、不拼接多 strip。上限：32 个 IFD、深度 8、每目录 1024/总计 4096 条目、16 个候选、单 JPEG 32 MiB、累计读取 96 MiB、目录元数据 1 MiB、单图 120 MP、候选累计解码 240 MP；原文件仍限制 512 MiB。EXIF ASCII 字段去除空白/NUL 填充，空字段省略，原始有效字段保留在 EXIF 展开区。
 
-Nikon Z5 II（EXIF `NIKON Z5_2`）使用固定版本 rawler 0.8.0 的机型资料与传感器解码，适用于本地预览、纯内存预览及 JPEG 导出；其余相机继续使用 rawloader 0.37.2。Z5 II 仍走共享基础显影流程并返回 `source=raw_demosaic`，`Decoder` 标注实际后端；默认相机内嵌预览保持 `source=embedded_jpeg`。不因此宣称支持其他 rawler 机型或 CR3 传感器显影。
+Nikon Z5 II（EXIF `NIKON Z5_2`）使用固定版本 rawler 0.8.0 的机型资料与传感器解码，适用于本地预览、纯内存预览及 JPEG 导出；其余相机继续使用 rawloader 0.37.2。Z5 II 仍走共享基础显影流程并返回 `source=raw_demosaic`，`Decoder` 标注实际后端；默认相机内嵌预览保持 `source=embedded_jpeg`。HE / HE*（TicoRAW）在头探测阶段即拒绝，检查结果写入 `Decode Status` 并回退内嵌 JPEG；强制传感器预览及 JPEG 导出明确报不支持。不因此宣称支持其他 rawler 机型或 CR3 传感器显影。
 
 ## 本机缓存（service + core/cache）
 
