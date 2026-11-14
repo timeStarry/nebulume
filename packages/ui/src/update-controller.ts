@@ -5,7 +5,14 @@ export type UpdateState =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'up-to-date'; checkedAt: number }
-  | { kind: 'available'; version: string; notes: string; date?: string; error?: string }
+  | {
+      kind: 'available';
+      version: string;
+      notes: string;
+      date?: string;
+      error?: string;
+      dismissed?: boolean;
+    }
   | { kind: 'downloading'; version: string; received: number; total?: number }
   | { kind: 'installing'; version: string }
   | { kind: 'failed'; checkedAt: number; message: string };
@@ -201,7 +208,9 @@ export function createUpdateController(effects: UpdateEffects) {
       }
     },
     dismiss(): void {
-      if (current.kind === 'available') set({ kind: 'idle' });
+      if (current.kind === 'available' && !current.dismissed) {
+        set({ ...current, dismissed: true });
+      }
     },
     setAuto(value: boolean): void {
       effects.writeAuto(value);

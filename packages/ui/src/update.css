@@ -56,33 +56,152 @@
 .update-note.error {
   color: var(--nl-reject);
 }
-.update-prompt {
-  flex-shrink: 0;
+.update-dot {
+  flex: none;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--nl-r-pill);
+  background: var(--nl-star);
+}
+.update-title-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+}
+.update-about-desc {
   display: grid;
+  gap: var(--nl-s-1);
+}
+.update-about-region {
+  border-bottom: 1px solid var(--nl-line);
+}
+.update-about-region > .nl-list-row {
+  border-bottom: 0;
+}
+.update-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--nl-s-3);
-  padding: var(--nl-s-4) var(--nl-s-5);
+  min-height: var(--nl-h-lg);
+  padding: var(--nl-s-1) var(--nl-s-4);
   border-bottom: 1px solid var(--nl-line);
   background: var(--nl-side);
 }
-.update-prompt > h2 {
-  font-size: var(--nl-t-14);
-  font-weight: 500;
+.update-bar-lead {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+  min-width: 0;
+  flex: 1;
 }
-.update-notes {
-  max-height: calc(12 * var(--nl-leading-prose) * 1em);
-  overflow-y: auto;
-  white-space: pre-wrap;
+.update-bar-title {
+  flex: none;
   font-size: var(--nl-t-13);
-  line-height: var(--nl-leading-prose);
+  font-weight: 500;
+  color: var(--nl-text);
+}
+.update-bar-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--nl-t-12);
   color: var(--nl-text-2);
+}
+.update-bar-summary.error {
+  color: var(--nl-reject);
+}
+.update-bar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-1);
+}
+.update-bar-progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-3);
+  width: 100%;
+  min-width: 0;
+}
+.update-bar-track {
+  width: 160px;
+  flex: none;
 }
 .update-progress {
   display: flex;
   align-items: center;
   gap: var(--nl-s-3);
-  font-size: var(--nl-t-13);
+  padding-top: var(--nl-s-1);
 }
-.update-progress progress {
-  inline-size: 240px;
-  max-inline-size: 100%;
+.update-progress-track {
+  flex: 1;
+  min-width: 140px;
+  max-width: 240px;
+}
+.update-progress-meta {
+  flex: none;
+  font-size: var(--nl-t-12);
+  font-family: var(--nl-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--nl-text-2);
+}
+.update-dialog-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--nl-s-3);
+  width: 100%;
+}
+.update-installing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nl-s-2);
+  font-size: var(--nl-t-12);
+  color: var(--nl-text-2);
+}
+.update-notes-sheet {
+  display: grid;
+  gap: var(--nl-s-3);
+  max-height: min(56vh, 420px);
+  padding-right: var(--nl-s-1);
+  overflow-y: auto;
+}
+.update-notes-heading {
+  margin: var(--nl-s-2) 0 0;
+  font-size: var(--nl-t-13);
+  font-weight: 500;
+  color: var(--nl-text);
+}
+.update-notes-heading:first-child {
+  margin-top: 0;
+}
+.update-notes-para {
+  margin: 0;
+  font-size: var(--nl-t-13);
+  line-height: var(--nl-leading-prose);
+  color: var(--nl-text-2);
+}
+.update-notes-list {
+  display: grid;
+  gap: var(--nl-s-2);
+  margin: 0;
+  padding-left: var(--nl-s-4);
+  font-size: var(--nl-t-13);
+  line-height: var(--nl-leading-prose);
+  color: var(--nl-text-2);
+}
+.update-notes-list > li::marker {
+  color: var(--nl-text-3);
+}
+.update-inline-code {
+  padding: 1px var(--nl-s-1);
+  border: 1px solid var(--nl-line);
+  border-radius: var(--nl-r-xs);
+  background: var(--nl-raised);
+  color: var(--nl-text);
+  font-size: var(--nl-t-12);
+  font-family: var(--nl-mono);
 }

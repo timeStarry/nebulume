@@ -308,18 +308,38 @@ describe('update controller', () => {
     await installing;
   });
 
-  it('dismiss returns to idle and the next scheduled check prompts again', async () => {
+  it('dismiss marks available as dismissed while keeping install usable, and the next scheduled check prompts again', async () => {
     const { effects, fireNext } = fakeEffects({
       check: vi.fn(async () => update(async () => undefined)),
     });
     const controller = createUpdateController(effects);
     await controller.start();
     await fireNext();
-    expect(controller.state().kind).toBe('available');
+    expect(controller.state()).toEqual({
+      kind: 'available',
+      version: '0.2.0',
+      notes: '修复若干问题',
+      date: '2026-11-07T00:00:00Z',
+    });
     controller.dismiss();
-    expect(controller.state()).toEqual({ kind: 'idle' });
+    expect(controller.state()).toEqual({
+      kind: 'available',
+      version: '0.2.0',
+      notes: '修复若干问题',
+      date: '2026-11-07T00:00:00Z',
+      dismissed: true,
+    });
     await fireNext();
-    expect(controller.state().kind).toBe('available');
+    expect(controller.state()).toEqual({
+      kind: 'available',
+      version: '0.2.0',
+      notes: '修复若干问题',
+      date: '2026-11-07T00:00:00Z',
+    });
+    controller.dismiss();
+    await controller.install();
+    expect(effects.prepare).toHaveBeenCalledTimes(1);
+    expect(effects.relaunch).toHaveBeenCalledTimes(1);
   });
 
   it('turning auto off cancels the pending timer and persists', async () => {
