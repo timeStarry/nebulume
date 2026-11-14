@@ -106,20 +106,21 @@ export default function BatchDock(props: {
         <span class="batch-dock-sep" aria-hidden="true" />
         <Button
           size="sm"
-          icon="export"
+          icon="download"
           disabled={props.exportBusy}
           onClick={() => props.onExport()}
         >
-          导出 JPEG…
+          导出原片…
         </Button>
         <Show when={props.onExportPreset}>
           <Button
             size="sm"
             variant="ghost"
+            icon="export"
             disabled={props.exportBusy}
             onClick={() => props.onExportPreset!()}
           >
-            按预设导出…
+            导出 JPEG…
           </Button>
         </Show>
         <Show when={props.canTrash}>

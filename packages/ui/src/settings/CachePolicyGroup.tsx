@@ -10,6 +10,24 @@ const BASE_DAY_OPTIONS: SelectOption[] = [
   { value: '90', label: '90 天未使用' },
 ];
 
+const PREVIEW_POLICY_OPTIONS: SelectOption[] = [
+  { value: 'automatic', label: '标准缓存（预览与按需原片）' },
+  { value: 'stream_preview', label: '轻量预览（仅落盘预览图）' },
+  { value: 'memory_only', label: '纯内存浏览（零磁盘写入）' },
+  { value: 'manual', label: '仅内嵌预览（原片手动获取）' },
+];
+
+const PREVIEW_POLICY_HINTS: Record<CachePolicy['preview_policy'], string> = {
+  automatic:
+    '优先读取内嵌预览；需要完整文件时自动下载并缓存至本地（计入容量上限），适合重复选片与修图。',
+  stream_preview:
+    '仅在磁盘缓存轻量预览图，远端原片流式读入内存解码后立即释放、不占用本地原图空间（适合局域网 NAS）。',
+  memory_only:
+    '预览与解码全程仅驻留内存，不向磁盘写入任何预览或普通原图缓存；退出应用后自动释放。',
+  manual:
+    '仅通过分段读取内嵌预览浏览；需要完整文件时提示手动获取，避免消耗后台带宽与流量。',
+};
+
 export default function CachePolicyGroup(props: {
   budget: string;
   days: number;
@@ -76,7 +94,7 @@ export default function CachePolicyGroup(props: {
 
         <ListRow
           title="远端预览获取"
-          description="浏览网络存储图片库时的预览与完整原片拉取策略"
+          description="浏览网络存储图片库时的预览与完整原片缓存模式"
           control={
             <Select
               size="sm"
@@ -84,10 +102,7 @@ export default function CachePolicyGroup(props: {
               value={props.preview}
               disabled={props.locked || props.cacheUnavailable}
               onChange={(value) => props.onPreviewChange(value as CachePolicy['preview_policy'])}
-              options={[
-                { value: 'automatic', label: '智能按需（默认）' },
-                { value: 'manual', label: '完整文件手动获取' },
-              ]}
+              options={PREVIEW_POLICY_OPTIONS}
             />
           }
         />
@@ -109,9 +124,7 @@ export default function CachePolicyGroup(props: {
 
         <div class="nl-row cache-policy-footer">
           <p class="cache-policy-hint">
-            {props.preview === 'manual'
-              ? '使用已有缓存浏览；需要完整文件时由你手动获取，下载内容计入总上限。'
-              : '优先使用已有缩略图与远端预览；不支持 Range 或解码需要完整文件时按需获取，计入总上限。'}
+            {PREVIEW_POLICY_HINTS[props.preview] ?? PREVIEW_POLICY_HINTS.automatic}
           </p>
           <div class="cache-policy-actions">
             <Show when={props.policyChanged}>

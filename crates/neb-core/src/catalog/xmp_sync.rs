@@ -27,7 +27,7 @@ impl Core {
                 |row| row.get(0),
             )
             .optional()?;
-        Ok(value.as_deref() == Some("true"))
+        Ok(value.as_deref() != Some("false"))
     }
 
     pub fn set_xmp_auto_write(&self, enabled: bool) -> Result<bool> {

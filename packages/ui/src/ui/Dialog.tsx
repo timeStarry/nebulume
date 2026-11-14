@@ -24,7 +24,7 @@ export function Dialog(props: {
     const body = dialog.querySelector<HTMLElement>('.nl-dialog-body');
     (
       body?.querySelector<HTMLElement>(
-        'input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
+        'input:not(:disabled), [role="combobox"]:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
       ) ?? dialog.querySelector<HTMLElement>(FOCUSABLE)
     )?.focus();
   });
@@ -76,6 +76,7 @@ export function Dialog(props: {
           <IconButton
             icon="x"
             size="sm"
+            tipAlign="end"
             label={props.closeLabel ?? '关闭对话框'}
             disabled={props.busy}
             onClick={() => props.onClose()}

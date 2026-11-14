@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { servePreviewImages } from './fixtures';
+import { selectChoice, servePreviewImages } from './fixtures';
 import type { Asset, Library, StorageConfig } from '../../src/model';
 
 type Call = { command: string; params: Record<string, unknown> };
@@ -64,6 +64,26 @@ async function fixture(page: Page, handler?: (call: Call) => unknown | Promise<u
             break;
           case 'storage.list':
             result = [nas];
+            break;
+          case 'storage.check':
+            result = {
+              id: String(call.params.id),
+              connected: true,
+              availability: 'online',
+              credential_status: 'system',
+              checked_at: '2026-11-13T00:00:00Z',
+              error: null,
+            };
+            break;
+          case 'storage.probe':
+            result = {
+              id: 'probe',
+              connected: true,
+              availability: 'online',
+              credential_status: 'system',
+              checked_at: '2026-11-13T00:00:00Z',
+              error: null,
+            };
             break;
           case 'system.info':
             result = { originals_read_only: true };
@@ -256,9 +276,9 @@ for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
         return { items: call.params.offset ? [third] : [first, second], total: 3, file_total: 3 };
     });
     await page.getByRole('button', { name: '打开图片库 本地摄影' }).click();
-    await page.getByLabel('最低评级筛选').selectOption('3');
-    await page.getByLabel('文件格式筛选').selectOption('jpeg');
-    await page.getByLabel('排序字段').selectOption(sortBy);
+    await selectChoice(page.getByLabel('最低评级筛选'), '3');
+    await selectChoice(page.getByLabel('文件格式筛选'), 'jpeg');
+    await selectChoice(page.getByLabel('排序字段'), sortBy);
     await page.getByRole('button', { name: /^排序方向：降序/ }).click();
     const matching = () => calls.filter((call) => call.command === 'asset.list').at(-1)?.params;
     const firstPage = () =>
@@ -296,7 +316,7 @@ for (const sortBy of ['filename', 'created_at', 'captured_at'] as const)
       'Page2.jpg，4 星',
     );
     await page.getByRole('button', { name: /^排序方向：升序/ }).click();
-    await page.getByLabel('文件格式筛选').selectOption('raw');
+    await selectChoice(page.getByLabel('文件格式筛选'), 'raw');
     await expect
       .poll(
         () =>
@@ -388,8 +408,8 @@ test('library settings persist pairing, variants replace their representative, a
   await page.getByRole('button', { name: '配对照片 更多操作' }).click();
   await page.getByRole('menuitem', { name: '配对照片 图片库设置' }).click();
   await expect(page.getByLabel('合并显示 RAW + JPEG')).toBeChecked();
-  await page.getByLabel('来源类型').selectOption('remote');
-  await page.getByLabel('存储源', { exact: true }).selectOption('nas');
+  await selectChoice(page.getByLabel('来源类型'), 'remote');
+  await selectChoice(page.getByLabel('存储源', { exact: true }), 'nas');
   await page.getByLabel('源内目录（可选）').fill('trips/');
   await page.getByRole('button', { name: '检查位置更改' }).click();
   expect(calls.filter((call) => call.command === 'library.update')).toHaveLength(1);
@@ -764,7 +784,7 @@ test('local libraries are created directly from a directory and become import ta
       };
   });
   await page.getByRole('button', { name: '添加图片库', exact: true }).click();
-  await expect(page.getByLabel('来源类型')).toHaveValue('local');
+  await expect(page.getByLabel('来源类型')).toHaveAttribute('data-value', 'local');
   await expect(page.getByLabel('存储源', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '建立并扫描', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: '选择本地文件夹…', exact: true }).click();
@@ -780,10 +800,12 @@ test('local libraries are created directly from a directory and become import ta
   expect(calls.filter((call) => call.command === 'storage.add')).toHaveLength(0);
   await nav(page, '导入').click();
   // NAS libraries are import targets too; this test imports into the new local one.
+  await page.getByLabel('目标图片库').click();
+  const targetPopover = page.locator('.nl-select-popover[role="listbox"]');
   await expect(
-    page.getByLabel('目标图片库').locator('option', { hasText: 'NAS 旅行' }),
+    targetPopover.locator('[role="option"]').filter({ hasText: 'NAS 旅行' }),
   ).toHaveCount(1);
-  await page.getByLabel('目标图片库').selectOption('direct-local');
+  await targetPopover.locator('[role="option"][data-value="direct-local"]').click();
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
   await page.getByRole('button', { name: '生成导入计划', exact: true }).click();
   await expect
@@ -828,7 +850,7 @@ test('legacy local library settings retain their binding until an explicitly rev
   });
   await page.getByRole('button', { name: '本地摄影 更多操作' }).click();
   await page.getByRole('menuitem', { name: '本地摄影 图片库设置' }).click();
-  await expect(page.getByLabel('来源类型')).toHaveValue('local');
+  await expect(page.getByLabel('来源类型')).toHaveAttribute('data-value', 'local');
   await expect(page.getByLabel('本地目录', { exact: true })).toHaveValue(local.root);
   await page.getByRole('button', { name: '选择本地文件夹…', exact: true }).click();
   await expect(page.getByRole('dialog')).toContainText('旧索引、评级和裁剪配方');
@@ -897,8 +919,10 @@ test('card imports target local libraries, retain review across navigation and c
   });
   await nav(page, '导入').click();
   // Placeholder, the local library and the NAS library.
-  await expect(page.getByLabel('目标图片库').locator('option')).toHaveCount(3);
-  await page.getByLabel('目标图片库').selectOption(local.id);
+  await page.getByLabel('目标图片库').click();
+  const importTargets = page.locator('.nl-select-popover[role="listbox"]');
+  await expect(importTargets.locator('[role="option"]')).toHaveCount(3);
+  await importTargets.locator(`[role="option"][data-value=${JSON.stringify(local.id)}]`).click();
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
   await page.getByRole('button', { name: '生成导入计划' }).click();
   await expect(page.getByText('待复制', { exact: true })).toBeVisible();
@@ -1136,11 +1160,11 @@ test('a registered card applies its default preset, and import leads straight in
     mount_path: 'E:\\',
     name: 'Z8 主卡',
   });
-  await page.getByLabel('导入方案').selectOption(preset.id);
+  await selectChoice(page.getByLabel('导入方案'), preset.id);
   await expect(page.locator('.organize-example')).toContainText(
     'Z8/2026/2026-10-22/RAW/DSC_0001.NEF',
   );
-  await page.getByLabel('导入方案').selectOption({ label: '设为这张卡的默认方案' });
+  await selectChoice(page.getByLabel('导入方案'), { label: '设为这张卡的默认方案' });
   await expect
     .poll(() => calls.find((call) => call.command === 'card.update')?.params)
     .toEqual({ id: card.id, default_preset_id: preset.id });
@@ -1160,7 +1184,7 @@ test('a registered card applies its default preset, and import leads straight in
       mode: 'cull',
       queue: { library_id: local.id, options: { import_batch_id: 'batch-1' } },
     });
-  await expect(page.getByLabel('导入批次')).toHaveValue('batch-1');
+  await expect(page.getByLabel('导入批次')).toHaveAttribute('data-value', 'batch-1');
 });
 
 test('a NAS import is planned by library id and blocked until the location passes a write test', async ({
@@ -1215,7 +1239,7 @@ test('a NAS import is planned by library id and blocked until the location passe
     return undefined;
   });
   await nav(page, '导入').click();
-  await page.getByLabel('目标图片库').selectOption(remote.id);
+  await selectChoice(page.getByLabel('目标图片库'), remote.id);
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
   await page.getByRole('button', { name: '生成导入计划' }).click();
   await expect
@@ -1234,7 +1258,7 @@ test('a NAS import is planned by library id and blocked until the location passe
   expect(calls.some((call) => call.command === 'storage.write_check')).toBe(true);
   await nav(page, '导入').click();
   await page.getByRole('button', { name: '返回修改' }).click();
-  await page.getByLabel('目标图片库').selectOption(remote.id);
+  await selectChoice(page.getByLabel('目标图片库'), remote.id);
   await page.getByRole('button', { name: '生成导入计划' }).click();
   await page.getByRole('checkbox', { name: /仍然导入疑似重复项/ }).check();
   await page.getByRole('checkbox', { name: '我已核对来源、目标和导入计划' }).check();
@@ -1372,7 +1396,7 @@ test('import shows one progress indicator and one primary action per step', asyn
 test('the setup aside summarises the route and shows where files will land', async ({ page }) => {
   await fixture(page);
   await nav(page, '导入').click();
-  await page.getByLabel('目标图片库').selectOption(local.id);
+  await selectChoice(page.getByLabel('目标图片库'), local.id);
   const aside = page.getByRole('complementary', { name: '将会导入' });
   await expect(aside).toContainText('本地摄影');
   await expect(aside).toContainText('按拍摄日期');
@@ -1397,7 +1421,7 @@ test('an unverified network target keeps 开始导入 disabled and says why in t
     return undefined;
   });
   await nav(page, '导入').click();
-  await page.getByLabel('目标图片库').selectOption(remote.id);
+  await selectChoice(page.getByLabel('目标图片库'), remote.id);
   await page.getByRole('button', { name: /CAMERA CARD/ }).click();
   await page.getByRole('button', { name: '生成导入计划' }).click();
   const aside = page.getByRole('complementary', { name: '导入计划摘要' });
@@ -1619,4 +1643,248 @@ test('the library rail item opens the last library, not the overview', async ({ 
   await expect(
     page.locator('.nl-page-header:visible').getByRole('heading', { name: '本地摄影' }),
   ).toBeVisible();
+});
+
+test('sidebar overflow menu floats in body portal without clipping or scrolling sidebar, and subnav sections collapse', async ({
+  page,
+}) => {
+  await fixture(page, (call) => {
+    if (call.command === 'collection.list')
+      return [
+        {
+          id: 'coll-1',
+          library_id: local.id,
+          name: '年度精选',
+          kind: 'manual',
+          item_count: 12,
+          created_at: '2026-11-01',
+        },
+      ];
+    if (call.command === 'library.folders')
+      return {
+        library_id: local.id,
+        total: 10,
+        folders: [{ path: '2026-11', name: '2026-11', count: 10, children: [] }],
+      };
+  });
+
+  const sidebar = page.getByRole('complementary', { name: '图片库与文件夹' });
+  const list = sidebar.locator('.nav-library-list');
+
+  // Open the library-level '...' overflow menu.
+  await sidebar.getByRole('button', { name: '本地摄影 更多操作' }).click();
+  const menu = page.getByRole('menu', { name: '本地摄影 更多操作' });
+  await expect(menu).toBeVisible();
+
+  // Verify the menu is portaled to document.body (outside .library-sidebar), fixed-positioned,
+  // and never scrolls .nav-library-list horizontally.
+  const layout = await page.evaluate(() => {
+    const sidebarEl = document.querySelector('.library-sidebar')!;
+    const listEl = document.querySelector('.nav-library-list') as HTMLElement;
+    const menuEl = document.querySelector('[role="menu"][aria-label="本地摄影 更多操作"]') as HTMLElement;
+    const style = window.getComputedStyle(menuEl);
+    const rect = menuEl.getBoundingClientRect();
+    return {
+      insideSidebar: sidebarEl.contains(menuEl),
+      position: style.position,
+      zIndex: Number(style.zIndex),
+      listScrollLeft: listEl.scrollLeft,
+      sidebarScrollLeft: sidebarEl.scrollLeft,
+      rectRight: rect.right,
+      sidebarRight: sidebarEl.getBoundingClientRect().right,
+      viewportWidth: window.innerWidth,
+    };
+  });
+  expect(layout.insideSidebar).toBe(false);
+  expect(layout.position).toBe('fixed');
+  expect(layout.zIndex).toBeGreaterThanOrEqual(200);
+  expect(layout.listScrollLeft).toBe(0);
+  expect(layout.sidebarScrollLeft).toBe(0);
+  expect(layout.rectRight).toBeLessThanOrEqual(layout.viewportWidth - 8);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+
+  // Collapsible 精选集 and 文件夹 sections.
+  await expect(sidebar.getByText('年度精选')).toBeVisible();
+  await expect(sidebar.getByText('2026-11')).toBeVisible();
+
+  await sidebar.getByRole('button', { name: '收起精选集' }).click();
+  await expect(sidebar.getByText('年度精选')).toHaveCount(0);
+  await sidebar.getByRole('button', { name: '收起文件夹' }).click();
+  await expect(sidebar.getByText('2026-11')).toHaveCount(0);
+
+  await sidebar.getByRole('button', { name: '展开精选集' }).click();
+  await expect(sidebar.getByText('年度精选')).toBeVisible();
+  await sidebar.getByRole('button', { name: '展开文件夹' }).click();
+  await expect(sidebar.getByText('2026-11')).toBeVisible();
+});
+
+test('startup auto-probes remote connections, empty library scan shows loading state, and TaskPill renders accurate progress bar', async ({
+  page,
+}) => {
+  let releaseScan!: (res: { indexed: number; skipped: number; errors: never[] }) => void;
+  const emptyLocal: Library = { ...local, id: 'lib-empty', name: '新图库', asset_count: 0 };
+  let indexedItems: Asset[] = [];
+
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list') return [emptyLocal, remote];
+    if (call.command === 'asset.list')
+      return {
+        items: call.params.library_id === emptyLocal.id ? indexedItems : [photo],
+        total: call.params.library_id === emptyLocal.id ? indexedItems.length : 1,
+      };
+    if (call.command === 'library.scan')
+      return new Promise((resolve) => {
+        releaseScan = resolve;
+      });
+  });
+
+  // 1. Startup auto-probe checks 'nas' automatically without opening Locations, turning NAS library dot green.
+  await expect
+    .poll(() => calls.some((c) => c.command === 'storage.check' && c.params.id === nas.id))
+    .toBe(true);
+  await expect(page.getByRole('button', { name: /打开图片库 NAS 旅行/ })).toHaveAccessibleName(
+    '打开图片库 NAS 旅行，在线',
+  );
+
+  // 2. Scanning an empty library shows the indexing loading state in both header + center empty view + portaled TaskPill progress.
+  await expect(page.getByRole('heading', { name: '图片库尚无照片' })).toBeVisible();
+  await page.getByRole('button', { name: '扫描图片库' }).click();
+  await expect(page.getByRole('heading', { name: '正在扫描图片库…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '正在扫描…' })).toHaveCount(2);
+  await expect(page.getByRole('button', { name: '正在扫描…' }).first()).toBeDisabled();
+
+  // Open TaskPill popover while scan is running -> rendered in Portal (position: fixed) with indeterminate progressbar.
+  await page.getByRole('button', { name: /后台任务：扫描 新图库/ }).click();
+  const taskDialog = page.getByRole('dialog', { name: '后台任务列表' });
+  await expect(taskDialog.getByRole('progressbar')).toBeVisible();
+  const taskPopoverLayout = await taskDialog.evaluate((el) => ({
+    inHeader: !!el.closest('.nl-page-header'),
+    position: getComputedStyle(el).position,
+  }));
+  expect(taskPopoverLayout).toEqual({ inHeader: false, position: 'fixed' });
+  await page.keyboard.press('Escape');
+
+  indexedItems = [{ ...photo, library_id: emptyLocal.id }];
+  releaseScan({ indexed: 1, skipped: 0, errors: [] });
+  await expect(page.getByRole('button', { name: /Mountain\.png/ })).toBeVisible();
+});
+
+test('active library subtree folds and unfolds via double-click or chevron while keeping active highlight', async ({
+  page,
+}) => {
+  await fixture(page, (call) => {
+    if (call.command === 'collection.list')
+      return [
+        {
+          id: 'coll-1',
+          library_id: local.id,
+          name: '年度精选',
+          kind: 'manual',
+          item_count: 8,
+          created_at: '2026-11-01',
+        },
+      ];
+    if (call.command === 'library.folders')
+      return {
+        library_id: local.id,
+        total: 10,
+        folders: [{ path: '2026-11', name: '2026-11', count: 10, children: [] }],
+      };
+  });
+
+  const sidebar = page.getByRole('complementary', { name: '图片库与文件夹' });
+  const libButton = sidebar.getByRole('button', { name: /打开图片库 本地摄影/ });
+  await expect(libButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(sidebar.getByText('年度精选')).toBeVisible();
+  await expect(sidebar.getByText('2026-11')).toBeVisible();
+
+  // Double-click folds the active library's entire subnav while keeping the row active.
+  await libButton.dblclick();
+  await expect(libButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(sidebar.locator('.library-subnav')).toHaveCount(0);
+  await expect(sidebar.locator('.nav-library-row.active')).toContainText('本地摄影');
+
+  // Chevron click unfolds, then folds again; double-click unfolds again.
+  await sidebar.getByRole('button', { name: '展开 本地摄影 目录树' }).click();
+  await expect(libButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(sidebar.getByText('年度精选')).toBeVisible();
+  await expect(sidebar.getByText('2026-11')).toBeVisible();
+
+  await sidebar.getByRole('button', { name: '折叠 本地摄影 目录树' }).click();
+  await expect(sidebar.locator('.library-subnav')).toHaveCount(0);
+
+  await libButton.dblclick();
+  await expect(sidebar.getByText('2026-11')).toBeVisible();
+});
+
+test('导出原片 prompts RAW / JPEG / RAW+JPEG choice when paired variants exist and exports untouched files', async ({
+  page,
+}) => {
+  const rawVariant = {
+    id: 'paired-raw',
+    filename: 'Mountain.nef',
+    extension: 'nef',
+    kind: 'raw' as const,
+  };
+  const jpgVariant = {
+    id: photo.id,
+    filename: 'Mountain.jpg',
+    extension: 'jpg',
+    kind: 'raster' as const,
+  };
+  const pairedAsset: Asset = {
+    ...photo,
+    filename: 'Mountain.jpg',
+    extension: 'jpg',
+    variants: [rawVariant, jpgVariant],
+  };
+  const calls = await fixture(page, (call) => {
+    if (call.command === 'library.list') return [{ ...local, pair_raw_jpeg: true }];
+    if (call.command === 'asset.list')
+      return { items: [pairedAsset], total: 1, file_total: 2 };
+    if (call.command === 'asset.get') return pairedAsset;
+    if (call.command === '$native/plugin:dialog|open') return 'D:\\Exports';
+    if (call.command === 'asset.export_original')
+      return { path: call.params.destination, bytes: 12000 };
+  });
+
+  await page.getByRole('button', { name: /打开图片库 本地摄影/ }).click();
+  const tile = page.getByRole('button', { name: 'Mountain.jpg，0 星' });
+  await expect(tile).toBeVisible();
+
+  // Right-click -> 导出原片… opens OriginalExportDialog because Mountain has RAW + JPEG variants.
+  await tile.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '导出原片…' }).click();
+  const dialog = page.getByRole('dialog', { name: '导出原片' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('tab', { name: '仅 RAW（1）' }).click();
+  await dialog.getByRole('button', { name: '导出 1 个原片…' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect
+    .poll(() =>
+      calls
+        .filter((call) => call.command === 'asset.export_original')
+        .map((call) => ({ id: call.params.id, destination: call.params.destination })),
+    )
+    .toEqual([{ id: 'paired-raw', destination: 'D:\\Exports\\Mountain.nef' }]);
+
+  // Re-open and choose RAW + JPEG（2） -> copies both files byte-for-byte.
+  await tile.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '导出原片…' }).click();
+  const dialogBoth = page.getByRole('dialog', { name: '导出原片' });
+  await dialogBoth.getByRole('tab', { name: 'RAW + JPEG（2）' }).click();
+  await dialogBoth.getByRole('button', { name: '导出 2 个原片…' }).click();
+  await expect(dialogBoth).toHaveCount(0);
+  await expect
+    .poll(() =>
+      calls
+        .filter((call) => call.command === 'asset.export_original')
+        .slice(1)
+        .map((call) => ({ id: call.params.id, destination: call.params.destination })),
+    )
+    .toEqual([
+      { id: 'paired-raw', destination: 'D:\\Exports\\Mountain.nef' },
+      { id: photo.id, destination: 'D:\\Exports\\Mountain.jpg' },
+    ]);
 });

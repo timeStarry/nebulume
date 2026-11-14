@@ -1008,3 +1008,341 @@ fn genuine_range_budget_exhaustion_requires_explicit_original_download() {
     assert_eq!(rendered["source"], "embedded_jpeg");
     assert_eq!(rendered["width"], 1);
 }
+
+fn encode_test_jpeg(w: u32, h: u32, color: [u8; 3]) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+        .encode_image(&image::RgbImage::from_pixel(w, h, image::Rgb(color)))
+        .unwrap();
+    out
+}
+
+fn inject_jpeg_segment_after_soi(mut base: Vec<u8>, marker: u8, payload: &[u8]) -> Vec<u8> {
+    let len = (payload.len() + 2) as u16;
+    let mut seg = Vec::with_capacity(4 + payload.len());
+    seg.extend_from_slice(&[0xFF, marker]);
+    seg.extend_from_slice(&len.to_be_bytes());
+    seg.extend_from_slice(payload);
+    base.splice(2..2, seg);
+    base
+}
+
+fn build_camera_exif_app1(make: &str) -> Vec<u8> {
+    let mut make_bytes = make.as_bytes().to_vec();
+    make_bytes.push(0);
+    let value_offset = (8 + 2 + 12 + 4) as u32;
+    let mut tiff = Vec::new();
+    tiff.extend_from_slice(b"II\x2A\x00\x08\x00\x00\x00");
+    tiff.extend_from_slice(&1_u16.to_le_bytes());
+    tiff.extend_from_slice(&0x010F_u16.to_le_bytes()); // Make
+    tiff.extend_from_slice(&2_u16.to_le_bytes()); // ASCII
+    tiff.extend_from_slice(&(make_bytes.len() as u32).to_le_bytes());
+    if make_bytes.len() <= 4 {
+        let mut inline = [0_u8; 4];
+        inline[..make_bytes.len()].copy_from_slice(&make_bytes);
+        tiff.extend_from_slice(&inline);
+    } else {
+        tiff.extend_from_slice(&value_offset.to_le_bytes());
+    }
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    if make_bytes.len() > 4 {
+        tiff.extend_from_slice(&make_bytes);
+    }
+    let mut app1 = b"Exif\0\0".to_vec();
+    app1.extend_from_slice(&tiff);
+    app1
+}
+
+#[test]
+fn stream_preview_mode_renders_grid_and_viewer_in_one_get_with_zero_disk_originals() {
+    let data = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let base_jpg = encode_test_jpeg(2400, 1600, [42, 128, 210]);
+    let camera_jpg =
+        inject_jpeg_segment_after_soi(base_jpg, 0xE1, &build_camera_exif_app1("StreamCamera"));
+    *server.filename.lock().unwrap() = "streamed.jpg".into();
+    *server.photo.lock().unwrap() = camera_jpg;
+
+    let service = Service::open(data.path()).unwrap();
+    let policy = service
+        .execute(
+            "cache.policy.set",
+            json!({"preview_policy":"stream_preview"}),
+        )
+        .unwrap();
+    assert_eq!(policy["policy"]["preview_policy"], "stream_preview");
+
+    let (_library, asset) = remote_library(&service, &server);
+
+    // 1. Grid thumbnail request (`t512`) streams once in RAM and emits both `t512` + `p2560`.
+    let t512 = preview(&service, &asset["id"]);
+    assert_eq!(t512["tier"], "t512");
+    assert_eq!(t512["width"], 512);
+    assert_eq!(t512["asset"]["metadata"]["Make"], "StreamCamera");
+    assert_eq!(server.full_gets(), 1);
+    assert_eq!(
+        stats(&service)["usage"]["originals_bytes"],
+        0,
+        "stream_preview must not persist unpinned originals to disk"
+    );
+    assert!(stats(&service)["usage"]["previews_bytes"].as_u64().unwrap() > 0);
+
+    // 2. Opening Viewer (`p2560`), computing `histogram`, and cascading downward to `t256`
+    //    all hit the cached pyramid with ZERO additional network requests!
+    let count_after_grid = server.count();
+    let p2560 = service
+        .execute("asset.preview", json!({"id":asset["id"],"tier":"p2560"}))
+        .unwrap();
+    assert_eq!(p2560["width"], 2400);
+    assert_eq!(p2560["height"], 1600);
+    let hist = service
+        .execute("asset.histogram", json!({"id":asset["id"]}))
+        .unwrap();
+    assert!(hist["pixels"].as_u64().unwrap() > 0);
+    let t256 = service
+        .preview_image(asset["id"].as_str().unwrap(), PreviewTier::T256, false)
+        .unwrap();
+    assert_eq!(t256.width, 256);
+    assert_eq!(server.count(), count_after_grid);
+    assert_eq!(stats(&service)["usage"]["originals_bytes"], 0);
+
+    // 3. Restart offline: compact NPV2 previews + histogram still work without original on disk!
+    drop(service);
+    server.offline.store(true, Ordering::SeqCst);
+    let reopened = Service::open(data.path()).unwrap();
+    assert_eq!(
+        reopened
+            .preview_image(asset["id"].as_str().unwrap(), PreviewTier::P2560, false)
+            .unwrap()
+            .width,
+        2400
+    );
+    assert_eq!(
+        reopened
+            .preview_image(asset["id"].as_str().unwrap(), PreviewTier::T256, false)
+            .unwrap()
+            .width,
+        256
+    );
+    let offline_hist = reopened
+        .execute("asset.histogram", json!({"id":asset["id"]}))
+        .unwrap();
+    assert!(offline_hist["pixels"].as_u64().unwrap() > 0);
+    assert_eq!(stats(&reopened)["usage"]["originals_bytes"], 0);
+
+    // 4. Explicit offline pin still downloads & persists original when requested by user.
+    server.offline.store(false, Ordering::SeqCst);
+    reopened
+        .execute(
+            "storage.add",
+            json!({
+                "name":"Synthetic WebDAV", "kind":"webdav", "endpoint":server.endpoint,
+                "username":"synthetic-user", "password":"synthetic-password", "remember_credentials":false
+            }),
+        )
+        .unwrap();
+    reopened
+        .execute("asset.offline.set", json!({"id":asset["id"],"pinned":true}))
+        .unwrap();
+    assert!(stats(&reopened)["usage"]["pinned_bytes"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn memory_only_mode_writes_zero_bytes_to_disk_for_remote_and_local_previews() {
+    let data = tempfile::tempdir().unwrap();
+    let local_dir = tempfile::tempdir().unwrap();
+    let local_file = local_dir.path().join("local.ppm");
+    fs::write(&local_file, PHOTO).unwrap();
+
+    let server = Server::new();
+    let service = Service::open(data.path()).unwrap();
+    service
+        .execute("cache.policy.set", json!({"preview_policy":"memory_only"}))
+        .unwrap();
+
+    let (_library, remote_asset) = remote_library(&service, &server);
+    let rendered = preview(&service, &remote_asset["id"]);
+    assert_eq!(rendered["width"], 2);
+    assert_eq!(server.full_gets(), 1);
+    let count = server.count();
+    // Viewer + downward cascade hit PreviewMemory RAM LRU with 0 network requests:
+    assert_eq!(
+        service
+            .preview_image(
+                remote_asset["id"].as_str().unwrap(),
+                PreviewTier::P2560,
+                false
+            )
+            .unwrap()
+            .width,
+        2
+    );
+    assert_eq!(
+        service
+            .preview_image(
+                remote_asset["id"].as_str().unwrap(),
+                PreviewTier::T256,
+                false
+            )
+            .unwrap()
+            .width,
+        2
+    );
+    assert_eq!(server.count(), count);
+
+    // Local file preview also respects `memory_only` (zero disk cache writes):
+    let local_asset = service
+        .execute("file.open", json!({"path":local_file}))
+        .unwrap();
+    assert_eq!(preview(&service, &local_asset["id"])["width"], 2);
+    let report = service.quiesce(Duration::from_secs(2)).unwrap();
+    assert!(!report.timed_out);
+
+    let usage = stats(&service)["usage"].clone();
+    assert_eq!(usage["originals_bytes"], 0);
+    assert_eq!(usage["previews_bytes"], 0);
+    assert_eq!(usage["total_bytes"], 0);
+}
+
+#[test]
+fn camera_mpf_jpeg_serves_grid_and_viewer_via_http_range_without_full_get() {
+    let data = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    server.ranges.store(true, Ordering::SeqCst);
+
+    // Build a >2.5 MiB synthetic camera JPEG (3600x2400 primary SOF0 + MPF tail 2048x1365 HD preview).
+    let primary = encode_test_jpeg(3600, 2400, [30, 80, 160]);
+    let mpf_preview = encode_test_jpeg(2048, 1365, [210, 95, 45]);
+
+    // MPF TIFF payload: 2 entries (0xB001 NumberOfImages = 2, 0xB002 MPEntry = 32 bytes at offset 38).
+    let mpf_payload_len: usize = 4 + 38 + 32;
+    let mpf_seg_total: usize = 4 + mpf_payload_len;
+    let app1_payload = build_camera_exif_app1("SonyCamera");
+    let app1_seg_total: usize = 4 + app1_payload.len();
+    // Pad primary before tail MPF preview so total file size exceeds the 2 MiB Range threshold.
+    let padding_len: usize = (2500 * 1024_usize).saturating_sub(primary.len() + mpf_preview.len());
+    let preview_file_offset = primary.len() + app1_seg_total + mpf_seg_total + padding_len;
+    // In our synthetic layout, APP1 is inserted right after SOI (offset 2), and APP2 MPF follows APP1:
+    // MPF TIFF base = 2 (SOI) + app1_seg_total + 4 (FF E2 + len) + 4 ("MPF\0") = 10 + app1_seg_total.
+    let mpf_tiff_base = 10 + app1_seg_total;
+    let rel_offset = u32::try_from(preview_file_offset - mpf_tiff_base).unwrap();
+
+    let mut mpf_tiff = Vec::new();
+    mpf_tiff.extend_from_slice(b"II\x2A\x00\x08\x00\x00\x00");
+    mpf_tiff.extend_from_slice(&2_u16.to_le_bytes());
+    mpf_tiff.extend_from_slice(&0xB001_u16.to_le_bytes());
+    mpf_tiff.extend_from_slice(&4_u16.to_le_bytes());
+    mpf_tiff.extend_from_slice(&1_u32.to_le_bytes());
+    mpf_tiff.extend_from_slice(&2_u32.to_le_bytes());
+    mpf_tiff.extend_from_slice(&0xB002_u16.to_le_bytes());
+    mpf_tiff.extend_from_slice(&7_u16.to_le_bytes());
+    mpf_tiff.extend_from_slice(&32_u32.to_le_bytes());
+    mpf_tiff.extend_from_slice(&38_u32.to_le_bytes());
+    mpf_tiff.extend_from_slice(&0_u32.to_le_bytes());
+    assert_eq!(mpf_tiff.len(), 38);
+    // Entry 0 (primary)
+    mpf_tiff.extend_from_slice(&0x0003_0000_u32.to_le_bytes());
+    mpf_tiff.extend_from_slice(&(primary.len() as u32).to_le_bytes());
+    mpf_tiff.extend_from_slice(&0_u32.to_le_bytes());
+    mpf_tiff.extend_from_slice(&0_u32.to_le_bytes());
+    // Entry 1 (dependent HD preview)
+    mpf_tiff.extend_from_slice(&0x0001_0002_u32.to_le_bytes());
+    mpf_tiff.extend_from_slice(&(mpf_preview.len() as u32).to_le_bytes());
+    mpf_tiff.extend_from_slice(&rel_offset.to_le_bytes());
+    mpf_tiff.extend_from_slice(&0_u32.to_le_bytes());
+
+    let mut mpf_app2 = b"MPF\0".to_vec();
+    mpf_app2.extend_from_slice(&mpf_tiff);
+    assert_eq!(mpf_app2.len(), mpf_payload_len);
+
+    // Splice MPF then APP1 after SOI so final order is SOI -> APP1 -> APP2(MPF) -> rest of primary -> padding -> mpf_preview.
+    let with_mpf = inject_jpeg_segment_after_soi(primary, 0xE2, &mpf_app2);
+    let mut full_camera_jpg = inject_jpeg_segment_after_soi(with_mpf, 0xE1, &app1_payload);
+    full_camera_jpg.extend(std::iter::repeat_n(0_u8, padding_len));
+    assert_eq!(full_camera_jpg.len(), preview_file_offset);
+    full_camera_jpg.extend_from_slice(&mpf_preview);
+
+    *server.filename.lock().unwrap() = "DSC0001.JPG".into();
+    *server.photo.lock().unwrap() = full_camera_jpg;
+
+    let service = Service::open(data.path()).unwrap();
+    service
+        .execute("cache.policy.set", json!({"preview_policy":"manual"}))
+        .unwrap();
+    let (_library, asset) = remote_library(&service, &server);
+
+    let t512 = preview(&service, &asset["id"]);
+    assert_eq!(t512["source"], "remote_embedded_jpeg");
+    assert_eq!(t512["width"], 512);
+    assert_eq!(t512["asset"]["width"], 3600);
+    assert_eq!(t512["asset"]["height"], 2400);
+    assert_eq!(t512["asset"]["metadata"]["Make"], "SonyCamera");
+    assert_eq!(server.full_gets(), 0);
+
+    let count_after_t512 = server.count();
+    let range_bytes: usize = server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.range_bytes)
+        .sum();
+    assert!(
+        range_bytes < 600 * 1024,
+        "2.5 MiB MPF JPEG fetched {range_bytes} bytes via Range"
+    );
+
+    // Viewer P2560 + Histogram were produced in the same pass — zero extra Range or GET requests!
+    let p2560 = service
+        .execute("asset.preview", json!({"id":asset["id"],"tier":"p2560"}))
+        .unwrap();
+    assert_eq!(p2560["width"], 2048);
+    let hist = service
+        .execute("asset.histogram", json!({"id":asset["id"]}))
+        .unwrap();
+    assert!(hist["pixels"].as_u64().unwrap() > 0);
+    assert_eq!(server.count(), count_after_t512);
+    assert_eq!(stats(&service)["usage"]["originals_bytes"], 0);
+}
+
+#[test]
+fn stale_asset_lock_files_are_swept_on_clean_service_startup_and_etag_creates_none() {
+    let data = tempfile::tempdir().unwrap();
+    let photos = tempfile::tempdir().unwrap();
+    let file = photos.path().join("photo.ppm");
+    fs::write(&file, PHOTO).unwrap();
+    let lock_dir = data.path().join("catalog/asset-locks");
+
+    let asset_id = {
+        let service = Service::open(data.path()).unwrap();
+        let asset = service.execute("file.open", json!({"path":file})).unwrap();
+        let id = asset["id"].as_str().unwrap().to_owned();
+        service.execute("asset.refresh", json!({"id":id})).unwrap();
+        let lock_count = fs::read_dir(&lock_dir).unwrap().count();
+        assert_eq!(lock_count, 1);
+        id
+    };
+
+    let reopened = Service::open(data.path()).unwrap();
+    let swept_count = fs::read_dir(&lock_dir)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(
+        swept_count, 0,
+        "clean startup without other sessions must sweep stale asset-lock files"
+    );
+
+    for _ in 0..5 {
+        let etag = reopened
+            .preview_etag(&asset_id, PreviewTier::T512, false)
+            .unwrap();
+        assert!(etag.starts_with('"'));
+    }
+    let after_etag_count = fs::read_dir(&lock_dir)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(
+        after_etag_count, 0,
+        "preview_etag must not create per-asset lock files"
+    );
+}

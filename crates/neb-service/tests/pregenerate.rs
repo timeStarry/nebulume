@@ -69,3 +69,57 @@ fn pregeneration_renders_each_local_photo_once_and_stops_when_cancelled() {
         .unwrap();
     assert_eq!(again.rendered, 0);
 }
+
+#[test]
+fn pregeneration_with_progress_reports_start_and_completion_counts() {
+    let data = tempfile::tempdir().unwrap();
+    let photos = tempfile::tempdir().unwrap();
+    for index in 0..5 {
+        fs::write(photos.path().join(format!("p-{index}.ppm")), PHOTO).unwrap();
+    }
+    let svc = Service::open(data.path()).unwrap();
+    let library = svc
+        .execute(
+            "library.add",
+            json!({"name":"进度测试","root":photos.path()}),
+        )
+        .unwrap();
+    let id = library["id"].as_str().unwrap();
+    svc.execute("library.scan", json!({"library_id":id}))
+        .unwrap();
+
+    let run = AtomicBool::new(false);
+    let mut ticks = Vec::new();
+    let report = svc
+        .pregenerate_previews_with_progress(id, PreviewTier::T256, &run, |done, total| {
+            ticks.push((done, total));
+        })
+        .unwrap();
+    assert_eq!(report.rendered, 5);
+    assert_eq!(ticks.first(), Some(&(0, 5)));
+    assert_eq!(ticks.last(), Some(&(5, 5)));
+    assert!(ticks.contains(&(4, 5)));
+}
+
+#[test]
+fn storage_probe_command_checks_local_directory_without_saving_source() {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    fs::write(folder.path().join("sample.ppm"), PHOTO).unwrap();
+    let svc = Service::open(data.path()).unwrap();
+
+    let probed = svc
+        .execute(
+            "storage.probe",
+            json!({
+                "name": "",
+                "kind": "local",
+                "endpoint": folder.path(),
+                "remember_credentials": false
+            }),
+        )
+        .unwrap();
+    assert_eq!(probed["connected"], true);
+    assert_eq!(probed["availability"], "online");
+    assert_eq!(svc.execute("storage.list", json!({})).unwrap(), json!([]));
+}

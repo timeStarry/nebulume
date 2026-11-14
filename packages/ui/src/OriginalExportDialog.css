@@ -1,0 +1,11 @@
+.original-export-grid {
+  display: grid;
+  gap: var(--nl-s-4);
+}
+.original-export-grid .nl-seg {
+  width: 100%;
+}
+.original-export-grid .nl-seg button {
+  flex: 1;
+  justify-content: center;
+}

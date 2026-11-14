@@ -40,10 +40,10 @@ function CullingSettings() {
   const [watching, setWatching] = createSignal(readWatchLibraries());
   const [toolbarAutoHide, setToolbarAutoHide] = createSignal(readToolbarAutoHide(localStorage));
   const [fades, setFades] = createSignal(readOverlayFades(localStorage));
-  const [xmpAutoWrite, setXmpAutoWrite] = createSignal(false);
+  const [xmpAutoWrite, setXmpAutoWrite] = createSignal(true);
   onMount(() => {
     void execute<XmpPolicy>('xmp.policy.get')
-      .then((res) => setXmpAutoWrite(!!res?.auto_write))
+      .then((res) => setXmpAutoWrite(res?.auto_write ?? true))
       .catch(() => undefined);
   });
   return (

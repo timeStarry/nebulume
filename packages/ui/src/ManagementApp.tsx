@@ -23,12 +23,14 @@ import {
   openExternal,
   openViewerWindow,
   pregeneratePreviews,
+  readPregenerate,
   revealInFolder,
   watchLibraries,
 } from './api';
 import { addBrowserFiles } from './demo';
 import { ConfirmDialog, LibraryDialog, StorageDialog } from './Dialogs';
 import ExportDialog from './ExportDialog';
+import OriginalExportDialog from './OriginalExportDialog';
 import type { ExportRecipe } from './export-presets';
 import AssetInspector from './AssetInspector';
 import LibrarySidebar, {
@@ -53,6 +55,7 @@ import {
   Select,
   Slider,
   Spacer,
+  Spinner,
   TextInput,
   Toggle,
   Toolbar,
@@ -62,11 +65,17 @@ import './library/library.css';
 import './library/wall.css';
 import LibraryOverview from './LibraryOverview';
 import {
+  exportOriginals,
   exportPhotos,
   exportSummary,
+  originalExportSummary,
+  resolveOriginalExportPlan,
   restorePhotos,
+  targetsForOriginalChoice,
   trashPhotos,
   trashSummary,
+  type OriginalExportPlan,
+  type OriginalExportTarget,
 } from './photo-actions';
 import { Thumbnail } from './PhotoView';
 import { gridTier, watchDevicePixelRatio } from './preview-url';
@@ -91,6 +100,7 @@ import { COLOR_LABEL_NAMES, groupMarks, keyToColorLabel, markHudText, type UndoE
 import { UpdatePrompt } from './UpdatePanel';
 import { updates } from './updates';
 import {
+  bytes,
   errorMessage,
   isTextEntry,
   type Asset,
@@ -98,15 +108,19 @@ import {
   type AssetIdsResult,
   type AssetListOptions,
   type AssetListResult,
+  type Availability,
+  type CaptureIndexStatus,
   type Collection,
   type ColorLabel,
   type ColorLabelFilter,
+  type FingerprintStatus,
   type Flag,
   type FlagFilter,
   type ImportBatch,
   type Library,
   type LibraryFolders,
   type ScanResult,
+  type StorageCheck,
   type StorageConfig,
   type TrashResult,
   type XmpSyncReport,
@@ -255,6 +269,7 @@ export default function ManagementApp() {
   const { busy, setBusy, setError, setNotice, setSyncError, action } = feedback;
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const [exportDialogIds, setExportDialogIds] = createSignal<string[] | null>(null);
+  const [originalExportPlan, setOriginalExportPlan] = createSignal<OriginalExportPlan | null>(null);
   const [editingSource, setEditingSource] = createSignal<StorageConfig>();
   const [editingLibrary, setEditingLibrary] = createSignal<Library>();
   const [removing, setRemoving] = createSignal<
@@ -340,6 +355,7 @@ export default function ManagementApp() {
       }
     },
   );
+  const [checkingSourceIds, setCheckingSourceIds] = createSignal<ReadonlySet<string>>(new Set());
   async function refreshLibraries() {
     try {
       setLibraries(await execute<Library[]>('library.list'));
@@ -356,6 +372,82 @@ export default function ManagementApp() {
   }
   function updateSource(source: StorageConfig) {
     setSources((previous) => [...previous.filter((item) => item.id !== source.id), source]);
+    if (source.connected !== undefined || source.availability) {
+      const nextAvailability: Availability =
+        source.availability ?? (source.connected ? 'online' : 'unchecked');
+      if (nextAvailability !== 'unchecked') {
+        setLibraries((previous) =>
+          previous.map((library) =>
+            library.storage_id === source.id
+              ? {
+                  ...library,
+                  connected: nextAvailability === 'online',
+                  availability: nextAvailability,
+                }
+              : library,
+          ),
+        );
+      }
+    }
+  }
+  async function checkRemoteSources(targets: StorageConfig[], force = false) {
+    if (!desktop || !targets.length) return;
+    const currentLibs = libraries();
+    const candidates = targets.filter(
+      (item) =>
+        item.kind !== 'local' &&
+        (force ||
+          ((!item.availability || item.availability === 'unchecked') &&
+            !currentLibs.some(
+              (lib) =>
+                lib.storage_id === item.id && lib.availability && lib.availability !== 'unchecked',
+            ))),
+    );
+    if (!candidates.length) return;
+    setCheckingSourceIds((previous) => {
+      const next = new Set(previous);
+      for (const item of candidates) next.add(item.id);
+      return next;
+    });
+    await Promise.allSettled(
+      candidates.map(async (item) => {
+        try {
+          const result = await execute<StorageCheck>('storage.check', { id: item.id });
+          if (disposed) return;
+          const availability: Availability =
+            result.availability ?? (result.connected ? 'online' : 'error');
+          setSources((previous) =>
+            previous.map((entry) =>
+              entry.id === item.id
+                ? {
+                    ...entry,
+                    connected: result.connected,
+                    availability,
+                    credential_status: result.credential_status,
+                  }
+                : entry,
+            ),
+          );
+          setLibraries((previous) =>
+            previous.map((library) =>
+              library.storage_id === item.id
+                ? { ...library, connected: result.connected, availability }
+                : library,
+            ),
+          );
+        } catch {
+          // Startup auto-probes stay non-disruptive if an unconfigured or test source rejects.
+        } finally {
+          if (!disposed) {
+            setCheckingSourceIds((previous) => {
+              const next = new Set(previous);
+              next.delete(item.id);
+              return next;
+            });
+          }
+        }
+      }),
+    );
   }
   createEffect(
     on(visibleLibraries, () => {
@@ -368,11 +460,13 @@ export default function ManagementApp() {
       execute<StorageConfig[]>('storage.list'),
       execute<Record<string, unknown>>('system.info'),
     ]);
-    if (results[0].status === 'fulfilled') setSources(results[0].value);
+    const initialSources = results[0].status === 'fulfilled' ? results[0].value : [];
+    if (results[0].status === 'fulfilled') setSources(initialSources);
     else setError(errorMessage(results[0].reason));
     if (results[1].status === 'fulfilled') setSystem(results[1].value);
     setReady(true);
     if (section() === 'libraries') openInitialLibrary();
+    void checkRemoteSources(initialSources);
   }
   function listOptions(): AssetListOptions {
     return {
@@ -751,10 +845,10 @@ export default function ManagementApp() {
     setEditingSource(source);
     setDialog('storage');
   }
-  /** Renders every selected photo with its crop to a chosen folder in the background. */
-  async function exportSelection(ids = selectedIds()) {
-    if (!ids.length || tasks.isRunning('export')) return;
-    const directory = desktop ? await chooseDirectory('选择导出文件夹') : '';
+  /** Copies original files untouched (direct when unambiguous RAW/JPEG; prompts when paired or mixed). */
+  async function executeOriginalExport(targets: OriginalExportTarget[]) {
+    if (!targets.length || tasks.isRunning('export')) return;
+    const directory = desktop ? await chooseDirectory('选择原片导出文件夹') : '';
     if (desktop && !directory) return;
     setError('');
     setNotice('');
@@ -762,23 +856,38 @@ export default function ManagementApp() {
       const result = await tasks.run(
         {
           kind: 'export',
-          title: `导出 ${ids.length} 张照片`,
+          title: `导出 ${targets.length} 个原片`,
           processed: 0,
-          total: ids.length,
+          total: targets.length,
         },
         ({ progress }) =>
-          exportPhotos(
-            ids,
-            directory ?? '',
-            new Map(assets().map((item) => [item.id, item])),
-            (done, count) => progress({ processed: done, total: count, detail: `${done} / ${count}` }),
+          exportOriginals(targets, directory ?? '', (done, count) =>
+            progress({ processed: done, total: count, detail: `${done} / ${count}` }),
           ),
         (res) =>
-          `已导出 ${res.exported} 张${res.failures.length ? `，${res.failures.length} 张失败` : ''}`,
+          `已导出 ${res.exported} 个原片${res.failures.length ? `，${res.failures.length} 个失败` : ''}`,
       );
-      const summary = exportSummary(result, directory ?? '', desktop);
+      const summary = originalExportSummary(result, directory ?? '', desktop);
       if (summary.error) setError(summary.error);
       else setNotice(summary.notice!);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+  async function exportSelection(ids = selectedIds()) {
+    if (!ids.length || tasks.isRunning('export')) return;
+    setError('');
+    try {
+      const plan = await resolveOriginalExportPlan(
+        ids,
+        new Map(assets().map((item) => [item.id, item])),
+      );
+      if (!plan.allTargets.length) return;
+      if (plan.needsFormatChoice) {
+        setOriginalExportPlan(plan);
+        return;
+      }
+      await executeOriginalExport(plan.allTargets);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -791,7 +900,7 @@ export default function ManagementApp() {
       const result = await tasks.run(
         {
           kind: 'export',
-          title: `按预设导出 ${ids.length} 张照片`,
+          title: `导出 ${ids.length} 张 JPEG`,
           processed: 0,
           total: ids.length,
         },
@@ -905,19 +1014,195 @@ export default function ManagementApp() {
       await loadAssets(false, true);
     }
   }
-  function runPregenerate(library: Library) {
-    if (tasks.isRunning('pregenerate', library.id)) return;
-    void tasks
-      .run(
-        {
-          kind: 'pregenerate',
+  interface PregenerateProgressPayload {
+    library_id: string;
+    processed: number;
+    total: number;
+    status: 'running' | 'completed' | 'cancelled' | 'failed';
+    rendered: number;
+    cached: number;
+    failed: number;
+  }
+  let activePregenerate:
+    | { taskId: string; libraryId: string; fallbackTimer?: ReturnType<typeof setTimeout> }
+    | undefined;
+  const fingerprintTrackers = new Map<
+    string,
+    { taskId: string; libraryName: string; timer?: ReturnType<typeof setTimeout> }
+  >();
+  const captureIndexTrackers = new Map<
+    string,
+    { taskId: string; libraryName: string; timer?: ReturnType<typeof setTimeout> }
+  >();
+
+  function syncCaptureIndexTask(library: Library, status: CaptureIndexStatus) {
+    const job = status.job;
+    const running = !!job && ['running', 'stopping'].includes(job.status);
+    let tracker = captureIndexTrackers.get(library.id);
+    if (running && job) {
+      const detail = `${job.processed} / ${job.total}`;
+      if (!tracker) {
+        const taskId = tasks.start({
+          kind: 'capture_index',
           libraryId: library.id,
-          title: `生成缩略图 · ${library.name}`,
-        },
-        () => pregeneratePreviews(library.id, gridTier(thumbSize(), devicePixelRatio())),
-        () => '缩略图已就绪',
-      )
-      .catch(() => undefined);
+          title: `拍摄时间索引 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+        tracker = { taskId, libraryName: library.name };
+        captureIndexTrackers.set(library.id, tracker);
+      } else {
+        tasks.progress(tracker.taskId, {
+          title: `拍摄时间索引 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+      }
+      if (!tracker.timer && !disposed) {
+        const currentTracker = tracker;
+        currentTracker.timer = setTimeout(async () => {
+          currentTracker.timer = undefined;
+          if (disposed) return;
+          try {
+            const next = await execute<CaptureIndexStatus>('library.capture_index.status', {
+              library_id: library.id,
+            });
+            if (!disposed) syncCaptureIndexTask(library, next);
+          } catch {
+            /* Next poll or control mount reconciles. */
+          }
+        }, 1000);
+      }
+      return;
+    }
+    if (tracker) {
+      if (tracker.timer) clearTimeout(tracker.timer);
+      captureIndexTrackers.delete(library.id);
+      if (job?.status === 'failed') {
+        tasks.fail(tracker.taskId, job.error || '拍摄时间索引未完成');
+      } else if (job?.status === 'cancelled') {
+        tasks.complete(tracker.taskId, `已停止（${job.processed} / ${job.total}）`);
+      } else {
+        tasks.complete(
+          tracker.taskId,
+          job
+            ? `已完成 ${job.processed} / ${job.total}${job.failed ? `，${job.failed} 项待重试` : ''}`
+            : '拍摄时间索引已就绪',
+        );
+      }
+      if (job && !completedCaptureJobs.has(job.id)) {
+        completedCaptureJobs.add(job.id);
+        if (libraryId() === library.id) {
+          void loadAssets(false, true);
+          if (info()) void refetchDetail();
+        } else {
+          dirtyLibraries.add(library.id);
+        }
+      }
+    }
+  }
+
+  async function retryLibraryConnection(library: Library) {
+    if (library.storage_id && library.source_kind && library.source_kind !== 'local') {
+      const target =
+        sources().find((item) => item.id === library.storage_id) ??
+        ({
+          id: library.storage_id,
+          name: library.source_name || library.name,
+          kind: library.source_kind,
+          endpoint: library.source_endpoint || '',
+        } as StorageConfig);
+      await checkRemoteSources([target], true);
+    }
+    await refreshLibraries();
+  }
+
+  function syncFingerprintTask(library: Library, status: FingerprintStatus) {
+    const job = status.job;
+    const running = !!job && ['running', 'stopping'].includes(job.status);
+    let tracker = fingerprintTrackers.get(library.id);
+    if (running && job) {
+      const detail = `${job.processed} / ${job.total} · 已读取 ${bytes(job.bytes_read)}`;
+      if (!tracker) {
+        const taskId = tasks.start({
+          kind: 'fingerprint',
+          libraryId: library.id,
+          title: `内容指纹 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+        tracker = { taskId, libraryName: library.name };
+        fingerprintTrackers.set(library.id, tracker);
+      } else {
+        tasks.progress(tracker.taskId, {
+          title: `内容指纹 · ${library.name}`,
+          processed: job.processed,
+          total: job.total,
+          detail,
+        });
+      }
+      if (!tracker.timer && !disposed) {
+        const currentTracker = tracker;
+        currentTracker.timer = setTimeout(async () => {
+          currentTracker.timer = undefined;
+          if (disposed) return;
+          try {
+            const next = await execute<FingerprintStatus>('library.fingerprint.status', {
+              library_id: library.id,
+            });
+            if (!disposed) syncFingerprintTask(library, next);
+          } catch {
+            /* Next status check or dialog open reconciles. */
+          }
+        }, 1000);
+      }
+      return;
+    }
+    if (tracker) {
+      if (tracker.timer) clearTimeout(tracker.timer);
+      fingerprintTrackers.delete(library.id);
+      if (job?.status === 'failed') {
+        tasks.fail(tracker.taskId, job.error || '内容指纹任务未完成');
+      } else if (job?.status === 'cancelled') {
+        tasks.complete(tracker.taskId, `已停止（${job.processed} / ${job.total}）`);
+      } else {
+        tasks.complete(
+          tracker.taskId,
+          job ? `已完成 ${job.processed} / ${job.total}` : '内容指纹已就绪',
+        );
+      }
+    }
+  }
+
+  function runPregenerate(library: Library) {
+    if (!desktop || !readPregenerate() || tasks.isRunning('pregenerate', library.id)) return;
+    if (activePregenerate) {
+      if (activePregenerate.fallbackTimer) clearTimeout(activePregenerate.fallbackTimer);
+      tasks.dismiss(activePregenerate.taskId);
+      activePregenerate = undefined;
+    }
+    const taskId = tasks.start({
+      kind: 'pregenerate',
+      libraryId: library.id,
+      title: `生成缩略图 · ${library.name}`,
+    });
+    const fallbackTimer = setTimeout(() => {
+      if (activePregenerate?.taskId === taskId) {
+        tasks.complete(taskId, '缩略图已就绪');
+        activePregenerate = undefined;
+      }
+    }, 1200);
+    activePregenerate = { taskId, libraryId: library.id, fallbackTimer };
+    void pregeneratePreviews(library.id, gridTier(thumbSize(), devicePixelRatio())).catch((e) => {
+      if (activePregenerate?.taskId === taskId) {
+        if (activePregenerate.fallbackTimer) clearTimeout(activePregenerate.fallbackTimer);
+        tasks.fail(taskId, errorMessage(e));
+        activePregenerate = undefined;
+      }
+    });
   }
   async function scan(library: Library) {
     if (tasks.isRunning('scan', library.id)) return;
@@ -1375,6 +1660,7 @@ export default function ManagementApp() {
       event.key.toLowerCase() === 'k' &&
       !dialog() &&
       !exportDialogIds() &&
+      !originalExportPlan() &&
       !removing() &&
       !collectionEditor() &&
       !collectingIds() &&
@@ -1411,6 +1697,7 @@ export default function ManagementApp() {
     if (
       dialog() ||
       exportDialogIds() ||
+      originalExportPlan() ||
       removing() ||
       collectionEditor() ||
       collectingIds() ||
@@ -1561,11 +1848,9 @@ export default function ManagementApp() {
     else setSelectedId(asset.id);
     const count = selectedIds().length;
     const subject = count > 1 ? `所选 ${count} 张照片` : asset.filename;
-    const rateItems = [5, 4, 3, 2, 1, 0].map((value) => ({
-      label: value ? `评为 ${'★'.repeat(value)}` : '清除评级',
-      ariaLabel: value ? `将${subject}评为 ${value} 星` : `清除${subject}的评级`,
-      onSelect: () => void markSelection({ rating: value }),
-    }));
+    const localSingle = desktop && !asset.source_key && count === 1 && !!asset.path;
+    const canTrash =
+      currentLibrary()?.source_kind === 'local' || !currentLibrary()?.source_kind;
     setContextMenu({
       x: point.x,
       y: point.y,
@@ -1574,6 +1859,7 @@ export default function ManagementApp() {
       items: [
         {
           label: count > 1 ? '在查看器中打开（所选照片）' : '在查看器中打开',
+          icon: 'expand',
           onSelect: () =>
             void openAsset(asset, count > 1 ? selectedIds() : assets().map((item) => item.id)),
         },
@@ -1581,6 +1867,7 @@ export default function ManagementApp() {
           ? [
               {
                 label: '在新窗口中打开',
+                icon: 'app-window' as const,
                 onSelect: () =>
                   void openAssetWindow(
                     asset,
@@ -1591,29 +1878,14 @@ export default function ManagementApp() {
           : []),
         {
           label: '从此照片开始选图',
+          icon: 'check',
+          shortcut: '⇧C',
           onSelect: () => void startCulling(),
         },
         'separator',
-        ...rateItems,
-        'separator',
-        { label: '留用', onSelect: () => void markSelection({ flag: 'pick' }) },
-        {
-          label: '淘汰',
-          onSelect: () => void markSelection({ flag: 'reject' }),
-        },
-        {
-          label: '清除旗标',
-          onSelect: () => void markSelection({ flag: 'none' }),
-        },
-        'separator',
-        { label: '设为红色标', shortcut: '6', onSelect: () => void markSelection({ color_label: 'red' }) },
-        { label: '设为黄色标', shortcut: '7', onSelect: () => void markSelection({ color_label: 'yellow' }) },
-        { label: '设为绿色标', shortcut: '8', onSelect: () => void markSelection({ color_label: 'green' }) },
-        { label: '设为蓝色标', shortcut: '9', onSelect: () => void markSelection({ color_label: 'blue' }) },
-        { label: '清除色标', onSelect: () => void markSelection({ color_label: 'none' }) },
-        'separator',
         {
           label: count > 1 ? `将所选 ${count} 张加入精选集…` : '加入精选集…',
+          icon: 'folder-plus',
           onSelect: () => setCollectingIds([...selectedIds()]),
         },
         ...(activeCollection()?.kind === 'manual'
@@ -1626,86 +1898,71 @@ export default function ManagementApp() {
           : []),
         'separator',
         {
-          label: '显示详情',
-          onSelect: () => setInfo(true),
-        },
-        {
-          label: count > 1 ? `导出所选 ${count} 张为 JPEG…` : '导出为 JPEG…',
+          label: count > 1 ? `导出所选 ${count} 张原片…` : '导出原片…',
+          icon: 'download',
           disabled: tasks.isRunning('export'),
           onSelect: () => void exportSelection(),
         },
         {
-          label: count > 1 ? `按预设导出所选 ${count} 张…` : '按预设导出…',
+          label: count > 1 ? `导出所选 ${count} 张为 JPEG…` : '导出 JPEG…',
+          icon: 'export',
           shortcut: '⌘⇧E',
           disabled: tasks.isRunning('export'),
           onSelect: () => setExportDialogIds([...selectedIds()]),
         },
-        ...(desktop && !asset.source_key
+        ...(localSingle || (count === 1 && !!asset.path)
           ? [
-              {
-                label: '在文件夹中显示',
-                disabled: count > 1 || !asset.path,
-                onSelect: () =>
-                  void revealInFolder(asset.path).catch((e) => setError(errorMessage(e))),
-              },
-              {
-                label: '用默认应用打开',
-                disabled: count > 1 || !asset.path,
-                onSelect: () =>
-                  void openExternal({ id: asset.id, path: asset.path }).catch((e) =>
-                    setError(errorMessage(e)),
-                  ),
-              },
-              {
-                label: '选择外部精修软件打开…',
-                disabled: count > 1 || !asset.path,
-                onSelect: () =>
-                  void chooseExternalApp()
-                    .then((app) => {
-                      if (app) return openExternal({ id: asset.id, path: asset.path, appPath: app });
-                    })
-                    .catch((e) => setError(errorMessage(e))),
-              },
+              'separator' as const,
+              ...(localSingle
+                ? [
+                    {
+                      label: '在文件夹中显示',
+                      icon: 'folder-open' as const,
+                      onSelect: () =>
+                        void revealInFolder(asset.path).catch((e) => setError(errorMessage(e))),
+                    },
+                    {
+                      label: '选择外部精修软件打开…',
+                      icon: 'external-link' as const,
+                      onSelect: () =>
+                        void chooseExternalApp()
+                          .then((app) => {
+                            if (app) {
+                              return openExternal({
+                                id: asset.id,
+                                path: asset.path,
+                                appPath: app,
+                              });
+                            }
+                          })
+                          .catch((e) => setError(errorMessage(e))),
+                    },
+                  ]
+                : []),
+              ...(count === 1 && asset.path
+                ? [
+                    {
+                      label: '复制文件路径',
+                      icon: 'copy' as const,
+                      onSelect: () =>
+                        void navigator.clipboard
+                          .writeText(asset.path)
+                          .then(() => setNotice('已复制文件路径。'))
+                          .catch(() => setError('无法写入剪贴板。')),
+                    },
+                  ]
+                : []),
             ]
           : []),
-        ...(!asset.source_key
+        ...(desktop && canTrash
           ? [
-              {
-                label: '写入 .xmp 伴随文件',
-                disabled: !!busy(),
-                onSelect: () => void syncXmp('write', { ids: [...selectedIds()] }),
-              },
-              {
-                label: '从 .xmp 重新读取标记',
-                disabled: !!busy(),
-                onSelect: () => void syncXmp('read', { ids: [...selectedIds()] }),
-              },
-            ]
-          : []),
-        ...(currentLibrary()?.source_kind === 'local'
-          ? [
+              'separator' as const,
               {
                 label: count > 1 ? `将所选 ${count} 张移到废纸篓` : '移到废纸篓',
+                icon: 'trash' as const,
+                danger: true,
                 disabled: !!busy(),
                 onSelect: () => void trashSelection(),
-              },
-            ]
-          : []),
-        {
-          label: '复制文件路径',
-          disabled: count > 1 || !asset.path,
-          onSelect: () =>
-            void navigator.clipboard
-              .writeText(asset.path)
-              .then(() => setNotice('已复制文件路径。'))
-              .catch(() => setError('无法写入剪贴板。')),
-        },
-        ...(desktop
-          ? [
-              {
-                label: '重新读取原图',
-                disabled: count > 1 || !!busy(),
-                onSelect: () => void refreshOriginal(),
               },
             ]
           : []),
@@ -1936,6 +2193,7 @@ export default function ManagementApp() {
     }),
   );
   let stopLibraryWatch: (() => void) | undefined;
+  let stopPregenerateWatch: (() => void) | undefined;
   async function registerLibraryWatch() {
     if (!desktop) return;
     const stop = await listen<{ library_id: string }>('library-changed', (event) => {
@@ -1945,6 +2203,40 @@ export default function ManagementApp() {
     if (!stop) return;
     if (disposed) stop();
     else stopLibraryWatch = stop;
+  }
+  async function registerPregenerateWatch() {
+    if (!desktop) return;
+    const stop = await listen<PregenerateProgressPayload>('pregenerate-progress', (event) => {
+      const payload = event.payload;
+      if (!activePregenerate || activePregenerate.libraryId !== payload.library_id) return;
+      if (activePregenerate.fallbackTimer) {
+        clearTimeout(activePregenerate.fallbackTimer);
+        activePregenerate.fallbackTimer = undefined;
+      }
+      const { taskId } = activePregenerate;
+      if (payload.status === 'running') {
+        tasks.progress(taskId, {
+          processed: payload.processed,
+          total: payload.total,
+          detail: payload.total > 0 ? `${payload.processed} / ${payload.total}` : undefined,
+        });
+      } else if (payload.status === 'completed') {
+        tasks.complete(
+          taskId,
+          payload.total > 0 ? `已准备 ${payload.total} 张缩略图` : '缩略图已就绪',
+        );
+        activePregenerate = undefined;
+      } else if (payload.status === 'cancelled') {
+        tasks.dismiss(taskId);
+        activePregenerate = undefined;
+      } else {
+        tasks.fail(taskId, '部分缩略图生成未完成');
+        activePregenerate = undefined;
+      }
+    }).catch(() => undefined);
+    if (!stop) return;
+    if (disposed) stop();
+    else stopPregenerateWatch = stop;
   }
   async function registerAssetListener() {
     if (!desktop || disposed || unlisten || registeringListener) return;
@@ -1975,6 +2267,7 @@ export default function ManagementApp() {
   onMount(() => {
     void updates.start();
     void registerLibraryWatch();
+    void registerPregenerateWatch();
     if (desktop) {
       let stopDrop: (() => void) | undefined;
       void getCurrentWebview()
@@ -2010,6 +2303,16 @@ export default function ManagementApp() {
       disposed = true;
       unlisten?.();
       stopLibraryWatch?.();
+      stopPregenerateWatch?.();
+      if (activePregenerate?.fallbackTimer) clearTimeout(activePregenerate.fallbackTimer);
+      for (const tracker of fingerprintTrackers.values()) {
+        if (tracker.timer) clearTimeout(tracker.timer);
+      }
+      fingerprintTrackers.clear();
+      for (const tracker of captureIndexTrackers.values()) {
+        if (tracker.timer) clearTimeout(tracker.timer);
+      }
+      captureIndexTrackers.clear();
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', focusRefresh);
       navigationMedia.removeEventListener('change', updateNavigationMode);
@@ -2055,6 +2358,9 @@ export default function ManagementApp() {
             collectionId={collectionId()}
             usable={(library) => availabilityPresentation(library).usable}
             unavailableLabel={(library) => availabilityPresentation(library).label}
+            checking={(library) =>
+              !!library.storage_id && checkingSourceIds().has(library.storage_id)
+            }
             location={libraryLocation}
             demoLabel={!desktop}
             onLibrary={(library) => enterLibrary(library)}
@@ -2111,11 +2417,15 @@ export default function ManagementApp() {
           <LibrariesOverview
             libraries={visibleLibraries()}
             desktop={desktop}
+            checking={(library) =>
+              !!library.storage_id && checkingSourceIds().has(library.storage_id)
+            }
             leading={
               sidebarCollapsed() ? (
                 <IconButton
                   size="sm"
                   icon="layout-sidebar-right"
+                  tipAlign="start"
                   label="展开图片库侧栏（⌘B）"
                   shortcut="Meta+B Control+B"
                   onClick={toggleSidebar}
@@ -2184,6 +2494,7 @@ export default function ManagementApp() {
                       <IconButton
                         size="sm"
                         icon="layout-sidebar-right"
+                        tipAlign="start"
                         label="展开图片库侧栏（⌘B）"
                         shortcut="Meta+B Control+B"
                         onClick={toggleSidebar}
@@ -2224,12 +2535,24 @@ export default function ManagementApp() {
                     <>
                       <TaskPill tasks={tasks} />
                       <Button
-                        icon={desktop ? 'refresh' : 'plus'}
+                        icon={
+                          tasks.isRunning('scan', library().id)
+                            ? undefined
+                            : desktop
+                              ? 'refresh'
+                              : 'plus'
+                        }
                         disabled={tasks.isRunning('scan', library().id) || scanBlocked(library())}
                         title={scanBlocked(library()) ? scanReason(library()) : undefined}
                         onClick={() => (desktop ? scan(library()) : fileInput.click())}
                       >
-                        {desktop ? '扫描更新' : '载入图片'}
+                        <Show
+                          when={tasks.isRunning('scan', library().id)}
+                          fallback={desktop ? '扫描更新' : '载入图片'}
+                        >
+                          <Spinner size="sm" />
+                          正在扫描…
+                        </Show>
                       </Button>
                       <OverflowMenu label="更多" items={libraryMenu(library())} />
                     </>
@@ -2265,9 +2588,16 @@ export default function ManagementApp() {
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={() => void refreshLibraries()}
+                              disabled={
+                                !!library().storage_id &&
+                                checkingSourceIds().has(library().storage_id!)
+                              }
+                              onClick={() => void retryLibraryConnection(library())}
                             >
-                              重试
+                              {library().storage_id &&
+                              checkingSourceIds().has(library().storage_id!)
+                                ? '正在重试…'
+                                : '重试'}
                             </Button>
                           </Show>
                         </>
@@ -2385,6 +2715,7 @@ export default function ManagementApp() {
                   <Show when={desktop && sort() === 'captured_at'}>
                     <CaptureIndexControl
                       libraryId={library().id}
+                      onStatus={(status) => syncCaptureIndexTask(library(), status)}
                       onSettled={async (status) => {
                         const job = status.job;
                         if (!job || completedCaptureJobs.has(job.id)) return;
@@ -2410,6 +2741,7 @@ export default function ManagementApp() {
                   <IconButton
                     size="sm"
                     icon="info"
+                    tipAlign="end"
                     label="影像详情（I）"
                     shortcut="I"
                     pressed={info()}
@@ -2451,6 +2783,8 @@ export default function ManagementApp() {
                     <div class="overview-layer">
                       <LibraryOverview
                         options={{ ...listOptions(), limit: undefined, offset: undefined }}
+                        refreshToken={total()}
+                        scanning={tasks.isRunning('scan', library().id)}
                         onPick={(pick) => {
                           setExtra(pick);
                           setView('photos');
@@ -2483,6 +2817,18 @@ export default function ManagementApp() {
                         >
                           <EmptyState
                             icon="photo"
+                            loading={
+                              tasks.isRunning('scan', library().id) &&
+                              !activeCollection() &&
+                              !filtered()
+                            }
+                            role={
+                              tasks.isRunning('scan', library().id) &&
+                              !activeCollection() &&
+                              !filtered()
+                                ? 'status'
+                                : undefined
+                            }
                             title={
                               loading()
                                 ? '正在读取图片…'
@@ -2490,7 +2836,9 @@ export default function ManagementApp() {
                                   ? '此精选集尚无照片'
                                   : filtered()
                                     ? '没有匹配的照片'
-                                    : '图片库尚无照片'
+                                    : tasks.isRunning('scan', library().id)
+                                      ? '正在扫描图片库…'
+                                      : '图片库尚无照片'
                             }
                             description={
                               activeCollection() && !filtered()
@@ -2499,13 +2847,20 @@ export default function ManagementApp() {
                                   : '在照片网格中右键或使用批量操作坞即可将照片加入此精选集。'
                                 : filtered()
                                   ? '调整搜索词、评级、旗标、色标或关键词筛选。'
-                                  : desktop
-                                    ? '扫描此目录建立索引，照片在原位置保留。'
-                                    : '选择本地图片开始体验。'
+                                  : tasks.isRunning('scan', library().id)
+                                    ? '正在扫描目录并建立照片索引，照片在原位置保留，完成后将自动展示。'
+                                    : desktop
+                                      ? '扫描此目录建立索引，照片在原位置保留。'
+                                      : '选择本地图片开始体验。'
                             }
                             actions={
                               <Show when={!loading()}>
                                 <Button
+                                  disabled={
+                                    tasks.isRunning('scan', library().id) &&
+                                    !activeCollection() &&
+                                    !filtered()
+                                  }
                                   onClick={() =>
                                     activeCollection() && !filtered()
                                       ? setCollectionId('')
@@ -2516,13 +2871,24 @@ export default function ManagementApp() {
                                           : fileInput.click()
                                   }
                                 >
+                                  <Show
+                                    when={
+                                      tasks.isRunning('scan', library().id) &&
+                                      !activeCollection() &&
+                                      !filtered()
+                                    }
+                                  >
+                                    <Spinner size="sm" />
+                                  </Show>
                                   {activeCollection() && !filtered()
                                     ? '返回全部照片'
                                     : filtered()
                                       ? '清除筛选'
-                                      : desktop
-                                        ? '扫描图片库'
-                                        : '选择本地图片'}
+                                      : tasks.isRunning('scan', library().id)
+                                        ? '正在扫描…'
+                                        : desktop
+                                          ? '扫描图片库'
+                                          : '选择本地图片'}
                                 </Button>
                               </Show>
                             }
@@ -2712,6 +3078,7 @@ export default function ManagementApp() {
         <div class="persistent-workspace" hidden={section() !== 'sources'}>
           <StorageWorkspace
             sources={sources()}
+            checkingIds={checkingSourceIds()}
             removableLibraries={removableLibraries()}
             onRelocateLibrary={(library) => void relocateLibrary(library)}
             onAdd={() => editSource()}
@@ -2755,6 +3122,10 @@ export default function ManagementApp() {
           initialRoot={libraryRoot()}
           existing={editingLibrary()}
           onClose={() => setDialog(null)}
+          onFingerprintStatus={(status) => {
+            const lib = editingLibrary();
+            if (lib) syncFingerprintTask(lib, status);
+          }}
           onAdded={(library, bindingChanged) => {
             const wasEditing = !!editingLibrary();
             setLibraries((items) => [...items.filter((item) => item.id !== library.id), library]);
@@ -2805,13 +3176,34 @@ export default function ManagementApp() {
         <StorageDialog
           existing={editingSource()}
           onClose={() => setDialog(null)}
-          onAdded={(source) => {
-            updateSource(source);
+          onAdded={(source, verified) => {
+            updateSource(
+              verified ? { ...source, connected: true, availability: 'online' } : source,
+            );
+            void checkRemoteSources([source], true);
             setDialog(null);
             setSection('sources');
-            setNotice(`已保存 ${source.name}。请测试连接或浏览目录验证访问。`);
+            setNotice(
+              verified
+                ? `已保存并连接 ${source.name}。`
+                : `已保存 ${source.name}，正在自动验证连接状态…`,
+            );
           }}
         />
+      </Show>
+      <Show when={originalExportPlan()}>
+        {(plan) => (
+          <OriginalExportDialog
+            plan={plan()}
+            busy={tasks.isRunning('export')}
+            onClose={() => setOriginalExportPlan(null)}
+            onConfirm={(choice) => {
+              const targets = targetsForOriginalChoice(plan(), choice);
+              setOriginalExportPlan(null);
+              void executeOriginalExport(targets);
+            }}
+          />
+        )}
       </Show>
       <Show when={exportDialogIds()}>
         {(ids) => (

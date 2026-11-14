@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { selectChoice } from './fixtures';
 import { fixture, library } from './viewer-fixture';
 
 const hud = (page: Page) => page.locator('.cull-status');
@@ -11,7 +12,7 @@ test('grid culls inside the library window over the filtered queue', async ({ pa
     .getByRole('button', { name: /本地摄影/ })
     .first()
     .click();
-  await page.getByRole('combobox', { name: '旗标筛选' }).selectOption('none');
+  await selectChoice(page.getByRole('combobox', { name: '旗标筛选' }), 'none');
   await expect(page.locator('.thumbnail')).toHaveCount(3);
   await page.locator('.thumbnail').first().click();
   const listsBefore = calls.filter((call) => call.command === 'asset.list').length;
@@ -258,6 +259,6 @@ test('the viewer top bar has one entry per action', async ({ page }) => {
   await expect(bar.getByRole('button', { name: '重新读取原图' })).toHaveCount(0);
   await expect(bar.getByRole('button', { name: /切换全屏/ })).toHaveCount(0);
   await bar.getByRole('button', { name: '更多', exact: true }).click();
-  for (const name of ['导出为 JPEG…', '全屏', '复制文件路径', '编辑叠加信息…', '移到废纸篓'])
+  for (const name of ['导出原片…', '导出 JPEG…', '全屏', '复制文件路径', '编辑叠加信息…', '移到废纸篓'])
     await expect(page.getByRole('menuitem', { name })).toBeVisible();
 });

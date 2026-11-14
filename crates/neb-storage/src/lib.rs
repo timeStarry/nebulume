@@ -235,8 +235,13 @@ impl StorageRegistry {
             .collect()
     }
 
-    pub fn add(&mut self, request: AddStorageRequest) -> Result<StorageConfig> {
-        if request.name.trim().is_empty() {
+    fn prepare_candidate(
+        &self,
+        request: AddStorageRequest,
+        require_name: bool,
+    ) -> Result<(StorageConfig, Credentials, Option<StorageConfig>)> {
+        let trimmed_name = request.name.trim();
+        if require_name && trimmed_name.is_empty() {
             bail!("Storage name is required");
         }
         let kind = request.kind.to_lowercase();
@@ -269,6 +274,10 @@ impl StorageRegistry {
                 bail!("A valid S3 bucket is required");
             }
         }
+        let tls_pin = transport::normalize_pin(request.tls_certificate_sha256.as_deref())?;
+        if kind == "local" && tls_pin.is_some() {
+            bail!("Certificate trust is only available for LAN HTTPS storage");
+        }
         // Reconnecting the same location retains its identity and does not accumulate duplicates.
         let previous = self
             .configs
@@ -287,16 +296,18 @@ impl StorageRegistry {
         let remember = kind != "local" && request.remember_credentials;
         let is_local = kind == "local";
         let config = StorageConfig {
-            id: id.clone(),
-            name: request.name.trim().to_string(),
+            id,
+            name: if trimmed_name.is_empty() {
+                "probe".into()
+            } else {
+                trimmed_name.to_string()
+            },
             kind,
             endpoint,
             root,
             bucket: request.bucket,
             region: request.region,
-            tls_certificate_sha256: transport::normalize_pin(
-                request.tls_certificate_sha256.as_deref(),
-            )?,
+            tls_certificate_sha256: tls_pin,
             connected: false,
             availability: unchecked(),
             remember_credentials: remember,
@@ -337,10 +348,26 @@ impl StorageRegistry {
             };
             merge_credentials(&config.kind, incoming, old)?
         };
+        Ok((config, credentials, previous))
+    }
+
+    /// Builds an isolated, non-persisting snapshot to test a candidate storage
+    /// configuration before saving it to disk or the system credential store.
+    pub fn open_probe(&self, request: AddStorageRequest) -> Result<StorageBrowser> {
+        let (config, credentials, _) = self.prepare_candidate(request, false)?;
+        Ok(StorageBrowser::new(
+            config,
+            credentials,
+            None,
+            Arc::new(AvailabilityCell::default()),
+        ))
+    }
+
+    pub fn add(&mut self, request: AddStorageRequest) -> Result<StorageConfig> {
+        let (config, credentials, previous) = self.prepare_candidate(request, true)?;
+        let id = config.id.clone();
+        let remember = config.remember_credentials;
         let client = if config.kind == "local" {
-            if config.tls_certificate_sha256.is_some() {
-                bail!("Certificate trust is only available for LAN HTTPS storage");
-            }
             None
         } else {
             Some(transport::client(&config)?)

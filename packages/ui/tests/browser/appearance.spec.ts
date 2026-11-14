@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { selectChoice } from './fixtures';
 
 async function appearance(page: Page) {
   await page
@@ -12,7 +13,7 @@ test('Appearance persists and uses a dark mark on a light surface', async ({ pag
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.locator('.brand-mark:visible')).toHaveAttribute('src', /brand-mark\.svg/);
-  await (await appearance(page)).selectOption('light');
+  await selectChoice(await appearance(page), 'light');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect
     .poll(async () => {
@@ -25,7 +26,7 @@ test('Appearance persists and uses a dark mark on a light surface', async ({ pag
   await expect(page.locator('body')).toHaveCSS('color', 'rgb(31, 31, 31)');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await expect(await appearance(page)).toHaveValue('light');
+  await expect(await appearance(page)).toHaveAttribute('data-value', 'light');
 });
 
 test('system appearance follows OS changes while an explicit choice takes precedence', async ({
@@ -34,11 +35,11 @@ test('system appearance follows OS changes while an explicit choice takes preced
   await page.emulateMedia({ colorScheme: 'light' });
   await page.goto('/');
   const control = await appearance(page);
-  await control.selectOption('system');
+  await selectChoice(control, 'system');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await control.selectOption('light');
+  await selectChoice(control, 'light');
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 });
@@ -50,17 +51,17 @@ test('appearance synchronizes across open windows without reloading their conten
   await page.goto('/');
   const second = await context.newPage();
   await second.goto('/');
-  await (await appearance(page)).selectOption('light');
+  await selectChoice(await appearance(page), 'light');
   await expect(second.locator('html')).toHaveAttribute('data-theme', 'light');
-  await (await appearance(second)).selectOption('dark');
+  await selectChoice(await appearance(second), 'dark');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.getByLabel('外观主题')).toHaveValue('dark');
+  await expect(page.getByLabel('外观主题')).toHaveAttribute('data-value', 'dark');
   await second.close();
 });
 
 test('light UI keeps the actual image and immersive canvas neutral', async ({ page }) => {
   await page.goto('/');
-  await (await appearance(page)).selectOption('light');
+  await selectChoice(await appearance(page), 'light');
   await page
     .getByRole('navigation', { name: '主导航' })
     .getByRole('button', { name: '图片库', exact: true })
@@ -145,7 +146,7 @@ test('native system mode clears the window override and follows native theme eve
   });
   await page.goto('/');
   const control = await appearance(page);
-  await control.selectOption('system');
+  await selectChoice(control, 'system');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   expect(
     await page.evaluate(() =>
@@ -156,7 +157,7 @@ test('native system mode clears the window override and follows native theme eve
     (window as unknown as { __emitNativeTheme: (value: string) => void }).__emitNativeTheme('dark'),
   );
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await control.selectOption('light');
+  await selectChoice(control, 'light');
   await page.evaluate(() =>
     (window as unknown as { __emitNativeTheme: (value: string) => void }).__emitNativeTheme('dark'),
   );

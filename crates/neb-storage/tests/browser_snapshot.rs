@@ -170,3 +170,37 @@ fn local_snapshot_preserves_safe_pagination_and_outlives_the_registry() {
     assert!(second.next_cursor.is_none());
     assert!(browser.browse("../", 1, None).is_err());
 }
+
+#[test]
+fn probe_snapshot_tests_connection_without_persisting_or_mutating_registry() {
+    let data = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let registry = StorageRegistry::open(data.path()).unwrap();
+    assert!(registry.list().is_empty());
+
+    let probe_req: AddStorageRequest = serde_json::from_value(json!({
+        "name": "",
+        "kind": "webdav",
+        "endpoint": server.endpoint,
+        "username": "synthetic",
+        "password": "synthetic",
+        "remember_credentials": true
+    }))
+    .unwrap();
+    let probe = registry.open_probe(probe_req).unwrap();
+    let ok = probe.check().unwrap();
+    assert!(ok.connected);
+    assert_eq!(ok.availability, "online");
+    assert!(ok.error.is_none());
+    assert!(
+        registry.list().is_empty(),
+        "open_probe must never persist to storage.json or register a source"
+    );
+    assert!(!data.path().join("storage.json").exists());
+
+    server.fail.store(true, Ordering::SeqCst);
+    let fail = probe.check().unwrap();
+    assert!(!fail.connected);
+    assert_eq!(fail.availability, "error");
+    assert!(fail.error.is_some());
+}

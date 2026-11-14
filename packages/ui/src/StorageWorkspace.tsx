@@ -16,6 +16,7 @@ import StorageError from './StorageError';
 
 export default function StorageWorkspace(props: {
   sources: StorageConfig[];
+  checkingIds?: ReadonlySet<string>;
   removableLibraries?: Library[];
   onRelocateLibrary?: (library: Library) => void;
   onAdd: () => void;
@@ -49,6 +50,7 @@ export default function StorageWorkspace(props: {
       props.onUpdated({
         ...item,
         connected: result.connected,
+        availability: result.availability ?? (result.connected ? 'online' : 'error'),
         credential_status: result.credential_status,
       });
       if (!status.ok) setError(status.message);
@@ -102,7 +104,7 @@ export default function StorageWorkspace(props: {
       if (token !== request) return;
       setEntries((previous) => (append ? [...previous, ...result.entries] : result.entries));
       setCursor(result.next_cursor);
-      props.onUpdated({ ...item, connected: true });
+      props.onUpdated({ ...item, connected: true, availability: 'online' });
     } catch (e) {
       if (token !== request || selected() !== item.id) return;
       const message = errorMessage(e);
@@ -110,7 +112,7 @@ export default function StorageWorkspace(props: {
       setChecks((previous) => ({ ...previous, [item.id]: { ok: false, message } }));
       // Revoke the previous success immediately, then retrieve credential state resolved by
       // this attempt (for example a missing or locked system credential record).
-      props.onUpdated({ ...item, connected: false });
+      props.onUpdated({ ...item, connected: false, availability: 'error' });
       try {
         const latest = await execute<StorageConfig[]>('storage.list');
         if (token !== request || selected() !== item.id) return;
@@ -251,11 +253,14 @@ export default function StorageWorkspace(props: {
                   </div>
                 </div>
                 <span class={`source-status ${item.connected ? 'verified' : ''}`} role="status">
-                  {busy() === item.id
+                  {busy() === item.id || props.checkingIds?.has(item.id)
                     ? '正在验证…'
                     : item.connected
                       ? '已验证'
-                      : checks()[item.id]?.ok === false
+                      : checks()[item.id]?.ok === false ||
+                          (item.availability &&
+                            item.availability !== 'unchecked' &&
+                            item.availability !== 'online')
                         ? '连接失败'
                         : '未验证'}
                 </span>

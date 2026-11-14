@@ -3,7 +3,7 @@ export const cacheGiB = 1024 ** 3;
 export interface CachePolicy {
   budget_bytes: number;
   max_unused_days: number | null;
-  preview_policy: 'automatic' | 'manual';
+  preview_policy: 'automatic' | 'stream_preview' | 'memory_only' | 'manual';
 }
 export interface CacheMigration {
   id: string;

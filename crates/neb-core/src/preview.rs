@@ -2,7 +2,7 @@
 //! byte-bounded in-memory LRU shared by local and remote assets.
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -68,6 +68,28 @@ impl PreviewTier {
     /// explicit RAW sensor development (`prefer_raw`) is requested.
     pub fn prefers_embedded(self) -> bool {
         true
+    }
+
+    /// Tier-adaptive JPEG quality: compact encoding for grid cells, high fidelity
+    /// for viewer and 1:1 inspection while preserving ICC profiles across all tiers.
+    pub fn jpeg_quality(self) -> u8 {
+        match self {
+            Self::T256 => 80,
+            Self::T512 => 82,
+            Self::T1024 => 85,
+            Self::P2560 | Self::Full => 88,
+        }
+    }
+
+    /// Standard tiers strictly larger than `self` (excluding `Full`), ordered from
+    /// closest/viewer down so downward cascade prefers an already-cached `P2560` or `T1024`.
+    pub fn higher_standard_tiers(self) -> &'static [Self] {
+        match self {
+            Self::T256 => &[Self::P2560, Self::T1024, Self::T512],
+            Self::T512 => &[Self::P2560, Self::T1024],
+            Self::T1024 => &[Self::P2560],
+            Self::P2560 | Self::Full => &[],
+        }
     }
 }
 
@@ -145,7 +167,8 @@ impl PreviewImage {
 }
 
 /// Least recently used entries are evicted until both the entry and JPEG byte
-/// limits hold. Hits share the stored `Arc` instead of copying pixels.
+/// limits hold. Hits share the stored `Arc` instead of copying pixels, using
+/// an indexed generation map instead of linear scanning.
 pub struct PreviewMemory {
     max_entries: usize,
     max_bytes: usize,
@@ -154,7 +177,9 @@ pub struct PreviewMemory {
 
 #[derive(Default)]
 struct MemoryState {
-    entries: VecDeque<(String, Arc<PreviewImage>)>,
+    entries: HashMap<String, (u64, Arc<PreviewImage>)>,
+    order: BTreeMap<u64, String>,
+    next_gen: u64,
     bytes: usize,
 }
 
@@ -169,31 +194,48 @@ impl PreviewMemory {
 
     pub fn get(&self, key: &str) -> Option<Arc<PreviewImage>> {
         let mut state = self.state.lock().ok()?;
-        let position = state.entries.iter().position(|(k, _)| k == key)?;
-        let entry = state.entries.remove(position)?;
-        let image = Arc::clone(&entry.1);
-        state.entries.push_back(entry);
+        let (old_gen, image) = {
+            let entry = state.entries.get(key)?;
+            (entry.0, Arc::clone(&entry.1))
+        };
+        state.order.remove(&old_gen);
+        let gen = state.next_gen;
+        state.next_gen = state.next_gen.wrapping_add(1);
+        if let Some(entry) = state.entries.get_mut(key) {
+            entry.0 = gen;
+        }
+        state.order.insert(gen, key.to_owned());
         Some(image)
+    }
+
+    /// Checks presence without promoting LRU position.
+    pub fn peek(&self, key: &str) -> Option<Arc<PreviewImage>> {
+        let state = self.state.lock().ok()?;
+        state.entries.get(key).map(|(_, image)| Arc::clone(image))
     }
 
     pub fn put(&self, key: String, image: Arc<PreviewImage>) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        if let Some(position) = state.entries.iter().position(|(k, _)| *k == key) {
-            if let Some((_, old)) = state.entries.remove(position) {
-                state.bytes -= old.jpeg.len();
-            }
+        if let Some((old_gen, old_img)) = state.entries.remove(&key) {
+            state.order.remove(&old_gen);
+            state.bytes = state.bytes.saturating_sub(old_img.jpeg.len());
         }
         if self.max_entries == 0 || image.jpeg.len() > self.max_bytes {
             return;
         }
+        let gen = state.next_gen;
+        state.next_gen = state.next_gen.wrapping_add(1);
         state.bytes += image.jpeg.len();
-        state.entries.push_back((key, image));
+        state.order.insert(gen, key.clone());
+        state.entries.insert(key, (gen, image));
         while state.entries.len() > self.max_entries || state.bytes > self.max_bytes {
-            match state.entries.pop_front() {
-                Some((_, old)) => state.bytes -= old.jpeg.len(),
-                None => break,
+            let Some((_, oldest_key)) = state.order.pop_first() else {
+                break;
+            };
+            if let Some((_, evicted)) = state.entries.remove(&oldest_key) {
+                state.bytes = state.bytes.saturating_sub(evicted.jpeg.len());
             }
         }
     }
@@ -201,11 +243,17 @@ impl PreviewMemory {
     /// Drops every entry whose key starts with `prefix`, e.g. `"<asset id>:"`.
     pub fn remove_prefix(&self, prefix: &str) {
         if let Ok(mut state) = self.state.lock() {
-            let MemoryState { entries, bytes } = &mut *state;
-            entries.retain(|(key, image)| {
+            let MemoryState {
+                entries,
+                order,
+                bytes,
+                ..
+            } = &mut *state;
+            entries.retain(|key, (gen, image)| {
                 let keep = !key.starts_with(prefix);
                 if !keep {
-                    *bytes -= image.jpeg.len();
+                    order.remove(gen);
+                    *bytes = bytes.saturating_sub(image.jpeg.len());
                 }
                 keep
             });
@@ -337,5 +385,31 @@ mod tests {
         assert!(memory.get("big").is_none());
         memory.remove_prefix("d");
         assert!(memory.get("d").is_none());
+    }
+
+    #[test]
+    fn memory_lru_promotion_and_higher_tier_cascade_order() {
+        let memory = PreviewMemory::new(3, 100);
+        memory.put("k1".into(), image(10));
+        memory.put("k2".into(), image(10));
+        memory.put("k3".into(), image(10));
+        // Promote k1; k2 becomes oldest, while peek(k2) does not promote it.
+        assert!(memory.get("k1").is_some());
+        assert!(memory.peek("k2").is_some());
+        memory.put("k4".into(), image(10));
+        assert!(memory.get("k2").is_none());
+        assert!(memory.get("k1").is_some());
+        assert!(memory.get("k3").is_some());
+        assert!(memory.get("k4").is_some());
+
+        assert_eq!(
+            PreviewTier::T256.higher_standard_tiers(),
+            &[PreviewTier::P2560, PreviewTier::T1024, PreviewTier::T512]
+        );
+        assert_eq!(
+            PreviewTier::T512.higher_standard_tiers(),
+            &[PreviewTier::P2560, PreviewTier::T1024]
+        );
+        assert!(PreviewTier::T256.jpeg_quality() < PreviewTier::P2560.jpeg_quality());
     }
 }

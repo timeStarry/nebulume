@@ -18,6 +18,7 @@ const dayLabel = (day: string) => {
 export default function LibrariesOverview(props: {
   libraries: Library[];
   desktop: boolean;
+  checking?: (library: Library) => boolean;
   leading?: JSX.Element;
   extraActions?: JSX.Element;
   onOpen: (library: Library) => void;
@@ -98,9 +99,17 @@ export default function LibrariesOverview(props: {
             <For each={props.libraries}>
               {(library) => {
                 const state = () => availabilityPresentation(library);
+                const isChecking = () => !!props.checking?.(library);
                 const badge = () => librarySourceBadge(library);
                 const dot = () =>
-                  !state().usable ? 'bad' : library.availability === 'online' ? 'ok' : 'off';
+                  isChecking()
+                    ? 'warn'
+                    : !state().usable
+                      ? 'bad'
+                      : library.availability === 'online'
+                        ? 'ok'
+                        : 'off';
+                const statusLabel = () => (isChecking() ? '正在检测连接…' : state().label);
                 const canRelocate = () =>
                   (!library.source_kind || library.source_kind === 'local') &&
                   library.availability === 'offline' &&
@@ -110,7 +119,7 @@ export default function LibrariesOverview(props: {
                     <button
                       type="button"
                       class="library-tile-open"
-                      aria-label={`打开 ${library.name}，${state().label}`}
+                      aria-label={`打开 ${library.name}，${statusLabel()}`}
                       title={state().detail || libraryLocation(library)}
                       onClick={() => props.onOpen(library)}
                     >
@@ -132,7 +141,7 @@ export default function LibrariesOverview(props: {
                         </span>
                         <span class="library-tile-path">{libraryLocation(library)}</span>
                         <span class="library-tile-state">
-                          <StatusDot state={dot()} label={state().label} showLabel />
+                          <StatusDot state={dot()} label={statusLabel()} showLabel />
                           <Show when={library.latest_capture}>
                             {(day) => <span>· 最近拍摄 {dayLabel(day())}</span>}
                           </Show>

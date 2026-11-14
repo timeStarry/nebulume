@@ -33,6 +33,7 @@
 - `asset.crop {id,x,y,width,height}` → `Asset` (normalized 0..1, oriented coordinates)
 - `asset.reset_crop {id}` → `Asset`
 - `asset.export {id,destination,max_edge?,quality?,color_space?:'preserve'|'srgb'|'display_p3'|'adobe_rgb'}` → `{path}`（新建 JPEG，绝不覆盖；`max_edge` 范围 `256..=16384`，仅缩小不放大；`quality` 范围 `30..=100`，默认 `95`；`color_space` 默认 `'preserve'`，显式指定目标色域时在线性光空间执行 3×3 矩阵色域变换并嵌入标准 ICC v2.1 配置）
+- `asset.export_original {id,destination}` → `{path,bytes}`（按字节原样复制本地或远端 RAW / JPEG 等原片文件到目标路径，通过同目录临时文件原子落盘，绝不覆盖已有文件；远端图库在已有本地原图缓存时直接复用，未缓存时直接流式写出而不污染磁盘缓存）
 - `xmp.policy.get {}` → `{auto_write:boolean}`；`xmp.policy.set {auto_write:boolean}` → `{auto_write}`：读取或设置本地资产打标/裁剪自动写入 `.xmp` 伴随文件策略（持久化在 `app_settings` 表，不升库版本）。
 - `asset.xmp.write {ids?:string[],library_id?:string}` → `{written,skipped,errors:[{id,path,message}]}`；`asset.xmp.read {ids?:string[],library_id?:string}` → `{updated,skipped,errors:[{id,path,message}]}`：非破坏性双向同步 Adobe/Lightroom/Capture One 兼容 `.xmp` 伴随文件（`xmp:Rating`、拒片 `Rating="-1"` / `xmpDM:pick` / `neb:Flag`、`xmp:Label` 红/黄/绿/蓝色标、`dc:subject` 扁平词 + `lr:hierarchicalSubject` `|` 分隔层级关键词、轴对齐 `crs:HasCrop` + `CropLeft/Top/Right/Bottom`），保留第三方已有 `crs:*` 冲印参数与非托管标签，原图文件严格只读；本地初始扫描时若发现同名 `.xmp` 自动导入星级、旗标、色标、层级关键词与轴对齐裁剪。
 - `asset.list` 另接受 `folder`（库内相对路径，已剥离图片库本级 `source_prefix`，如 `01 岚山`，含子文件夹；只匹配完整的路径段）、`rating_max`、`focal_min`/`focal_max`（EXIF Focal Length，mm）、`iso_min`/`iso_max`，均为闭区间。“未处理”即 `{flag:'none',rating_max:0}`。

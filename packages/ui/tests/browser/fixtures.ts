@@ -1,4 +1,23 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+
+export async function selectChoice(
+  control: Locator,
+  target: string | { label: string },
+): Promise<void> {
+  await control.click();
+  const page = control.page();
+  const listbox = page.locator('.nl-select-popover[role="listbox"]');
+  await listbox.waitFor({ state: 'visible' });
+  if (typeof target === 'string') {
+    await listbox.locator(`[role="option"][data-value=${JSON.stringify(target)}]`).click();
+  } else {
+    await listbox
+      .locator('[role="option"]')
+      .filter({ has: page.locator('.nl-select-option-label', { hasText: target.label }) })
+      .first()
+      .click();
+  }
+}
 
 const jpegBase64 =
   '/9j/4AAQSkZJRgABAQAAkACQAAD/4QCARXhpZgAATU0AKgAAAAgABAEaAAUAAAABAAAAPgEbAAUAAAABAAAARgEo' +

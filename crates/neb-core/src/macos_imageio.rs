@@ -96,7 +96,6 @@ extern "C" {
     fn CFNumberGetValue(number: CFNumberRef, the_type: isize, value_ptr: *mut c_void) -> u8;
     fn CFDataGetLength(the_data: CFDataRef) -> isize;
     fn CFDataGetBytePtr(the_data: CFDataRef) -> *const u8;
-    #[cfg(test)]
     fn CFDataCreate(allocator: CFAllocatorRef, bytes: *const u8, length: isize) -> CFDataRef;
 }
 
@@ -130,6 +129,7 @@ extern "C" {
     static kCGImageSourceThumbnailMaxPixelSize: CFStringRef;
 
     fn CGImageSourceCreateWithURL(url: CFURLRef, options: CFDictionaryRef) -> CGImageSourceRef;
+    fn CGImageSourceCreateWithData(data: CFDataRef, options: CFDictionaryRef) -> CGImageSourceRef;
     fn CGImageSourceGetCount(isrc: CGImageSourceRef) -> usize;
     fn CGImageSourceCopyPropertiesAtIndex(
         isrc: CGImageSourceRef,
@@ -284,10 +284,34 @@ fn inspect_source(source: &CfGuard) -> Result<(u32, u32, u8, Option<String>)> {
     Ok((width, height, orientation, profile))
 }
 
+fn open_image_source_bytes(bytes: &[u8]) -> Result<CfGuard> {
+    ensure!(
+        !bytes.is_empty() && u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_FILE_BYTES,
+        "E_LIMIT: Image exceeds the 512 MiB decode limit"
+    );
+    let len =
+        isize::try_from(bytes.len()).context("E_LIMIT: Image buffer exceeds address limit")?;
+    let data = CfGuard::new(unsafe { CFDataCreate(ptr::null(), bytes.as_ptr(), len) })
+        .context("E_OPERATION: Failed to allocate CFData")?;
+    let source = CfGuard::new(unsafe { CGImageSourceCreateWithData(data.as_ptr(), ptr::null()) })
+        .context("E_UNSUPPORTED_CODEC: ImageIO could not open container bytes")?;
+    let count = unsafe { CGImageSourceGetCount(source.as_ptr()) };
+    ensure!(
+        count >= 1,
+        "E_UNSUPPORTED_CODEC: Image container has no decodable primary image"
+    );
+    Ok(source)
+}
+
 /// Inspects raw un-rotated dimensions, EXIF orientation (1..=8), and optional color
 /// profile name via macOS `ImageIO` without decoding pixel planes.
 pub(crate) fn inspect(path: &Path) -> Result<(u32, u32, u8, Option<String>)> {
     let source = open_image_source(path)?;
+    inspect_source(&source)
+}
+
+pub(crate) fn inspect_bytes(bytes: &[u8]) -> Result<(u32, u32, u8, Option<String>)> {
+    let source = open_image_source_bytes(bytes)?;
     inspect_source(&source)
 }
 
@@ -298,7 +322,22 @@ pub(crate) fn decode(
     max_side: Option<u32>,
 ) -> Result<(DynamicImage, u8, Option<Vec<u8>>)> {
     let source = open_image_source(path)?;
-    let (raw_w, raw_h, orientation, _) = inspect_source(&source)?;
+    decode_source(&source, max_side)
+}
+
+pub(crate) fn decode_bytes(
+    bytes: &[u8],
+    max_side: Option<u32>,
+) -> Result<(DynamicImage, u8, Option<Vec<u8>>)> {
+    let source = open_image_source_bytes(bytes)?;
+    decode_source(&source, max_side)
+}
+
+fn decode_source(
+    source: &CfGuard,
+    max_side: Option<u32>,
+) -> Result<(DynamicImage, u8, Option<Vec<u8>>)> {
+    let (raw_w, raw_h, orientation, _) = inspect_source(source)?;
     let long_side = raw_w.max(raw_h);
 
     let (cg_image, already_oriented) =

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs/promises';
+import { selectChoice } from './fixtures';
 
 test('stage 3: XMP sidecar policy/sync and preset-driven JPEG delivery export', async ({
   page,
@@ -8,13 +9,15 @@ test('stage 3: XMP sidecar policy/sync and preset-driven JPEG delivery export', 
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');
 
-  // 1. Toggle automatic `.xmp` sidecar sync in Settings.
+  // 1. Automatic `.xmp` sidecar sync defaults to ON in Settings and can be toggled cleanly.
   await page
     .getByRole('navigation', { name: '主导航' })
     .getByRole('button', { name: '设置', exact: true })
     .click();
   const xmpSwitch = page.getByRole('switch', { name: '自动同步 .xmp 伴随文件' });
   await expect(xmpSwitch).toBeVisible();
+  await expect(xmpSwitch).toBeChecked();
+  await xmpSwitch.click();
   await expect(xmpSwitch).not.toBeChecked();
   await xmpSwitch.click();
   await expect(xmpSwitch).toBeChecked();
@@ -73,23 +76,29 @@ test('stage 3: XMP sidecar policy/sync and preset-driven JPEG delivery export', 
   const rated2 = page.getByRole('button', { name: 'editorial-shot.png，2 星' });
   await expect(rated2).toBeVisible();
 
-  await rated2.click({ button: 'right' });
+  await rated2.dblclick();
+  const viewer = page.getByRole('dialog', { name: '沉浸影像查看器' });
+  await expect(viewer).toBeVisible();
+  await viewer.locator('.nl-viewer-bar').getByRole('button', { name: '更多' }).click();
   await page.getByRole('menuitem', { name: '从 .xmp 重新读取标记' }).click();
+  await page.keyboard.press('Escape');
+  await expect(viewer).not.toBeVisible();
   await expect(rated5).toBeVisible();
 
-  // 4. Select both photos to surface BatchDock ("按预设导出…"), configure custom prefix + 1080 resize,
+  // 4. Select both photos to surface BatchDock ("导出 JPEG…"), configure custom prefix + 1080 resize,
   //    save as a custom preset, and verify downloaded JPEG dimensions & filename!
   await page.getByRole('button', { name: 'editorial-shot-2.png，0 星' }).click({ modifiers: ['Shift'] });
-  await expect(page.getByRole('button', { name: '按预设导出…' })).toBeVisible();
-  await page.getByRole('button', { name: '按预设导出…' }).click();
+  await expect(page.getByRole('button', { name: '导出原片…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '导出 JPEG…' })).toBeVisible();
+  await page.getByRole('button', { name: '导出 JPEG…' }).click();
 
   const dialog = page.getByRole('dialog', { name: /导出 2 张照片/ });
   await expect(dialog).toBeVisible();
 
-  await dialog.getByLabel('导出预设').selectOption('social_2k');
+  await selectChoice(dialog.getByLabel('导出预设'), 'social_2k');
   await dialog.getByRole('tab', { name: '自定义', exact: true }).click();
   await dialog.getByLabel('自定义长边像素').fill('1080');
-  await dialog.getByLabel('导出文件命名').selectOption('prefix_seq');
+  await selectChoice(dialog.getByLabel('导出文件命名'), 'prefix_seq');
   await dialog.getByLabel('导出命名前缀').fill('Lookbook');
   await expect(dialog.locator('.export-preview-box code')).toHaveText('Lookbook_0001.jpg');
 
@@ -98,7 +107,7 @@ test('stage 3: XMP sidecar policy/sync and preset-driven JPEG delivery export', 
   await dialog.getByLabel('新导出预设名称').fill('画册小样 1080');
   await dialog.getByRole('button', { name: '保存', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '删除', exact: true })).toBeVisible();
-  await expect(dialog.locator('.export-preset-select option:checked')).toContainText('画册小样 1080');
+  await expect(dialog.getByLabel('导出预设')).toContainText('画册小样 1080');
 
   const downloadPromise = page.waitForEvent('download');
   await dialog.getByRole('button', { name: '导出 2 张', exact: true }).click();

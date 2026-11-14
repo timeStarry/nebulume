@@ -69,6 +69,7 @@ textarea {
 :where(.nl-input, .nl-select) :is(input, select) {
   height: 100%;
   border: 0;
+  outline: none;
   background: none;
   padding: 0;
 }
@@ -708,6 +709,9 @@ kbd {
   margin-right: auto;
   color: var(--nl-text-3);
   font-size: var(--nl-t-12);
+}
+.modal-footer-leading {
+  margin-right: auto;
 }
 .form-error {
   padding: var(--nl-s-2) var(--nl-s-3);
@@ -1989,14 +1993,15 @@ kbd {
 .menu-scrim {
   position: fixed;
   inset: 0;
-  z-index: 59;
+  z-index: 199;
   background: transparent;
 }
 .folder-menu {
   position: fixed;
-  z-index: 60;
+  z-index: 200;
   min-width: 200px;
   padding: var(--nl-s-1);
+  border: 1px solid var(--nl-line);
   border-radius: 10px;
   background: var(--nl-raised);
 }

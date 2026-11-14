@@ -14,6 +14,9 @@
 .nl-field-hint--info {
   color: var(--nl-info);
 }
+.nl-field-hint--pick {
+  color: var(--nl-pick);
+}
 .nl-field-hint--warn {
   color: var(--nl-warn);
 }
@@ -45,6 +48,7 @@
   color: var(--nl-text-2);
 }
 .nl-banner--info,
+.nl-banner--pick,
 .nl-banner--warn,
 .nl-banner--error {
   border-color: transparent;
@@ -54,6 +58,12 @@
 }
 .nl-banner--info > svg {
   color: var(--nl-info);
+}
+.nl-banner--pick {
+  background: var(--nl-tint-pick);
+}
+.nl-banner--pick > svg {
+  color: var(--nl-pick);
 }
 .nl-banner--warn {
   background: var(--nl-tint-warn);

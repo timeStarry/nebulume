@@ -6,6 +6,7 @@ import './capture-index.css';
 
 export default function CaptureIndexControl(props: {
   libraryId: string;
+  onStatus?: (status: CaptureIndexStatus) => void;
   onSettled: (status: CaptureIndexStatus) => void | Promise<void>;
 }) {
   const [state, setState] = createSignal<CaptureIndexStatus>();
@@ -35,6 +36,7 @@ export default function CaptureIndexControl(props: {
     if (!value || value.library_id !== props.libraryId)
       throw new Error('未返回当前图片库的拍摄时间索引状态。');
     setState(value);
+    props.onStatus?.(value);
     const job = value.job;
     if (job && ['running', 'stopping'].includes(job.status)) watchedJobId = job.id;
     if (job && !['running', 'stopping'].includes(job.status)) {

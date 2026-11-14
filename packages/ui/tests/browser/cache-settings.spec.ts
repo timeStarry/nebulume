@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { servePreviewImages } from './fixtures';
+import { selectChoice, servePreviewImages } from './fixtures';
 import type { CacheMigration, CacheStats } from '../../src/cache-model';
 import type { Asset } from '../../src/model';
 const GiB = 1024 ** 3;
@@ -489,4 +489,24 @@ test('remote inspector pin is explicit, uses metadata state, and surfaces backen
   fixture.control.pinError = '';
   await pin.click();
   await expect(page.getByRole('button', { name: '解除离线保留', exact: true })).toBeVisible();
+});
+
+test('selectable remote preview cache modes save stream_preview and memory_only cleanly', async ({
+  page,
+}) => {
+  const fixture = await nativeCache(page);
+  await settings(page);
+
+  const select = page.getByLabel('远端预览');
+  await expect(select).toHaveAttribute('data-value', 'automatic');
+
+  await selectChoice(select, 'stream_preview');
+  await expect(page.locator('.cache-policy-hint')).toContainText('仅在磁盘缓存轻量预览图');
+  await page.getByRole('button', { name: '保存缓存策略' }).click();
+  expect(fixture.state.policy.preview_policy).toBe('stream_preview');
+
+  await selectChoice(select, 'memory_only');
+  await expect(page.locator('.cache-policy-hint')).toContainText('预览与解码全程仅驻留内存');
+  await page.getByRole('button', { name: '保存缓存策略' }).click();
+  expect(fixture.state.policy.preview_policy).toBe('memory_only');
 });

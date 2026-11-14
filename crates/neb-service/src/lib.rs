@@ -24,8 +24,8 @@ mod cards;
 mod fingerprint;
 mod remote_cache;
 
-const PREVIEW_MEMORY_ENTRIES: usize = 256;
-const PREVIEW_MEMORY_BYTES: usize = 128 * 1024 * 1024;
+const PREVIEW_MEMORY_ENTRIES: usize = 1024;
+const PREVIEW_MEMORY_BYTES: usize = 192 * 1024 * 1024;
 
 type AssetOperations = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 
@@ -122,7 +122,7 @@ pub struct Service {
     cache_root: PathBuf,
     cache: Arc<CacheManager>,
     asset_operations: AssetOperations,
-    downloads: (Mutex<usize>, Condvar),
+    downloads: remote_cache::DownloadScheduler,
     preview_writes: Arc<AtomicUsize>,
     // Rendered tiers keyed by their `preview-v3:` cache key, local and remote.
     previews: PreviewMemory,
@@ -254,7 +254,7 @@ impl Service {
                 data_dir.join("remote-cache"),
             )?),
             asset_operations: Arc::new(Mutex::new(HashMap::new())),
-            downloads: (Mutex::new(0), Condvar::new()),
+            downloads: remote_cache::DownloadScheduler::default(),
             preview_writes: Arc::new(AtomicUsize::new(0)),
             previews: PreviewMemory::new(PREVIEW_MEMORY_ENTRIES, PREVIEW_MEMORY_BYTES),
             histograms: HistogramMemory::default(),
@@ -264,6 +264,16 @@ impl Service {
             fingerprints: fingerprint::FingerprintController::default(),
         };
         service.sync_locations()?;
+        if !service.cache.has_other_sessions().unwrap_or(true) {
+            if let Ok(entries) = fs::read_dir(data_dir.join("catalog/asset-locks")) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|ext| ext.to_str()) == Some("lock") {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+        }
         service.adopt_legacy_cache()?;
         if let Err(error) = service.cache.maintain() {
             // Metadata/settings remain available when a removable cache is
@@ -478,10 +488,12 @@ impl Service {
         uncropped: bool,
         prefer_raw: bool,
     ) -> Result<String, CommandError> {
-        // No local re-inspection: the key's file stamp already tracks changes.
-        self.preview_entry(id, || {
-            self.preview_etag_for(&self.core.asset(id)?, tier, uncropped, prefer_raw)
-        })
+        // Pure read-only SQLite + local stat + SHA-256: no per-asset file lock needed.
+        (|| {
+            let asset = self.core.asset(id)?;
+            self.preview_etag_for(&asset, tier, uncropped, prefer_raw)
+        })()
+        .map_err(Into::into)
     }
 
     pub fn flush_xmp_for_external(&self, id: &str) -> Result<(), CommandError> {
@@ -1196,6 +1208,16 @@ impl Service {
                     .map_err(|_| anyhow!("Storage state unavailable"))?
                     .open_writer(id)?;
                 Ok(serde_json::to_value(writer.probe())?)
+            }
+            "storage.probe" => {
+                let request: AddStorageRequest =
+                    serde_json::from_value(params).context("Invalid storage configuration")?;
+                let browser = self
+                    .storage
+                    .lock()
+                    .map_err(|_| anyhow!("Storage state unavailable"))?
+                    .open_probe(request)?;
+                Ok(serde_json::to_value(browser.check()?)?)
             }
             "storage.check" => {
                 let id = string(&params, "id")?;

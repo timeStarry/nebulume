@@ -251,11 +251,20 @@ impl CacheManager {
         action(&mut db)
     }
     fn recover(&self, db: &Connection) -> Result<()> {
-        let sessions = rows2(db, "SELECT id,path FROM cache_sessions", [])?;
+        let has_other: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cache_sessions WHERE id != ?1)",
+            [&self.inner.session],
+            |r| r.get(0),
+        )?;
+        if !has_other {
+            return Ok(());
+        }
+        let sessions = rows2(
+            db,
+            "SELECT id,path FROM cache_sessions WHERE id != ?1",
+            [&self.inner.session],
+        )?;
         for (id, path) in sessions {
-            if id == self.inner.session {
-                continue;
-            }
             let stale = match OpenOptions::new().read(true).write(true).open(&path) {
                 Ok(file) => file.try_lock().is_ok(),
                 Err(error) => error.kind() == std::io::ErrorKind::NotFound,
@@ -273,6 +282,15 @@ impl CacheManager {
         }
         Ok(())
     }
+    pub fn has_other_sessions(&self) -> Result<bool> {
+        self.locked(|db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cache_sessions WHERE id != ?1)",
+                [&self.inner.session],
+                |r| r.get(0),
+            )?)
+        })
+    }
     pub fn state(&self) -> Result<Value> {
         self.locked(|db| {
             self.reconcile_inventory(db)?;
@@ -282,6 +300,13 @@ impl CacheManager {
     /// Read the download preference without triggering disk reconciliation.
     pub fn preview_policy(&self) -> Result<String> {
         self.locked(|db| Ok(policy(db)?.preview_policy))
+    }
+    /// Non-blocking policy read for local rendering paths that must never wait
+    /// behind an unrelated cache writer or migration lock.
+    pub fn try_preview_policy(&self) -> Option<String> {
+        let _guard = try_global_lock(&self.inner.lock).ok()??;
+        let db = connect_timeout(&self.inner.database, Duration::ZERO).ok()?;
+        Some(policy(&db).ok()?.preview_policy)
     }
     /// Reclaim expired or excess local cache data without accessing a source.
     /// Call after legacy adoption so startup maintenance includes those objects.
@@ -343,7 +368,7 @@ impl CacheManager {
             if let Some(v) = value.get("budget_bytes") { next.budget_bytes = v.as_u64().context("E_INVALID: budget_bytes must be a nonnegative integer")?; }
             if let Some(v) = value.get("max_unused_days") { next.max_unused_days = v.as_u64().context("E_INVALID: max_unused_days must be nonnegative")?; }
             if let Some(v) = value.get("preview_policy") { next.preview_policy = v.as_str().context("E_INVALID: preview_policy must be a string")?.into(); }
-            ensure!(["automatic","manual"].contains(&next.preview_policy.as_str()),"E_INVALID: Invalid preview policy");
+            ensure!(["automatic","stream_preview","memory_only","manual"].contains(&next.preview_policy.as_str()),"E_INVALID: Invalid preview policy");
             ensure!((1024*1024*1024..=1024u64*1024*1024*1024).contains(&next.budget_bytes) && next.max_unused_days <= 36500,"E_INVALID: Cache budget must be between 1 and 1024 GiB and expiry at most 36500 days");
             if verify_root(&active_root(db)?, &self.inner.owner).is_err() {
                 ensure!(next.budget_bytes >= previous.budget_bytes
@@ -632,16 +657,89 @@ impl CacheManager {
         })
     }
     pub fn preview_put(&self, key: &str, bytes: &[u8]) -> Result<()> {
-        let reservation = self.reserve(key, "preview", bytes.len() as u64)?;
+        if self.preview_policy().is_ok_and(|p| p == "memory_only") {
+            return Ok(());
+        }
+        let mut reservation = self.reserve(key, "preview", bytes.len() as u64)?;
+        let source = reservation.path().to_path_buf();
         let mut file = OpenOptions::new()
             .write(true)
             .truncate(true)
-            .open(reservation.path())?;
+            .open(&source)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        file.flush()?;
         drop(file);
-        drop(reservation.commit(None)?);
-        Ok(())
+        // Hash in RAM without holding the cache/SQLite lock or rereading from disk.
+        let (size, hash) = hash_memory(bytes);
+        let id = reservation.id.clone();
+        self.locked(|db| {
+            let (stored_key, kind, root_id, relative, bound): (String, String, String, String, u64) =
+                db.query_row(
+                    "SELECT cache_key,kind,root_id,relative_path,bytes FROM cache_reservations WHERE id=?1 AND session_id=?2",
+                    params![&id, self.inner.session],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )?;
+            let root = get_root(db, &root_id)?;
+            verify_root(&root, &self.inner.owner)?;
+            ensure!(
+                scoped_path(&root, &relative)? == source,
+                "E_CACHE_VERIFY: Reservation location changed while publishing preview"
+            );
+            let current = fs::metadata(&source)?;
+            ensure!(
+                current.len() == size && size <= bound,
+                "E_CACHE_VERIFY: Preview partial size changed before publication"
+            );
+            let previous = db
+                .query_row(
+                    "SELECT sha256 FROM cache_objects WHERE cache_key=?1",
+                    [&stored_key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            if let Some(existing_hash) = previous {
+                ensure!(
+                    existing_hash == hash,
+                    "E_CACHE_CONFLICT: A cache key identifies different content"
+                );
+                db.execute(
+                    "UPDATE cache_objects SET last_used=?1 WHERE cache_key=?2",
+                    params![now(), &stored_key],
+                )?;
+                self.release_reservation(db, &id)?;
+                reservation.committed = true;
+                return Ok(());
+            }
+            let extension = Path::new(&stored_key)
+                .extension()
+                .and_then(|s| s.to_str())
+                .filter(|s| s.len() <= 12 && s.chars().all(|c| c.is_ascii_alphanumeric()))
+                .unwrap_or("bin");
+            let target_relative = format!("objects/{kind}/{id}.{extension}");
+            let target = scoped_path(&root, &target_relative)?;
+            fs::create_dir_all(target.parent().unwrap())?;
+            reject_links(target.parent().unwrap())?;
+            fs::hard_link(&source, &target).context(
+                "E_CACHE_PUBLISH: Cache filesystem must support hard links and no-replace publication",
+            )?;
+            let outcome = (|| -> Result<()> {
+                let tx = db.transaction()?;
+                tx.execute(
+                    "INSERT INTO cache_objects(id,cache_key,kind,root_id,relative_path,size,sha256,last_used) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![&id, stored_key, kind, root_id, target_relative, size, hash, now()],
+                )?;
+                tx.execute("DELETE FROM cache_reservations WHERE id=?1", [&id])?;
+                tx.commit()?;
+                Ok(())
+            })();
+            if let Err(error) = outcome {
+                let _ = fs::remove_file(target);
+                return Err(error);
+            }
+            fs::remove_file(source)?;
+            reservation.committed = true;
+            Ok(())
+        })
     }
     pub fn set_pinned(&self, asset_id: &str, pinned: bool) -> Result<Value> {
         self.locked(|db| {
@@ -1749,6 +1847,23 @@ fn available_space(path: &Path) -> Result<u64> {
 fn available_space(_path: &Path) -> Result<u64> {
     anyhow::bail!("E_CACHE_SPACE: Free-space query is unavailable on this platform")
 }
+fn hash_memory(bytes: &[u8]) -> (u64, String) {
+    #[cfg(test)]
+    HASH_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+    #[cfg(test)]
+    record_perf(|p| {
+        if p.lock_depth > 0 {
+            p.hash_bytes_under_lock += bytes.len() as u64;
+        }
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    (bytes.len() as u64, hex::encode(hasher.finalize()))
+}
 fn hash_file(path: &Path) -> Result<(u64, String)> {
     #[cfg(test)]
     HASH_HOOK.with(|hook| {
@@ -2286,12 +2401,14 @@ mod tests {
             .set_policy(json!({"preview_policy":"anything"}))
             .is_err());
         assert!(f.manager.set_policy(json!({"max_unused_days":-1})).is_err());
-        assert_eq!(
-            f.manager
-                .set_policy(json!({"max_unused_days":0,"preview_policy":"manual"}))
-                .unwrap()["policy"]["preview_policy"],
-            "manual"
-        );
+        for valid in ["automatic", "stream_preview", "memory_only", "manual"] {
+            assert_eq!(
+                f.manager
+                    .set_policy(json!({"max_unused_days":0,"preview_policy":valid}))
+                    .unwrap()["policy"]["preview_policy"],
+                valid
+            );
+        }
     }
     #[test]
     fn offline_policy_allows_only_budget_increases_and_rejections_preserve_policy() {

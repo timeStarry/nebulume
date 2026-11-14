@@ -218,6 +218,9 @@ impl Core {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
+            if extension == "xmp" {
+                continue;
+            }
             let Some(kind) = imaging::kind(&extension) else {
                 report.skipped += 1;
                 continue;

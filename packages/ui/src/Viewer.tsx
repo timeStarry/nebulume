@@ -22,6 +22,7 @@ import {
   viewerContext,
 } from './api';
 import ExportDialog from './ExportDialog';
+import OriginalExportDialog from './OriginalExportDialog';
 import type { ExportRecipe } from './export-presets';
 import { previewUrl } from './preview-url';
 import AssetInspector from './AssetInspector';
@@ -67,11 +68,17 @@ import { readOverlayFades, readToolbarAutoHide } from './overlay-layout';
 import CullStrip from './CullStrip';
 import CullReview from './CullReview';
 import {
+  exportOriginals,
   exportPhotos,
   exportSummary,
+  originalExportSummary,
+  resolveOriginalExportPlan,
   restorePhotos,
+  targetsForOriginalChoice,
   trashPhotos,
   trashSummary,
+  type OriginalExportPlan,
+  type OriginalExportTarget,
 } from './photo-actions';
 import { FolderBrowser, listFolder } from './folder-browser';
 import ContextMenu, { type ContextMenuState } from './ContextMenu';
@@ -153,6 +160,7 @@ export default function Viewer(props: {
   const [outside, setOutside] = createSignal(false);
   const [menu, setMenu] = createSignal<ContextMenuState>();
   const [exportTargets, setExportTargets] = createSignal<string[] | null>(null);
+  const [originalExportPlan, setOriginalExportPlan] = createSignal<OriginalExportPlan | null>(null);
   // Culling & instant navigation: known photos for the strip, counts, and zero-jump switching.
   const [items, setItems] = createSignal<Record<string, Asset>>(initialMap);
   const [seen, setSeen] = createSignal(new Set<string>());
@@ -499,14 +507,14 @@ export default function Viewer(props: {
       returnFocus: button,
       items: [
         {
-          label: '导出为 JPEG…',
-          icon: 'export',
+          label: '导出原片…',
+          icon: 'download',
           disabled: !target || !!busy() || cropMode(),
           onSelect: () => void exportImage(),
         },
         {
-          label: '按预设导出…',
-          icon: 'download',
+          label: '导出 JPEG…',
+          icon: 'export',
           shortcut: '⌘⇧E',
           disabled: !target || !!busy() || cropMode(),
           onSelect: () => target && setExportTargets([target.id]),
@@ -996,7 +1004,7 @@ export default function Viewer(props: {
     }
   }
   function keyboard(event: KeyboardEvent) {
-    if (exportTargets()) return;
+    if (exportTargets() || originalExportPlan()) return;
     recoverFocus();
     if (!container.contains(document.activeElement)) return;
     if (
@@ -1414,18 +1422,57 @@ export default function Viewer(props: {
       setCropMode(false);
     });
   }
+  async function runViewerOriginalExport(targets: OriginalExportTarget[]) {
+    if (!targets.length) return;
+    if (targets.length === 1) {
+      const single = targets[0]!;
+      await action('导出原片…', async () => {
+        const destination = await chooseSave(single.filename);
+        if (!destination) return;
+        const result = await execute<{ path: string; bytes: number }>('asset.export_original', {
+          id: single.id,
+          destination,
+        });
+        setNotice(
+          desktop ? `已导出原片：${result.path}` : `已导出原片 ${result.path}，并交给浏览器下载。`,
+        );
+      });
+      return;
+    }
+    const directory = desktop ? await chooseDirectory('选择原片导出文件夹') : '';
+    if (desktop && !directory) return;
+    await action(`正在导出 ${targets.length} 个原片…`, async () => {
+      const result = await exportOriginals(
+        targets,
+        directory ?? '',
+        (done, total) => setBusy(`正在导出原片 ${done} / ${total}…`),
+      );
+      const summary = originalExportSummary(result, directory ?? '', desktop);
+      if (summary.error) setError(summary.error);
+      else setNotice(summary.notice!);
+    });
+  }
+  async function requestViewerOriginalExport(targetIds: string[]) {
+    if (!targetIds.length || busy()) return;
+    setError('');
+    try {
+      const known = new Map<string, Asset>(Object.entries(items()));
+      if (asset()) known.set(asset()!.id, asset()!);
+      const plan = await resolveOriginalExportPlan(targetIds, known);
+      if (!plan.allTargets.length) return;
+      if (plan.needsFormatChoice) {
+        setOriginalExportPlan(plan);
+        return;
+      }
+      await runViewerOriginalExport(plan.allTargets);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
   async function exportImage() {
     const target = asset();
     if (!target) return;
-    await action('导出 JPEG…', async () => {
-      const destination = await chooseSave(target.filename.replace(/\.[^.]+$/, '') + '-edited.jpg');
-      if (!destination) return;
-      const result = await execute<{ path: string }>('asset.export', {
-        id: target.id,
-        destination,
-      });
-      setNotice(desktop ? `已导出：${result.path}` : `已生成 ${result.path}，并交给浏览器下载。`);
-    });
+    await requestViewerOriginalExport([target.id]);
   }
   async function exportWithPreset(targets: string[], recipe: ExportRecipe, directory: string) {
     await action(`正在按预设导出 ${targets.length} 张…`, async () => {
@@ -1507,7 +1554,13 @@ export default function Viewer(props: {
     >
       <div class="viewer-image-area">
         <header class="nl-viewer-bar immersive-toolbar viewer-chrome">
-          <IconButton icon="arrow-left" size="sm" label="返回图片库" onClick={manager} />
+          <IconButton
+            icon="arrow-left"
+            size="sm"
+            tipAlign="start"
+            label="返回图片库"
+            onClick={manager}
+          />
           <div class="viewer-filename">
             <Show when={!info() || !asset()}>
               <strong title={asset()?.path || asset()?.filename}>
@@ -1600,6 +1653,7 @@ export default function Viewer(props: {
             <IconButton
               size="sm"
               icon="layout-sidebar-right"
+              tipAlign="end"
               label="影像信息（I）"
               shortcut="I"
               pressed={info()}
@@ -1609,6 +1663,7 @@ export default function Viewer(props: {
               <IconButton
                 size="sm"
                 icon="close"
+                tipAlign="end"
                 label="关闭查看器（Esc）"
                 shortcut="Esc"
                 onClick={close}
@@ -1873,7 +1928,8 @@ export default function Viewer(props: {
             setReview(false);
             container.focus({ preventScroll: true });
           }}
-          onExport={(targets) => void exportPicks(targets)}
+          onExport={(targets) => setExportTargets(targets)}
+          onExportOriginal={(targets) => void requestViewerOriginalExport(targets)}
           onTrash={(targets) => {
             setReview(false);
             container.focus({ preventScroll: true });
@@ -1907,6 +1963,23 @@ export default function Viewer(props: {
             setCropMode(false);
           }}
         />
+      </Show>
+      <Show when={originalExportPlan()}>
+        {(plan) => (
+          <OriginalExportDialog
+            plan={plan()}
+            busy={!!busy()}
+            onClose={() => {
+              setOriginalExportPlan(null);
+              container.focus({ preventScroll: true });
+            }}
+            onConfirm={(choice) => {
+              const chosen = targetsForOriginalChoice(plan(), choice);
+              setOriginalExportPlan(null);
+              void runViewerOriginalExport(chosen);
+            }}
+          />
+        )}
       </Show>
       <Show when={exportTargets()}>
         {(targets) => (

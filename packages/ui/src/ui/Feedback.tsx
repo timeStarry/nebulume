@@ -1,12 +1,14 @@
 import { Show, type JSX } from 'solid-js';
 import Icon, { type IconName } from '../Icon';
 import IconButton from './IconButton';
+import Spinner from './Spinner';
 import './Feedback.css';
 
-export type BannerTone = 'neutral' | 'info' | 'warn' | 'error';
+export type BannerTone = 'neutral' | 'info' | 'pick' | 'warn' | 'error';
 const BANNER_ICON: Record<BannerTone, IconName> = {
   neutral: 'info-circle',
   info: 'info-circle',
+  pick: 'circle-check',
   warn: 'alert-triangle',
   error: 'alert-circle',
 };
@@ -138,6 +140,7 @@ export function Progress(props: { value?: number; label: string; class?: string 
 
 export function EmptyState(props: {
   icon: IconName;
+  loading?: boolean;
   title: string;
   description?: JSX.Element;
   actions?: JSX.Element;
@@ -147,7 +150,9 @@ export function EmptyState(props: {
   return (
     <div class={`nl-empty${props.class ? ` ${props.class}` : ''}`} role={props.role}>
       <span class="nl-empty-icon">
-        <Icon name={props.icon} size={24} />
+        <Show when={props.loading} fallback={<Icon name={props.icon} size={24} />}>
+          <Spinner />
+        </Show>
       </span>
       <h3>{props.title}</h3>
       <Show when={props.description}>
