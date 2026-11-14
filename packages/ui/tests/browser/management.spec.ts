@@ -1500,11 +1500,15 @@ test('the rail marks 图片库 while a library is open, without scrollbars, and 
   expect(stacking).toEqual({ above: true, clip: 'visible' });
   const settings = rail.getByRole('button', { name: '设置', exact: true });
   await settings.hover();
-  await expect(settings)
-    .toHaveCSS('--x', /.*/)
-    .catch(() => undefined);
-  const tip = await settings.evaluate((el) => getComputedStyle(el, '::after').content);
-  expect(tip).toContain('设置');
+  const floatingTip = page.locator('body > .nl-floating-tooltip[data-open="true"]');
+  await expect(floatingTip).toBeVisible();
+  await expect(floatingTip).toContainText('设置');
+  const tipLayer = await floatingTip.evaluate((el) => ({
+    position: getComputedStyle(el).position,
+    zIndex: Number(getComputedStyle(el).zIndex) || 0,
+  }));
+  expect(tipLayer.position).toBe('fixed');
+  expect(tipLayer.zIndex).toBeGreaterThanOrEqual(900);
 });
 
 test('the library sidebar can be widened by dragging its edge, and the width is remembered', async ({
@@ -1887,4 +1891,32 @@ test('导出原片 prompts RAW / JPEG / RAW+JPEG choice when paired variants exi
       { id: 'paired-raw', destination: 'D:\\Exports\\Mountain.nef' },
       { id: photo.id, destination: 'D:\\Exports\\Mountain.jpg' },
     ]);
+});
+
+test('hovering the sidebar overflow button renders a top-layer portal tooltip without sidebar clipping', async ({
+  page,
+}) => {
+  await fixture(page);
+  const sidebar = page.locator('.library-sidebar');
+  const moreBtn = sidebar.getByRole('button', { name: '本地摄影 更多操作' });
+  await expect(moreBtn).toBeVisible();
+
+  await moreBtn.hover();
+  const floatingTip = page.locator('body > .nl-floating-tooltip[data-open="true"]');
+  await expect(floatingTip).toBeVisible();
+  await expect(floatingTip).toHaveText('本地摄影 更多操作');
+
+  const sidebarBox = await sidebar.boundingBox();
+  const tipBox = await floatingTip.boundingBox();
+  expect(sidebarBox).not.toBeNull();
+  expect(tipBox).not.toBeNull();
+  // The '...' button is at the right edge of .library-sidebar, so the centered tooltip naturally
+  // extends past sidebarBox.right into the main workspace without being clipped by sidebar overflow.
+  expect(tipBox!.x + tipBox!.width).toBeGreaterThan(sidebarBox!.x + sidebarBox!.width);
+  expect(tipBox!.x + tipBox!.width).toBeLessThanOrEqual(1280);
+
+  // Opening the menu suppresses and dismisses the tooltip immediately so the two never overlap.
+  await moreBtn.click();
+  await expect(page.getByRole('menu', { name: '本地摄影 更多操作' })).toBeVisible();
+  await expect(floatingTip).toHaveCount(0);
 });

@@ -73,10 +73,6 @@
   background: var(--nl-v-pressed);
   color: var(--nl-v-text);
 }
-.immersive-viewer [data-tooltip]::after {
-  background: var(--nl-v-text);
-  color: var(--nl-v-stage);
-}
 .immersive-viewer .nl-icon-btn:focus-visible,
 .immersive-viewer .nl-seg button:focus-visible,
 .immersive-viewer .nl-toggle:focus-visible {
