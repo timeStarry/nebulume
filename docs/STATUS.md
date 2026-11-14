@@ -1,6 +1,6 @@
 # 实施状态
 
-版本：0.2.3。更新日期：2026-11-14。
+版本：0.2.4。更新日期：2026-11-14。
 
 目录升级到 schema14（在 schema13 性能基座基础上新增 Stage 4 完整虚拟组织层：`color_label` 色标体系、`collections`/`collection_items` 手动与智能精选集、`keywords`/`asset_keywords` 层级关键词树）；未知结构拒绝迁移，旧程序回退需要恢复备份。具体检查结果见 TESTING.md。
 
