@@ -50,14 +50,20 @@ import {
 import { viewerIds } from './workspace';
 import { focusPresentation } from './viewer-focus';
 import {
+  AUTO_ADVANCE_MS,
   CULL_MARK_ANIMATION_MS,
   compareWindow,
   cullKeyAction,
   markOf,
   nextAfterMark,
-  readAutoAdvance,
+  ratingStepDelta,
+  readAutoAdvanceMode,
   snapshotQueue,
-  writeAutoAdvance,
+  stepRating,
+  toggleAutoAdvanceMode,
+  writeAutoAdvanceMode,
+  type AutoAdvanceMode,
+  type AutoAdvanceSpeed,
   type Mark,
 } from './culling';
 import CullPanel, { CullStatus } from './CullPanel';
@@ -150,7 +156,10 @@ export default function Viewer(props: {
   const [cropSwapped, setCropSwapped] = createSignal(false);
   const [overlayVisible, setOverlayVisible] = createSignal(true);
   const [editingOverlay, setEditingOverlay] = createSignal(false);
-  const [autoAdvance, setAutoAdvance] = createSignal(readAutoAdvance());
+  const [autoAdvanceMode, setAutoAdvanceMode] = createSignal<AutoAdvanceMode>(
+    readAutoAdvanceMode(),
+  );
+  const autoAdvance = () => autoAdvanceMode() !== 'off';
   const [pulse, setPulse] = createSignal<{ kind: 'rate' | 'flag'; value: string; key: number }>();
   const [zoomToggle, setZoomToggle] = createSignal(0);
   const [compareAssets, setCompareAssets] = createSignal<Record<string, Asset>>({});
@@ -679,6 +688,9 @@ export default function Viewer(props: {
       setToolbarAutoHide(nextAutoHide);
       if (nextAutoHide) scheduleToolbarSleep();
       else setToolbarAwake(true);
+      const nextAutoAdvance = readAutoAdvanceMode();
+      setAutoAdvanceMode(nextAutoAdvance);
+      if (nextAutoAdvance === 'off') cancelPulse();
     };
     window.addEventListener('storage', syncStorage);
     window.addEventListener('keydown', keyboard);
@@ -695,13 +707,20 @@ export default function Viewer(props: {
     });
   });
   function move(direction: number) {
-    if (cropMode() || busy()) return;
+    if (cropMode() || busy() || (mode() === 'view' && optimistic.size > 0)) return;
     if (!asset() && loading() && mode() !== 'cull') return;
+    cancelPulse();
     setNavDir(direction < 0 ? -1 : 1);
     const next = ids()[index() + direction];
     if (next) setId(next);
   }
-  // Culling: optimistic marks, short confirmation, then optional auto-advance.
+  // Culling: optimistic marks, idle-debounced dwell confirmation, then optional auto-advance.
+  function cancelPulse() {
+    clearTimeout(pulseTimer);
+    pulseTimer = undefined;
+    pendingAdvance = undefined;
+    setPulse(undefined);
+  }
   function finishPulse() {
     clearTimeout(pulseTimer);
     pulseTimer = undefined;
@@ -712,6 +731,8 @@ export default function Viewer(props: {
   }
   // Marks not yet confirmed by the catalog; a reload of that photo must not show stale values.
   const optimistic = new Map<string, Mark>();
+  const markSeq = new Map<string, number>();
+  let pulseSeq = 0;
   async function markTarget(targetId: string): Promise<Mark | undefined> {
     const pending = optimistic.get(targetId);
     if (pending) return pending;
@@ -737,7 +758,7 @@ export default function Viewer(props: {
       map[updated.id] ? { ...map, [updated.id]: patch(map[updated.id]) } : map,
     );
   }
-  async function persistMark(target: Mark, next: Mark) {
+  async function persistMark(target: Mark, next: Mark, seq: number) {
     const colorChanged =
       next.color_label !== undefined && next.color_label !== (target.color_label ?? 'none');
     const flagChanged = next.flag !== target.flag;
@@ -756,19 +777,21 @@ export default function Viewer(props: {
           : flagChanged
             ? await execute<Asset>('asset.flag', { id: next.id, flag: next.flag })
             : await execute<Asset>('asset.rate', { id: next.id, rating: next.rating });
-    await changed(
-      result,
-      colorChanged ? 'color_label' : flagChanged ? 'flag' : 'rating',
-    );
+    if (markSeq.get(next.id) === seq) {
+      await changed(
+        result,
+        colorChanged ? 'color_label' : flagChanged ? 'flag' : 'rating',
+      );
+    }
   }
   async function mark(
-    kind: 'rate' | 'flag' | 'color_label',
+    kind: 'rate' | 'rate_step' | 'flag' | 'color_label',
     value: number | Flag | ColorLabel,
     fromKeyboard = false,
   ) {
-    // A key during the confirmation finishes it (and its advance) first, so each key
-    // applies to the photo the user sees next; none is dropped or applied twice.
-    if (pulse()) finishPulse();
+    // Subsequent marks while the photo is still in its dwell window refine/combine on the
+    // current photo and restart the idle countdown before advancing.
+    cancelPulse();
     const targetId = id();
     if (!targetId) return;
     let before: Mark | undefined;
@@ -779,53 +802,57 @@ export default function Viewer(props: {
       return;
     }
     if (!before || id() !== targetId) return;
-    if (pulse()) finishPulse();
+    cancelPulse();
+    const resolvedRating =
+      kind === 'rate_step' ? stepRating(before.rating, value as 1 | -1) : (value as number);
     const nextColor =
       kind === 'color_label'
         ? ((before.color_label ?? 'none') === value ? 'none' : (value as ColorLabel))
         : before.color_label;
-    const next: Mark =
-      kind === 'rate'
-        ? { ...before, rating: value as number }
-        : kind === 'flag'
-          ? { ...before, flag: value as Flag }
-          : { ...before, color_label: nextColor };
+    const isRating = kind === 'rate' || kind === 'rate_step';
+    const next: Mark = isRating
+      ? { ...before, rating: resolvedRating }
+      : kind === 'flag'
+        ? { ...before, flag: value as Flag }
+        : { ...before, color_label: nextColor };
     const unchanged =
       next.rating === before.rating &&
       next.flag === before.flag &&
       (next.color_label ?? 'none') === (before.color_label ?? 'none');
     applyLocal(next);
     const position = ids().indexOf(targetId);
-    const step = nextAfterMark(
-      position,
-      ids().length,
-      cullView() === 'compare' ? false : autoAdvance(),
-    );
+    const modeNow = autoAdvanceMode();
+    const shouldAdvance = cullView() !== 'compare' && modeNow !== 'off';
+    const step = nextAfterMark(position, ids().length, shouldAdvance);
+    const dwellMs = shouldAdvance
+      ? AUTO_ADVANCE_MS[modeNow as AutoAdvanceSpeed]
+      : CULL_MARK_ANIMATION_MS;
     setPulse({
-      kind: kind === 'color_label' ? 'flag' : kind,
-      value: String(kind === 'color_label' ? nextColor : value),
-      key: Date.now(),
+      kind: isRating ? 'rate' : 'flag',
+      value: String(isRating ? resolvedRating : kind === 'color_label' ? nextColor : value),
+      key: ++pulseSeq,
     });
-    const hudMark =
-      kind === 'rate'
-        ? { rating: value as number }
-        : kind === 'flag'
-          ? { flag: value as Flag }
-          : { color_label: nextColor };
-    if (fromKeyboard) hud.show(markHudText(hudMark), kind === 'rate' ? 'star' : 'flag');
+    const hudMark = isRating
+      ? { rating: resolvedRating }
+      : kind === 'flag'
+        ? { flag: value as Flag }
+        : { color_label: nextColor };
+    if (fromKeyboard) hud.show(markHudText(hudMark), isRating ? 'star' : 'flag');
     let failed = false;
     if (!unchanged) {
       const previous = before;
+      const seq = (markSeq.get(targetId) ?? 0) + 1;
+      markSeq.set(targetId, seq);
       optimistic.set(targetId, next);
       history.push({
         label: markHudText(hudMark),
         ids: [targetId],
         revert: () => revertMark(previous),
       });
-      void persistMark(previous, next)
+      void persistMark(previous, next, seq)
         .catch((e) => {
           failed = true;
-          applyLocal(previous);
+          if (markSeq.get(targetId) === seq) applyLocal(previous);
           setError(`标记未保存：${errorMessage(e)}`);
           if (id() !== targetId && ids().includes(targetId)) setId(targetId);
         })
@@ -833,15 +860,18 @@ export default function Viewer(props: {
           if (optimistic.get(targetId) === next) optimistic.delete(targetId);
         });
     }
-    // Advance on the confirmation, not on the save, so fast culling keeps pace.
+    // Advance after the idle dwell expires, not on catalog I/O, so culling stays responsive.
     pendingAdvance = () => {
       if (failed || id() !== targetId) return;
       if (step.atEnd) setNotice('已到最后一张。');
       else if (step.index !== position) setId(ids()[step.index]);
     };
-    pulseTimer = setTimeout(finishPulse, CULL_MARK_ANIMATION_MS);
+    pulseTimer = setTimeout(finishPulse, dwellMs);
   }
   async function revertMark(previous: Mark) {
+    const seq = (markSeq.get(previous.id) ?? 0) + 1;
+    markSeq.set(previous.id, seq);
+    optimistic.delete(previous.id);
     const updated = await execute<Asset>('asset.mark_batch', {
       ids: [previous.id],
       rating: previous.rating,
@@ -854,7 +884,7 @@ export default function Viewer(props: {
   }
   /** Ctrl/⌘+Z in either mode, and the toast's undo button (`entry`). */
   async function undoLatest(entry?: UndoEntry) {
-    if (pulse()) finishPulse();
+    cancelPulse();
     if (!entry && !history.size) {
       hud.show('没有可撤销的操作', 'history');
       return;
@@ -870,14 +900,16 @@ export default function Viewer(props: {
       });
   }
   function toggleMode() {
+    cancelPulse();
     if (cropMode()) setCropMode(false);
     setMode((value) => (value === 'cull' ? 'view' : 'cull'));
     activity();
   }
   function toggleAutoAdvance() {
-    const next = !autoAdvance();
-    setAutoAdvance(next);
-    writeAutoAdvance(next);
+    const next = toggleAutoAdvanceMode(autoAdvanceMode());
+    if (next === 'off') cancelPulse();
+    setAutoAdvanceMode(next);
+    writeAutoAdvanceMode(next);
   }
   createEffect(
     on(
@@ -938,9 +970,14 @@ export default function Viewer(props: {
     event.preventDefault();
     if (action.kind === 'rate' || action.kind === 'flag' || action.kind === 'color_label') {
       if (!event.repeat) void mark(action.kind, action.value, true);
+    } else if (action.kind === 'rate_step') {
+      if (!event.repeat) void mark('rate_step', action.delta, true);
     } else if (action.kind === 'move') move(action.delta);
     else if (action.kind === 'view') {
-      if (action.value === 'compare') setCompareAnchor(Math.max(0, index()));
+      if (action.value === 'compare') {
+        cancelPulse();
+        setCompareAnchor(Math.max(0, index()));
+      }
       setCullView(action.value);
     } else if (action.kind === 'zoom') setZoomToggle((value) => value + 1);
     else if (action.kind === 'clipping') {
@@ -984,6 +1021,7 @@ export default function Viewer(props: {
     }
   }
   async function escape() {
+    cancelPulse();
     if (cropMode()) {
       setCropMode(false);
       return;
@@ -1137,8 +1175,17 @@ export default function Viewer(props: {
     } else if (key === 'escape') {
       event.preventDefault();
       void escape();
-    } else if (/^[0-5]$/.test(key)) void rate(Number(key), true);
-    else if (/^[6-9]$/.test(key) && !cropMode() && !event.repeat) {
+    } else if (/^[0-5]$/.test(key) && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      void rate(Number(key), true);
+    } else if (ratingStepDelta(event) !== null && !cropMode() && !event.repeat) {
+      event.preventDefault();
+      const current = asset();
+      if (current) {
+        const base = optimistic.get(current.id)?.rating ?? current.rating;
+        void rate(stepRating(base, ratingStepDelta(event)!), true);
+      }
+    } else if (/^[6-9]$/.test(key) && !cropMode() && !event.repeat) {
       event.preventDefault();
       const color = keyToColorLabel(key);
       if (color) void colorLabelPhoto(color, true);
@@ -1269,22 +1316,56 @@ export default function Viewer(props: {
   }
   async function rate(rating: number, fromKeyboard = false) {
     const target = asset();
-    if (!target) return;
-    const before = target.rating;
+    if (!target || cropMode()) return;
+    const before = optimistic.get(target.id)?.rating ?? target.rating;
     if (fromKeyboard) hud.show(markHudText({ rating }), 'star');
     if (before === rating) return;
-    let saved = false;
-    await action('保存评级…', async () => {
-      await changed(await execute<Asset>('asset.rate', { id: target.id, rating }), 'rating');
-      saved = true;
+    const currentFlag: Flag = (optimistic.get(target.id)?.flag ?? target.flag ?? 'none') as Flag;
+    const currentColor: ColorLabel =
+      (optimistic.get(target.id)?.color_label ?? target.color_label ?? 'none') as ColorLabel;
+    const next: Mark = {
+      id: target.id,
+      rating,
+      flag: currentFlag,
+      color_label: currentColor,
+    };
+    const seq = (markSeq.get(target.id) ?? 0) + 1;
+    markSeq.set(target.id, seq);
+    optimistic.set(target.id, next);
+    applyLocal(next);
+    history.push({
+      label: markHudText({ rating }),
+      ids: [target.id],
+      revert: async () => {
+        const revSeq = (markSeq.get(target.id) ?? 0) + 1;
+        markSeq.set(target.id, revSeq);
+        optimistic.delete(target.id);
+        const updated = await execute<Asset>('asset.rate', { id: target.id, rating: before });
+        applyLocal({
+          id: target.id,
+          rating: before,
+          flag: (updated.flag ?? currentFlag) as Flag,
+          color_label: (updated.color_label ?? currentColor) as ColorLabel,
+        });
+        await changed(updated, 'rating');
+      },
     });
-    if (saved)
-      history.push({
-        label: markHudText({ rating }),
-        ids: [target.id],
-        revert: async () =>
-          changed(await execute<Asset>('asset.rate', { id: target.id, rating: before }), 'rating'),
-      });
+    try {
+      const updated = await execute<Asset>('asset.rate', { id: target.id, rating });
+      if (markSeq.get(target.id) === seq) await changed(updated, 'rating');
+    } catch (e) {
+      if (markSeq.get(target.id) === seq) {
+        applyLocal({
+          id: target.id,
+          rating: before,
+          flag: currentFlag,
+          color_label: currentColor,
+        });
+      }
+      setError(`评级未保存：${errorMessage(e)}`);
+    } finally {
+      if (optimistic.get(target.id) === next) optimistic.delete(target.id);
+    }
   }
   async function flagPhoto(flag: Flag, fromKeyboard = false) {
     const target = asset();
@@ -1292,15 +1373,21 @@ export default function Viewer(props: {
     const before: Flag = (optimistic.get(target.id)?.flag ?? target.flag ?? 'none') as Flag;
     if (fromKeyboard) hud.show(markHudText({ flag }), 'flag');
     if (before === flag) return;
+    const currentRating = optimistic.get(target.id)?.rating ?? target.rating;
     const currentColor: ColorLabel =
       (optimistic.get(target.id)?.color_label ?? target.color_label ?? 'none') as ColorLabel;
-    const next: Mark = { id: target.id, rating: target.rating, flag, color_label: currentColor };
+    const next: Mark = { id: target.id, rating: currentRating, flag, color_label: currentColor };
+    const seq = (markSeq.get(target.id) ?? 0) + 1;
+    markSeq.set(target.id, seq);
     optimistic.set(target.id, next);
     applyLocal(next);
     history.push({
       label: markHudText({ flag }),
       ids: [target.id],
       revert: async () => {
+        const revSeq = (markSeq.get(target.id) ?? 0) + 1;
+        markSeq.set(target.id, revSeq);
+        optimistic.delete(target.id);
         const updated = await execute<Asset>('asset.flag', { id: target.id, flag: before });
         applyLocal({
           id: target.id,
@@ -1313,10 +1400,10 @@ export default function Viewer(props: {
     });
     try {
       const updated = await execute<Asset>('asset.flag', { id: target.id, flag });
-      if (optimistic.get(target.id) === next) await changed(updated, 'flag');
+      if (markSeq.get(target.id) === seq) await changed(updated, 'flag');
     } catch (e) {
-      if (optimistic.get(target.id) === next) {
-        applyLocal({ id: target.id, rating: target.rating, flag: before, color_label: currentColor });
+      if (markSeq.get(target.id) === seq) {
+        applyLocal({ id: target.id, rating: currentRating, flag: before, color_label: currentColor });
       }
       setError(`标记未保存：${errorMessage(e)}`);
     } finally {
@@ -1331,18 +1418,25 @@ export default function Viewer(props: {
     const desired: ColorLabel = fromKeyboard && before === color ? 'none' : color;
     if (fromKeyboard) hud.show(markHudText({ color_label: desired }), 'flag');
     if (before === desired) return;
+    const currentRating = optimistic.get(target.id)?.rating ?? target.rating;
+    const currentFlag: Flag = (optimistic.get(target.id)?.flag ?? target.flag ?? 'none') as Flag;
     const next: Mark = {
       id: target.id,
-      rating: target.rating,
-      flag: (target.flag ?? 'none') as Flag,
+      rating: currentRating,
+      flag: currentFlag,
       color_label: desired,
     };
+    const seq = (markSeq.get(target.id) ?? 0) + 1;
+    markSeq.set(target.id, seq);
     optimistic.set(target.id, next);
     applyLocal(next);
     history.push({
       label: markHudText({ color_label: desired }),
       ids: [target.id],
       revert: async () => {
+        const revSeq = (markSeq.get(target.id) ?? 0) + 1;
+        markSeq.set(target.id, revSeq);
+        optimistic.delete(target.id);
         const updated = await execute<Asset>('asset.label', {
           id: target.id,
           color_label: before,
@@ -1361,13 +1455,13 @@ export default function Viewer(props: {
         id: target.id,
         color_label: desired,
       });
-      if (optimistic.get(target.id) === next) await changed(updated, 'color_label');
+      if (markSeq.get(target.id) === seq) await changed(updated, 'color_label');
     } catch (e) {
-      if (optimistic.get(target.id) === next) {
+      if (markSeq.get(target.id) === seq) {
         applyLocal({
           id: target.id,
-          rating: target.rating,
-          flag: (target.flag ?? 'none') as Flag,
+          rating: currentRating,
+          flag: currentFlag,
           color_label: before,
         });
       }
@@ -1594,7 +1688,10 @@ export default function Viewer(props: {
                   label="选片视图"
                   value={cullView()}
                   onChange={(next) => {
-                    if (next === 'compare') setCompareAnchor(Math.max(0, index()));
+                    if (next === 'compare') {
+                      cancelPulse();
+                      setCompareAnchor(Math.max(0, index()));
+                    }
                     setCullView(next as 'single' | 'compare');
                   }}
                   options={[
@@ -1755,7 +1852,7 @@ export default function Viewer(props: {
             onToggleClipping={() => toggleClipping(false)}
             zoomToggle={zoomToggle()}
             onSelect={(nextId) => {
-              if (pulse()) finishPulse();
+              cancelPulse();
               setId(nextId);
               container.focus({ preventScroll: true });
             }}
@@ -1885,7 +1982,7 @@ export default function Viewer(props: {
             current={id()}
             seen={seen()}
             onSelect={(next) => {
-              if (pulse()) finishPulse();
+              cancelPulse();
               setId(next);
               container.focus({ preventScroll: true });
             }}
